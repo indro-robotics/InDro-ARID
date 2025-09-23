@@ -55,8 +55,7 @@ append_if_not_exists "$ISAAC_BASH_ALIAS"
 source ~/.bashrc
 
 echo "Copying system service files..."
-sudo cp -f "${ISAAC_ROS_WS}/scripts/services/start_isaac_docker.service" "/etc/systemd/system/"
-sudo cp -f "${ISAAC_ROS_WS}/scripts/services/jetson-clocks.service" "/etc/systemd/system/"
+sudo cp -f "${ISAAC_ROS_WS}/services/start_isaac_docker.service" "/etc/systemd/system/"
 
 # Add the rule if not already present
 if sudo grep -Fxq "$SUDOERS_LINE" "$SUDOERS_FILE" 2>/dev/null; then
@@ -72,9 +71,6 @@ sudo systemctl enable docker.socket
 
 echo "Enable Isaac ROS docker service..."
 sudo systemctl enable start_isaac_docker.service
-
-echo "Enable Jetson high-perf mode..."
-sudo systemctl enable jetson-clocks.service
 
 if [[ "$setup_type" == "New Setup" ]]; then
     echo "Installing and configuring Docker..."

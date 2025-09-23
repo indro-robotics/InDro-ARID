@@ -38,6 +38,7 @@ fi
 
 sudo cp -f "${LOCAL_WS}/services/"*.service "/etc/systemd/system/"
 sudo cp -f "${LOCAL_WS}/src/csi_drone_camera/source/"*.service "/etc/systemd/system/"
+sudo cp -f "${LOCAL_WS}/services/jetson-clocks.service" "/etc/systemd/system/"
 chmod +x /home/jetson/workspaces/local_ws/scripts/usb_reset.sh
 
 
@@ -98,11 +99,12 @@ sudo chmod 644 "$POLKIT_RULE_FILE"
 
 sudo systemctl enable usb_ros_reset.service
 sudo systemctl enable cam_manager.service
+sudo systemctl enable jetson-clocks.service
 sudo systemctl daemon-reload
 
 sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg
 sudo apt update
-python3 -m pip install websockets==15.0.1 pyudev==0.24.3 pyserial==3.5
+python3 -m pip install "setuptools<66" websockets==15.0.1 pyudev==0.24.3 pyserial==3.5
 
 cd ${LOCAL_WS}
 sudo rosdep init
