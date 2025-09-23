@@ -1,0 +1,85 @@
+left_realsense/left_realsense_link:
+  ros__parameters:
+    enable_infra1: true
+    enable_infra2: true
+    enable_color: false
+    enable_sync: true
+    enable_depth: false
+    depth_module:
+      emitter_enabled: 0
+      enable_auto_exposure: true
+      profile: '640x360x90'
+    rgb_camera:
+      power_line_frequency: 1 
+    enable_gyro: false
+    enable_accel: false
+    initial_reset: true
+    serial_no: "247122070311"               # left RS serial number (no leading underscore)
+    camera_name: "left_realsense"
+    use_intra_process_comms: true
+
+front_realsense/front_realsense_link:
+  ros__parameters:
+    enable_infra1: true
+    enable_infra2: true
+    enable_color: false
+    enable_sync: true
+    enable_depth: false
+    depth_module:
+      emitter_enabled: 0
+      enable_auto_exposure: true
+      profile: '640x360x90'
+    rgb_camera:
+      power_line_frequency: 1 
+    enable_gyro: false
+    enable_accel: false
+    initial_reset: true
+    serial_no: "332322074062"               # front RS serial number (no leading underscore)
+    camera_name: "front_realsense"
+    use_intra_process_comms: true
+
+right_realsense/right_realsense_link:
+  ros__parameters:
+    enable_infra1: true
+    enable_infra2: true
+    enable_color: false
+    enable_sync: true
+    enable_depth: false
+    depth_module:
+      emitter_enabled: 0
+      enable_auto_exposure: true
+      profile: '640x360x90'
+    rgb_camera:
+      power_line_frequency: 1 
+    enable_gyro: false
+    enable_accel: false
+    initial_reset: true
+    serial_no: "244622071490"               # right RS serial number (no leading underscore)
+    camera_name: "right_realsense"
+    use_intra_process_comms: true
+
+visual_slam_node:
+  ros__parameters:
+    sync_matching_threshold_ms: 15.0
+    enable_image_denoising: false
+    rectified_images: true
+    enable_imu_fusion: false
+    image_jitter_threshold_ms: 34.0
+    map_frame: 'map'
+    odom_frame: 'odom'
+    base_frame: 'base_link'
+    imu_frame: 'autopilot'
+    enable_slam_visualization: true
+    enable_landmarks_view: false
+    enable_observations_view: true
+    enable_localization_n_mapping: true
+    num_cameras: 6
+    #min_num_images: 4
+    image_qos: "SENSOR_DATA"
+    camera_optical_frames:
+      - 'front_realsense_infra1_optical_frame'
+      - 'front_realsense_infra2_optical_frame'
+      - 'left_realsense_infra1_optical_frame'
+      - 'left_realsense_infra2_optical_frame'
+      - 'right_realsense_infra1_optical_frame'
+      - 'right_realsense_infra2_optical_frame'

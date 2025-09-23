@@ -1,0 +1,136 @@
+<?xml version="1.0"?>
+
+<robot name="arid_drone_v1-0" xmlns:xacro="http://wiki.ros.org/xacro">
+    <xacro:macro
+        name="realsense_camera"
+        params="
+        name
+        realsense_x
+        realsense_y
+        realsense_z
+        realsense_lense_y
+        realsense_x_offset
+        realsense_y_offset
+        realsense_z_offset
+        rotate
+        reflect
+        ">
+        <link name="${name}_realsense_link">
+            <visual>
+                <origin xyz="${-1 * realsense_x / 2} ${-1 * realsense_lense_y} 0" />
+                <geometry>
+                    <box size="${realsense_x} ${realsense_y} ${realsense_z}"/>
+                </geometry>
+                <material name="${name}_realsense-material">
+                    <color rgba="0.0060488 0.21586 0.36625 1" />
+                </material>
+            </visual>
+            <collision>
+                <origin xyz="${-1 * realsense_x / 2} ${realsense_lense_y} 0" />
+                <geometry>
+                    <box size="${realsense_x} ${realsense_y} ${realsense_z}"/>
+                </geometry>
+            </collision>
+            <inertial>
+                <origin xyz="${-1 * realsense_x / 2 } ${-1 * realsense_lense_y} 0" rpy="0 0 0" />
+                <mass value="0.1" />
+                <inertia ixx="0.0166666666" ixy="0" ixz="0" iyy="0.0166666666" iyz="0" izz="0.0166666666" />
+            </inertial>
+            <sensor name="camera" type="camera">
+                <always_on>true</always_on>
+                <update_rate>100</update_rate>
+                <origin>${front_realsense_x_offset} ${front_realsense_y_offset} ${front_realsense_z_offset} 0 0 0</origin>
+                <camera>
+                    <horizontal_fov>1.3962634</horizontal_fov>
+                    <image>
+                        <width>800</width>
+                        <height>600</height>
+                        <format>R8G8B8</format>
+                    </image>
+                    <clip>
+                        <near>0.1</near>
+                        <far>100</far>
+                    </clip>
+                    <noise>
+                        <type>gaussian</type>
+                        <mean>0.01</mean>
+                    </noise>
+                </camera>
+            </sensor>
+        </link>
+        <joint name="base_link_to_${name}_realsense" type="fixed">
+            <parent link="base_link"/>
+            <child link="${name}_realsense_link"/>
+            <origin xyz="${realsense_x_offset} ${reflect * realsense_y_offset} ${realsense_z_offset}" rpy="0 0 ${rotate}" />
+        </joint>
+                    
+    </xacro:macro>
+    <xacro:macro
+        name="visual_camera"
+        params="
+        name
+        visual_length
+        visual_radius
+        visual_x_offset
+        visual_y_offset
+        visual_z_offset
+        rot_x
+        rot_y
+        rot_z
+        jrot_x
+        jrot_y
+        jrot_z
+        ">
+        <link name="${name}_visual_link">
+            <visual>
+                <origin xyz="${-1 * visual_length / 2} 0 0" rpy="${rot_x} ${rot_y} ${rot_z}" />
+                <geometry>
+                    <cylinder radius="${visual_radius}" length="${visual_length}"/>
+                </geometry>
+                <material name="${name}_realsense-material">
+                    <color rgba="0.0060488 0.21586 0.36625 1" />
+                </material>
+            </visual>
+            <collision>
+                <origin xyz="${-1 * visual_length / 2} 0 0" rpy="${rot_x} ${rot_y} ${rot_z}" />
+                <geometry>
+                    <cylinder radius="${visual_radius}" length="${visual_length}"/>
+                </geometry>
+            </collision>
+            <inertial>
+                <origin xyz="${-1 * visual_length / 2} 0 0" rpy="${rot_x} ${rot_y} ${rot_z}" />
+                <mass value="0.01" />
+                <inertia ixx="0.0033333333" ixy="0" ixz="0" iyy="0.005" iyz="0" izz="0.0033333333" />
+            </inertial>
+            <sensor name="camera" type="camera">
+                <always_on>true</always_on>
+                <update_rate>100</update_rate>
+                <origin>${visual_x_offset} ${visual_y_offset} ${visual_z_offset} ${jrot_x} ${jrot_y} ${jrot_z}</origin>
+                <camera>
+                    <horizontal_fov>1.308997</horizontal_fov>
+                    <image>
+                        <width>1640</width>
+                        <height>1232</height>
+                        <format></format>
+                    </image>
+                    <clip>
+                        <near>0.1</near>
+                        <far>100</far>
+                    </clip>
+                    <noise>
+                        <type>gaussian</type>
+                        <mean>0.01</mean>
+
+                    </noise>
+                </camera>
+            </sensor>
+        </link>
+        <joint name="base_link_to_${name}_visual" type="fixed">
+            <parent link="base_link"/>
+            <child link="${name}_visual_link"/>
+            <origin xyz="${visual_x_offset} ${visual_y_offset} ${visual_z_offset}" rpy="${jrot_x} ${jrot_y} ${jrot_z}" />
+        </joint>
+                    
+    </xacro:macro>
+    
+</robot>

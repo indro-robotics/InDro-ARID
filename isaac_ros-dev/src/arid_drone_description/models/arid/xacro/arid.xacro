@@ -1,0 +1,287 @@
+<?xml version="1.0"?>
+
+<robot name="arid_drone_v1-0" xmlns:xacro="http://wiki.ros.org/xacro">
+    <xacro:include
+        filename="$(find arid_drone_description)/models/arid/xacro/propellers.xacro" />
+    <xacro:include
+        filename="$(find arid_drone_description)/models/arid/xacro/cameras.xacro" />
+
+    <xacro:property name="robot_namespace" value="arid" />
+
+    <!-- PROPERTY DESIGNATIONS -->
+        <!-- Airframe Dimensions -->
+            <!-- Propeller Housing Dimensions-->
+            <xacro:property name="prop_housing_radius" value="0.099"/> <!-- cylinder radius -->
+            <xacro:property name="prop_force_offset" value="0.00455" /> <!-- propeller plane offset from cylinder centerline-->
+            <xacro:property name="prop_housing_height" value="0.045" />"
+            <xacro:property name="prop_housing_center_offset" value="0.0975" />
+            <!-- Tower Dimensinos -->
+            <xacro:property name="tower_length" value="0.150" /> <!-- tower assembly x direction measurement -->
+            <xacro:property name="tower_width" value="0.130" /> <!-- tower assembly y direction measurement -->
+            <xacro:property name="tower_height" value="0.10570" /> <!-- tower assembly z direction measurement -->
+            <xacro:property name="tower_origin">
+                <origin xyz="-0.014 0 0" rpy="0 0 0" /> <!-- Centerpoint offset for attachment-->
+            </xacro:property>
+
+            <!-- Autopilot Location Dimensions -->
+            <xacro:property name="autopilot_height_offset" value="0.084207"/>
+            <xacro:property name="autopilot_front_offset" value="0.056524" />
+            <xacro:property name="autopilot_length" value="0.029" />
+            <xacro:property name="autopilot_width" value="0.036" />
+            <xacro:property name="autopilot_height" value="0.005" />
+        <!-- Sensor Dimensions -->
+            <!-- Realsense Camera Dimensions -->
+                <!-- Front Realsense Camera -->
+                <xacro:property name="front_realsense_x_offset" value="0.114016" /> <!-- Camera link offset x direction -->
+                <xacro:property name="front_realsense_y_offset" value="0.0177" /> <!-- Camera link offset y direction -->
+                <xacro:property name="front_realsense_z_offset" value="0.09025" /> <!-- Camera link offset z direction-->
+                <!-- Side Realsense Camera -->
+                <xacro:property name="side_realsense_x_offset" value="-0.0037" /> <!-- Camera link offset x direction -->
+                <xacro:property name="side_realsense_y_offset" value="0.08995" /> <!-- Camera link offset y direction (can be reversed for right camera)-->
+                <xacro:property name="side_realsense_z_offset" value="0.09025" /> <!-- Camera link offset z direction-->
+                <!-- Realsense Camera Dimensions -->
+                <xacro:property name="realsense_x" value="0.025" />
+                <xacro:property name="realsense_y" value="0.065" />
+                <xacro:property name="realsense_z" value="0.025" />
+                <xacro:property name="realsense_lense_y" value="0.0177" />
+            <!-- Visual Camera Dimensions-->
+                <!-- Top Visual Camera -->
+                <xacro:property name="top_visual_x_offset" value="0.0990" />
+                <xacro:property name="top_visual_y_offset" value="0.00" />
+                <xacro:property name="top_visual_z_offset" value="0.1215" />
+                <!-- Bottom Visual Camera -->
+                <xacro:property name="bottom_visual_x_offset" value="0.03275" />
+                <xacro:property name="bottom_visual_y_offset" value="0.00" />
+                <xacro:property name="bottom_visual_z_offset" value="-0.01295" />
+                <!-- Visual Camera Dimensinos -->
+                <xacro:property name="visual_length" value="0.011" /> <!-- Visual camera cylinder height-->
+                <xacro:property name="visual_radius" value="0.0075" /> <!-- Visual camera cylinder radius-->
+                <!-- Optical Flow Camera -->
+                <xacro:property name="optical_x_offset" value="0.0" />
+                <xacro:property name="optical_y_offset" value="-0.0115" />
+                <xacro:property name="optical_z_offset" value="-0.00771" />
+            <!-- Range Finder Dimensions -->
+                <xacro:property name="range_x_offset" value="0.004178" />
+                <xacro:property name="range_y_offset" value="0.00992" />
+                <xacro:property name="range_z_offset" value="0.013012" />
+                <xacro:property name="range_length" value="0.005" />
+                <xacro:property name="range_radius" value="0.0025" />
+
+    <!-- Base Link Designation -->
+        <link name="base_footprint" />
+        <link name="base_link">
+            <visual>
+                <origin xyz="0 0 ${prop_force_offset}" rpy="0 0 0"/>
+                <geometry>
+                    <box size="0.045 0.045 0.045" />
+                </geometry>
+                <material name="base_link-material" >
+                    <color rgba="0 0.013 1 1" />
+                </material>
+            </visual>
+            <collision>
+                <origin xyz="0 0 ${prop_force_offset}" rpy="0 0 0"/>
+                <geometry>
+                    <box size="0.045 0.045 0.045" />
+                </geometry>
+            </collision>
+            <inertial>
+                <origin xyz="0 0 0.0091" rpy="0 0 0" />
+                <mass value="0.01" />
+                <inertia ixx="0.00166666666" ixy="0" ixz="0" iyy="0.00166666666" iyz="0" izz="0.00166666666" />
+            </inertial>
+        </link>
+        <joint name="base_link_to_base_footprint" type="fixed">
+            <parent link = "base_footprint" />
+            <child link="base_link" />
+            <origin xyz = "0 0 0" rpy = "0 0 0" />
+        </joint>
+    <!-- AUTOPILOT -->
+        <link name="autopilot">
+            <visual>
+                <origin xyz="0 0 0" rpy="0 0 0"/>
+                <geometry>
+                    <box size ="${autopilot_length} ${autopilot_width} ${autopilot_height}" />
+                </geometry>
+                <material name="autopilot-material">
+                    <color rgba="0.005605 0.76815 0.25415 1" />
+                </material>
+            </visual>
+            <collision>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+                <geometry>
+                    <box size ="${autopilot_length} ${autopilot_width} ${autopilot_height}" />
+                </geometry>
+            </collision>
+            <inertial>
+                <origin xyz="0 0 0" rpy="0 0 0" />
+                <mass value="0.01"/>
+                <inertia ixx="0.00166666666" ixy="0" ixz="0" iyy="0.00166666666" iyz="0" izz="0.00166666666" />
+            </inertial>
+        </link>
+        <joint name="base_link_to_autopilot" type="fixed">
+            <parent link="base_link" />
+            <child link="autopilot" />
+            <origin xyz="${autopilot_front_offset} 0 ${autopilot_height_offset}" rpy="0 0 0" />
+        </joint>
+    <link name="range_finder">
+        <visual>
+            <origin xyz="0 0 ${range_length / 2}" rpy="0 0 0" />
+            <geometry>
+                <cylinder radius="${range_radius}" length="${range_length}" />
+            </geometry>
+        </visual>
+        <collision>
+            <origin xyz="0 0 ${range_length / 2}" rpy="0 0 0" />
+            <geometry>
+                <cylinder radius="${range_radius}" length="${range_length}"/>
+            </geometry>
+        </collision>
+        <inertial>
+            <origin xyz="0 0 ${range_length / 2}" rpy="0 0 0" />
+            <mass value="0.01" />
+            <inertia ixx="0.0033333333" ixy="0" ixz="0" iyy="0.005" iyz="0" izz="0.0033333333" />
+        </inertial>
+        <sensor name="camera" type="camera">
+            <always_on>true</always_on>
+            <update_rate>100</update_rate>
+            <origin>${range_x_offset} ${range_y_offset} ${range_z_offset} 0 ${pi/2} 0</origin>
+            <camera>
+                <horizontal_fov>1.3962634</horizontal_fov>
+                <image>
+                    <width>800</width>
+                    <height>600</height>
+                    <format>R8G8B8</format>
+                </image>
+                <clip>
+                    <near>0.1</near>
+                    <far>100</far>
+                </clip>
+                <noise>
+                    <type>gaussian</type>
+                    <mean>0.01</mean>
+                </noise>
+            </camera>
+        </sensor>
+    </link>
+    <joint name="base_link_to_range_finder" type="fixed">
+        <parent link="base_link" />
+        <child link="range_finder" />
+        <origin xyz="${range_x_offset} ${range_y_offset} ${range_z_offset}" rpy="0 ${pi/2} 0"/>
+    </joint>
+    <!-- PROPELLERS -->
+        <!-- Front Left Propeller -->
+        <xacro:propellers 
+            name="fl"
+            parent="base_link"
+            fb_reflect="1"
+            lr_reflect="1"
+            prop_force_offset="${prop_force_offset}"
+            prop_housing_radius="${prop_housing_radius}"
+            prop_housing_height="${prop_housing_height}"
+            prop_housing_center_offset="${prop_housing_center_offset}">
+        </xacro:propellers>
+        <!-- Front Right Propeller -->
+        <xacro:propellers 
+            name="fr"
+            parent="base_link"
+            fb_reflect="1"
+            lr_reflect="-1"
+            prop_force_offset="${prop_force_offset}"
+            prop_housing_radius="${prop_housing_radius}"
+            prop_housing_height="${prop_housing_height}"
+            prop_housing_center_offset="${prop_housing_center_offset}">
+        </xacro:propellers>
+        <!-- Rear Left Propeller-->
+        <xacro:propellers 
+            name="rl"
+            parent="base_link"
+            fb_reflect="-1"
+            lr_reflect="1"
+            prop_force_offset="${prop_force_offset}"
+            prop_housing_radius="${prop_housing_radius}"
+            prop_housing_height="${prop_housing_height}"
+            prop_housing_center_offset="${prop_housing_center_offset}">
+        </xacro:propellers>
+        <!-- Rear Right Propeller -->
+        <xacro:propellers 
+            name="rr"
+            parent="base_link"
+            fb_reflect="-1"
+            lr_reflect="-1"
+            prop_force_offset="${prop_force_offset}"
+            prop_housing_radius="${prop_housing_radius}"
+            prop_housing_height="${prop_housing_height}"
+            prop_housing_center_offset="${prop_housing_center_offset}">
+        </xacro:propellers>
+    <!-- CAMERAS -->
+        <!-- Front Realsense -->
+        <xacro:realsense_camera
+            name="front"
+            realsense_x="${realsense_x}"
+            realsense_y="${realsense_y}"
+            realsense_z="${realsense_z}"
+            realsense_lense_y ="${realsense_lense_y}"
+            realsense_x_offset="${front_realsense_x_offset}"
+            realsense_y_offset="${front_realsense_y_offset}"
+            realsense_z_offset="${front_realsense_z_offset}"
+            rotate="0"
+            reflect="1">
+        </xacro:realsense_camera>
+        <!-- Left Realsense -->
+        <xacro:realsense_camera
+            name="left"
+            realsense_x="${realsense_x}"
+            realsense_y="${realsense_y}"
+            realsense_z="${realsense_z}"
+            realsense_lense_y="${realsense_lense_y}"
+            realsense_x_offset="${side_realsense_x_offset}"
+            realsense_y_offset="${side_realsense_y_offset}"
+            realsense_z_offset="${side_realsense_z_offset}"
+            rotate="${pi/2}"
+            reflect="1">
+        </xacro:realsense_camera>
+        <!-- Right Realsense -->
+        <xacro:realsense_camera
+            name="right"
+            realsense_x="${realsense_x}"
+            realsense_y="${realsense_y}"
+            realsense_z="${realsense_z}"
+            realsense_lense_y="${-1 * realsense_lense_y}"
+            realsense_x_offset="${side_realsense_x_offset}"
+            realsense_y_offset="${side_realsense_y_offset}"
+            realsense_z_offset="${side_realsense_z_offset}"
+            rotate="${-pi/2}"
+            reflect="-1">
+        </xacro:realsense_camera>
+        <!-- Top Visual -->
+        <xacro:visual_camera
+            name="top"
+            visual_length="${visual_length}"
+            visual_radius="${visual_radius}"
+            visual_x_offset="${top_visual_x_offset}"
+            visual_y_offset="${top_visual_y_offset}"
+            visual_z_offset="${top_visual_z_offset}"
+            rot_x="${-pi/2}"
+            rot_y="0"
+            rot_z="0"
+            jrot_x="${-pi/2}"
+            jrot_y="0"
+            jrot_z="${-pi/2}">
+        </xacro:visual_camera>
+        <!-- Bottom Visual -->
+        <xacro:visual_camera
+            name="bottom"
+            visual_length="${visual_length}"
+            visual_radius="${visual_radius}"
+            visual_x_offset="${bottom_visual_x_offset}"
+            visual_y_offset="${bottom_visual_y_offset}"
+            visual_z_offset="${bottom_visual_z_offset}"
+            rot_x="0"
+            rot_y="${pi}"
+            rot_z="${pi/2}"
+            jrot_x="0"
+            jrot_y="${pi}"
+            jrot_z="${pi/2}">
+        </xacro:visual_camera>
+</robot>

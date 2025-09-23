@@ -1,0 +1,7 @@
+# This service set up SLAM pose.
+# Request
+geometry_msgs/Pose pose
+---
+# Response
+# Indicate successful run of the service
+bool success

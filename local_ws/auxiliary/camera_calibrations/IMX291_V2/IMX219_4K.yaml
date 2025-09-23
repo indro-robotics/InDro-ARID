@@ -1,0 +1,20 @@
+image_width: 3280
+image_height: 2464
+camera_name: IMX219_4K
+camera_matrix:
+  rows: 3
+  cols: 3
+  data: [3490.717326, 0.0, 1426.042835, 0.0, 3490.753809, 1275.770256, 0.0, 0.0, 1.0]
+distortion_model: plumb_bob
+distortion_coefficients:
+  rows: 1
+  cols: 5
+  data: [0.056727, -0.171703, -0.002735, 0.002188, 0.000000]
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+projection_matrix:
+  rows: 3
+  cols: 4
+  data: [3505.701416, 0.0, 1428.414098, 0.0, 0.0, 3509.763428, 1271.118820, 0.0, 0.0, 0.0, 1.0, 0.0]
