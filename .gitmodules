@@ -1,0 +1,4 @@
+[submodule "local_ws/auxiliary/PX4-Autopilot"]
+	path = local_ws/auxiliary/PX4-Autopilot
+	url = https://github.com/indro-robotics/PX4-Autopilot.git
+	branch = PX4-InDro
