@@ -16,11 +16,11 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 def generate_launch_description():
 
     # Launch the URDF TF publisher
-    package_name = 'cypher_drone_description'
-    launch_file_name = 'cypher.launch.py'
+    package_name = 'arid_drone_description'
+    launch_file_name = 'arid.launch.py'
     package_share_path = get_package_share_directory(package_name)
     launch_file_path = os.path.join(package_share_path, 'launch', launch_file_name)
-    cypher_URDF_TFs = IncludeLaunchDescription(PythonLaunchDescriptionSource(launch_file_path))
+    arid_URDF_TFs = IncludeLaunchDescription(PythonLaunchDescriptionSource(launch_file_path))
 
     # Declare the config file parameter
     launch_dir = os.path.dirname(os.path.realpath(__file__))
@@ -102,10 +102,9 @@ def generate_launch_description():
     )
     
     return launch.LaunchDescription([
-        cypher_URDF_TFs,
+        arid_URDF_TFs,
         config,
         vslam_container,
         vslam_reactor_node,
         vio_transform_node,
-        #LogInfo(msg=["Using camera configuration from: ", LaunchConfiguration('camera_config_file')])
     ])

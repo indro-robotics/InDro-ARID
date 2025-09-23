@@ -19,9 +19,7 @@
 	<depend>tf2_geometry_msgs</depend>
   <depend>isaac_ros_visual_slam</depend>
   <depend>isaac_ros_visual_slam_interfaces</depend>
-
-  <test_depend>ament_lint_auto</test_depend>
-  <test_depend>ament_lint_common</test_depend>
+  <depend>arid_drone_description</depend>
 
   <export>
     <build_type>ament_cmake</build_type>

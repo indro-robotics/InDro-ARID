@@ -14,7 +14,7 @@ left_realsense/left_realsense_link:
     enable_gyro: false
     enable_accel: false
     initial_reset: true
-    serial_no: "247122070311"               # left RS serial number (no leading underscore)
+    serial_no: ""               # left RS serial number (no leading underscore)
     camera_name: "left_realsense"
     use_intra_process_comms: true
 
@@ -34,7 +34,7 @@ front_realsense/front_realsense_link:
     enable_gyro: false
     enable_accel: false
     initial_reset: true
-    serial_no: "332322074062"               # front RS serial number (no leading underscore)
+    serial_no: ""               # front RS serial number (no leading underscore)
     camera_name: "front_realsense"
     use_intra_process_comms: true
 
@@ -54,7 +54,7 @@ right_realsense/right_realsense_link:
     enable_gyro: false
     enable_accel: false
     initial_reset: true
-    serial_no: "244622071490"               # right RS serial number (no leading underscore)
+    serial_no: ""               # right RS serial number (no leading underscore)
     camera_name: "right_realsense"
     use_intra_process_comms: true
 
@@ -74,7 +74,6 @@ visual_slam_node:
     enable_observations_view: true
     enable_localization_n_mapping: true
     num_cameras: 6
-    #min_num_images: 4
     image_qos: "SENSOR_DATA"
     camera_optical_frames:
       - 'front_realsense_infra1_optical_frame'
