@@ -5,5 +5,3 @@
 **/install/**
 **/cc_internals/**
 **/log/**
-isaac_ros-dev/src/px4_vslam/config
-local_ws/src/csi_drone_camera/gst_camera_info/config
