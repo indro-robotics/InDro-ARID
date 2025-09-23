@@ -30,6 +30,10 @@ select setup_type in "New Setup" "Patch"; do
     esac
 done
 
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT" || exit
+git update-index --assume-unchanged isaac_ros-dev/src/px4_vslam/config/vslam_config.yaml
+
 # Script permissions
 echo "Setting script permissions..."
 find ${ISAAC_ROS_WS}/scripts/ -type f -iname "*.sh" -exec chmod +x {} +

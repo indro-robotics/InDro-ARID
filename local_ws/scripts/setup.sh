@@ -9,6 +9,10 @@ POLKIT_RULE_FILE="/etc/polkit-1/rules.d/10-reset-usb.rules"
 RESET_USB_ALIAS='alias reset_usb="/bin/bash $LOCAL_WS/scripts/usb_reset.sh"'
 SUDOERS_LINE="$USERNAME ALL=(ALL) NOPASSWD: /bin/systemctl start *, /bin/systemctl stop *, /bin/systemctl kill *, $LOCAL_WS/scripts/usb_reset.sh"
 
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT" || exit
+git update-index --assume-unchanged local_ws/src/csi_drone_camera/gst_camera_info/config/IMX219_4K.yaml local_ws/src/csi_drone_camera/gst_camera_info/config/IMX219_2K.yaml
+
 # Function to append to .bashrc if not already present
 echo "Adding aliases..."
 append_if_not_exists() {
