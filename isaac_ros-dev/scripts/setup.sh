@@ -10,6 +10,7 @@ ISAAC_BUILD_ALIAS='alias build_isaac="/bin/bash $ISAAC_ROS_WS/scripts/build_isaa
 ISAAC_START_ALIAS='alias start_isaac="/bin/bash $ISAAC_ROS_WS/scripts/start_isaac_docker.sh"'
 ISAAC_STOP_ALIAS='alias stop_isaac="docker stop isaac_ros_dev-aarch64-container"'
 ISAAC_BASH_ALIAS='alias isaac_bash="/bin/bash $ISAAC_ROS_WS/scripts/isaac_bash.sh"'
+
 SUDOERS_FILE="/etc/sudoers.d/${USERNAME}_systemctl"
 SUDOERS_LINE="$USERNAME ALL=(ALL) NOPASSWD: \\
     /usr/sbin/uhubctl, \\

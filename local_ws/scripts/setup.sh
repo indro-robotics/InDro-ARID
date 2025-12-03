@@ -7,6 +7,14 @@ EXPORT_LOCAL_WS="export LOCAL_WS=${LOCAL_WS}"
 SOURCE_LOCAL_WS="source ${LOCAL_WS}/install/setup.bash"
 POLKIT_RULE_FILE="/etc/polkit-1/rules.d/10-reset-usb.rules"
 RESET_USB_ALIAS='alias reset_usb="/bin/bash $LOCAL_WS/scripts/usb_reset.sh"'
+CAM_DOWN_ALIAS="alias cam_down='ros2 service call /start_camera gst_camera_interfaces/srv/ControlService \"{service_name: '\''cam_down_2k_20'\''}\"'"
+CAM_FRONT_ALIAS="alias cam_front='ros2 service call /start_camera gst_camera_interfaces/srv/ControlService \"{service_name: '\''cam_front_4k_10'\''}\"'"
+CAM_STOP_ALIAS="alias cam_stop='ros2 service call /stop_camera gst_camera_interfaces/srv/ControlService \"{service_name: '\'''\''}\"'"
+ROSDEP_ALIAS="alias rosdep_local='rosdep install --from-paths \${LOCAL_WS}/src/ --ignore-src -y'"
+COLCON_ALIAS="alias colcon_local='cd \${LOCAL_WS} && colcon build --symlink-install --base-paths src && source ./install/setup.bash'"
+CLEAN_ALIAS="alias clean_local='cd \${LOCAL_WS} && colcon clean workspace --base-select build install log'"
+
+
 SUDOERS_LINE="$USERNAME ALL=(ALL) NOPASSWD: /bin/systemctl start *, /bin/systemctl stop *, /bin/systemctl kill *, $LOCAL_WS/scripts/usb_reset.sh"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 
@@ -27,6 +35,12 @@ append_if_not_exists() {
 append_if_not_exists "$EXPORT_LOCAL_WS"
 append_if_not_exists "$SOURCE_LOCAL_WS"
 append_if_not_exists "$RESET_USB_ALIAS"
+append_if_not_exists "$CAM_DOWN_ALIAS"
+append_if_not_exists "$CAM_FRONT_ALIAS"
+append_if_not_exists "$CAM_STOP_ALIAS"
+append_if_not_exists "$ROSDEP_ALIAS"
+append_if_not_exists "$COLCON_ALIAS"
+append_if_not_exists "$CLEAN_ALIAS"
 
 source ~/.bashrc
 
@@ -45,7 +59,9 @@ fi
 sudo cp -f "${LOCAL_WS}/services/"*.service "/etc/systemd/system/"
 sudo cp -f "${LOCAL_WS}/src/csi_drone_camera/source/"*.service "/etc/systemd/system/"
 sudo cp -f "${LOCAL_WS}/services/jetson-clocks.service" "/etc/systemd/system/"
-chmod +x /home/jetson/workspaces/local_ws/scripts/usb_reset.sh
+#chmod +x ${LOCAL_WS}/scripts/usb_reset.sh
+find ${LOCAL_WS}/scripts -type f \( -name "*.bash" -o -name "*.sh" \) -exec chmod +x {} \;
+find ${LOCAL_WS}/src/csi_drone_camera/source -type f \( -name "*.bash" -o -name "*.sh" \) -exec chmod +x {} \;
 
 
 # ========== BEGIN CRITICAL USB CNTL ==========
@@ -110,7 +126,7 @@ sudo systemctl daemon-reload
 
 sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg
 sudo apt update
-python3 -m pip install "setuptools<66" websockets==15.0.1 pyudev==0.24.3 pyserial==3.5
+python3 -m pip install "setuptools<66" websockets==15.0.1 pyudev==0.24.3 pyserial==3.5 colcon-clean==0.2.1
 
 cd ${LOCAL_WS}
 sudo rosdep init

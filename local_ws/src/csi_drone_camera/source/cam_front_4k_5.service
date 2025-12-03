@@ -3,11 +3,13 @@ Description=Starts front facing camera at 4K.5FPS
 Wants=network-online.target
 After=network-online.target
 After=systemd-user-sessions.service
+
 [Service]
 Type=simple
 User=jetson
 Environment="HOME=/home/jetson"
 ExecStart=/home/jetson/workspaces/local_ws/src/csi_drone_camera/source/cam_front_4k_5.bash
+
 [Install]
 WantedBy=default.target
 

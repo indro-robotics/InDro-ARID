@@ -1,5 +1,4 @@
 <?xml version="1.0"?>
-<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>gst_camera_info</name>
   <version>0.0.1</version>
@@ -9,13 +8,7 @@
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
-  <depend>rclcpp</depend>
-  <depend>synchron</depend>
-  <depend>gst_bridge</depend>
-  <depend>camera_info_manager</depend>
-  <depend>ament_index_cpp</depend>
-  <depend>sensor_msgs</depend>
-  <depend>yaml-cpp</depend>
+  <exec_depend>launch</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

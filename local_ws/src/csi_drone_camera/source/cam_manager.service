@@ -9,6 +9,8 @@ Type=simple
 User=jetson
 Environment="HOME=/home/jetson"
 ExecStart=/home/jetson/workspaces/local_ws/src/csi_drone_camera/source/cam_manager.bash
+Restart=on-failure
+RestartSec=5s
 
 [Install]
 WantedBy=default.target

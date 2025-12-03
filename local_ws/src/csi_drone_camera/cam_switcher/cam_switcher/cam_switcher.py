@@ -12,7 +12,12 @@ class CameraSwitcher(Node):
         
         self.serving = False
         self.kill_flag = False
-        self.service_list = ['cam_down_2k_20', 'cam_down_2k_30', 'cam_front_4k_5', 'cam_front_4k_10', 'cam_front_2k_30']
+        self.service_list = ['cam_down_2k_10',
+                             'cam_down_2k_20', 
+                             'cam_down_2k_30', 
+                             'cam_front_4k_5', 
+                             'cam_front_4k_10',
+                             'cam_front_4k_21']
 
         self.start_srv = self.create_service(
             ControlService,
