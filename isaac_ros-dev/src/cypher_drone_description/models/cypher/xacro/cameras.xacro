@@ -1,0 +1,129 @@
+<?xml version="2.99"?>
+<robot xmlns:xacro="http://wiki.ros.org/xacro" name="cypher_cameras">
+
+  <xacro:property name="front_realsense_xyz"  value="0.09597 0.0475 0.1287"/>    <!-- mm -> m -->
+  <xacro:property name="left_realsense_xyz"   value="-0.0475 0.09597 0.09170"/>  <!-- mm -> m -->
+  <xacro:property name="right_realsense_xyz"  value="0.0475 -0.09597 0.09170"/>  <!-- mm -> m -->
+
+  <xacro:property name="front_cv_xyz"         value="0.05415 -0.03 0.08870"/>    <!-- mm -> m -->
+  <xacro:property name="down_cv_xyz"          value="0.03345 0 -0.027175"/>      <!-- mm -> m -->
+
+  <xacro:property name="rangefinder_xyz"      value="-0.001622 0.01792 -0.031257"/> <!-- mm -> m -->
+
+  <!-- Generic box camera macro -->
+  <xacro:macro name="simple_camera"
+               params="name parent xyz">
+    <link name="${name}_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <!-- Simple camera body representation -->
+          <box size="0.04 0.02 0.02"/>
+        </geometry>
+        <material name="${name}_material">
+          <color rgba="0.1 0.1 0.1 1.0"/>
+        </material>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <box size="0.04 0.02 0.02"/>
+        </geometry>
+      </collision>
+      <inertial>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <mass value="0.05"/>
+        <inertia
+          ixx="1e-4" ixy="0" ixz="0"
+          iyy="1e-4" iyz="0"
+          izz="1e-4"/>
+      </inertial>
+    </link>
+
+    <joint name="${parent}_to_${name}_joint" type="fixed">
+      <parent link="${parent}"/>
+      <child  link="${name}_link"/>
+      <origin xyz="${xyz}" rpy="0 0 0"/>
+    </joint>
+  </xacro:macro>
+
+  <!-- Rangefinder macro (simple cylinder) -->
+  <xacro:macro name="rangefinder"
+               params="name parent xyz">
+    <link name="${name}_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <!-- Stub representation of a small rangefinder -->
+          <cylinder radius="0.01" length="0.03"/>
+        </geometry>
+        <material name="${name}_material">
+          <color rgba="0.2 0.8 0.2 1.0"/>
+        </material>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <cylinder radius="0.01" length="0.03"/>
+        </geometry>
+      </collision>
+      <inertial>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <mass value="0.03"/>
+        <inertia
+          ixx="5e-5" ixy="0" ixz="0"
+          iyy="5e-5" iyz="0"
+          izz="5e-5"/>
+      </inertial>
+    </link>
+
+    <joint name="${parent}_to_${name}_joint" type="fixed">
+      <parent link="${parent}"/>
+      <child  link="${name}_link"/>
+      <origin xyz="${xyz}" rpy="0 0 0"/>
+    </joint>
+  </xacro:macro>
+
+  <!-- Convenience macro to spawn all vision sensors + rangefinder from base_link -->
+  <xacro:macro name="cypher_cameras_block"
+               params="parent">
+
+    <!-- Front RealSense (discrete) -->
+    <xacro:simple_camera
+      name="front_realsense"
+      parent="${parent}"
+      xyz="${front_realsense_xyz}"/>
+
+    <!-- Left RealSense (discrete) -->
+    <xacro:simple_camera
+      name="left_realsense"
+      parent="${parent}"
+      xyz="${left_realsense_xyz}"/>
+
+    <!-- Right RealSense (discrete) -->
+    <xacro:simple_camera
+      name="right_realsense"
+      parent="${parent}"
+      xyz="${right_realsense_xyz}"/>
+
+    <!-- Front CV camera -->
+    <xacro:simple_camera
+      name="front_cv"
+      parent="${parent}"
+      xyz="${front_cv_xyz}"/>
+
+    <!-- Downwards CV camera -->
+    <xacro:simple_camera
+      name="down_cv"
+      parent="${parent}"
+      xyz="${down_cv_xyz}"/>
+
+    <!-- Rangefinder (new object) -->
+    <xacro:rangefinder
+      name="rangefinder"
+      parent="${parent}"
+      xyz="${rangefinder_xyz}"/>
+
+  </xacro:macro>
+
+</robot>

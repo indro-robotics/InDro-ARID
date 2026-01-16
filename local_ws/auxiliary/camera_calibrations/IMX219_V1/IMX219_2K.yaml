@@ -1,0 +1,20 @@
+image_width: 1640
+image_height: 1232
+camera_name: IMX219_2K
+camera_matrix:
+  rows: 3
+  cols: 3
+  data: [1202.95265, 0.0, 784.51709, 0.0, 1202.89863, 642.76881, 0.0, 0.0, 1.0]
+distortion_model: plumb_bob
+distortion_coefficients:
+  rows: 1
+  cols: 5
+  data: [0.054354, -0.070302, 0.001461, -0.000766, 0.000000]
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+projection_matrix:
+  rows: 3
+  cols: 4
+  data: [1214.36218, 0.0, 782.37061, 0.0, 0.0, 1215.02478, 643.84933, 0.0, 0.0, 0.0, 1.0, 0.0]

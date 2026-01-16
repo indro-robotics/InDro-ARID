@@ -1,0 +1,11 @@
+[Unit]
+Description=Reset USB ports
+After=syslog.target network.target
+
+[Service]
+User=root
+Type=oneshot
+ExecStart=/bin/bash -c "/home/jetson/workspaces/local_ws/scripts/usb_reset.sh"
+
+[Install]
+WantedBy=multi-user.target

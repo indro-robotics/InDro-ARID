@@ -1,0 +1,2 @@
+CONFIG_IMAGE_KEY=ros2_humble.realsense.cypher
+CONFIG_DOCKER_SEARCH_DIRS=(~/workspaces/isaac_ros-dev/scripts/docker/dockerfiles)

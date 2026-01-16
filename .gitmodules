@@ -1,0 +1,46 @@
+[submodule "local_ws/src/reset_ark_usb"]
+	path = local_ws/src/reset_ark_usb
+	url = https://github.com/indro-robotics/reset_ark_usb.git
+[submodule "local_ws/src/uwb_drone"]
+	path = local_ws/src/uwb_drone
+	url = https://github.com/indro-robotics/uwb_drone.git
+[submodule "local_ws/src/px4_msgs"]
+	path = local_ws/src/px4_msgs
+	url = https://github.com/PX4/px4_msgs.git
+	branch = release/1.15
+[submodule "local_ws/auxiliary/apriltag-imgs"]
+	path = local_ws/auxiliary/apriltag-imgs
+	url = https://github.com/AprilRobotics/apriltag-imgs.git
+	branch = master
+[submodule "local_ws/auxiliary/PX4-Autopilot"]
+	path = local_ws/auxiliary/PX4-Autopilot
+	url = https://github.com/indro-robotics/PX4-Autopilot.git
+        branch = PX4-Cypher
+[submodule "isaac_ros-dev/src/isaac_ros_common"]
+	path = isaac_ros-dev/src/isaac_ros_common
+	url = https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_common.git
+	branch = release-3.1
+[submodule "isaac_ros-dev/src/isaac_ros_visual_slam"]
+	path = isaac_ros-dev/src/isaac_ros_visual_slam
+	url = https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_visual_slam.git
+	branch = release-3.1
+[submodule "isaac_ros-dev/src/isaac_ros_nitros"]
+	path = isaac_ros-dev/src/isaac_ros_nitros
+	url = https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_nitros.git
+	branch = release-3.1
+[submodule "isaac_ros-dev/src/foxglove-sdk"]
+	path = isaac_ros-dev/src/foxglove-sdk
+	url = https://github.com/foxglove/foxglove-sdk.git
+	branch = main
+[submodule "isaac_ros-dev/src/realsense-ros"]
+	path = isaac_ros-dev/src/realsense-ros
+	url = https://github.com/IntelRealSense/realsense-ros.git
+	branch = ros2-development
+[submodule "isaac_ros-dev/src/px4-ros2-interface-lib"]
+	path = isaac_ros-dev/src/px4-ros2-interface-lib
+	url = https://github.com/Auterion/px4-ros2-interface-lib.git
+	branch = main
+[submodule "isaac_ros-dev/src/px4_msgs"]
+	path = isaac_ros-dev/src/px4_msgs
+	url = https://github.com/PX4/px4_msgs.git
+	branch = release/1.15
