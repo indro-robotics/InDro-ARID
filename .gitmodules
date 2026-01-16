@@ -15,7 +15,7 @@
 [submodule "local_ws/auxiliary/PX4-Autopilot"]
 	path = local_ws/auxiliary/PX4-Autopilot
 	url = https://github.com/indro-robotics/PX4-Autopilot.git
-        branch = PX4-Cypher
+	branch = PX4-Cypher
 [submodule "isaac_ros-dev/src/isaac_ros_common"]
 	path = isaac_ros-dev/src/isaac_ros_common
 	url = https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_common.git
