@@ -1,10 +1,7 @@
 #!/bin/bash
 
-# Get the directory where the script is located
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
-
 # Change to the root directory of the git repository (one level up from scripts)
-cd "$SCRIPT_DIR/.." || exit
+cd "$ISAAC_ROS_WS/.." || exit
 
 # Update all submodules to their specified branches
 git submodule foreach 'git checkout $(git config -f $toplevel/.gitmodules submodule.$name.branch || echo master)'
@@ -30,13 +27,13 @@ else
 fi
 
 # Checkout foxglove-sdk to the specific tag
-if [ -d "src/ros-foxglove-bridge" ]; then
-    cd src/ros-foxglove-bridge || exit
+if [ -d "src/foxglove-sdk" ]; then
+    cd src/foxglove-sdk || exit
     git fetch --all --tags
     git checkout sdk/v0.16.3
     cd ../..
 else
-    echo "Warning: src/ros-foxglove-bridge directory not found"
+    echo "Warning: src/foxglove-sdk directory not found"
 fi
 
 # Check if any submodules were updated

@@ -1,7 +1,7 @@
 [Unit]
 Description=Starts an ISAAC docker container
-After=docker.socket
-Requires=docker.socket
+After=multi-user.target docker.service
+Requires=docker.service
 
 [Service]
 User=jetson

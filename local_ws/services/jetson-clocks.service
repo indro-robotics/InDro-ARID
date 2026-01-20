@@ -1,0 +1,13 @@
+[Unit]
+Description=Set Jetson clocks to max
+After=multi-user.target
+Requires=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/jetson_clocks --fan
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
