@@ -95,6 +95,9 @@ class Stat_Ring_Buffer:
     def is_ready(self):
         return self.filled >= self.size
 
+    def reset(self):
+        self.index = 0
+        self.filled = 0
 
 class DRONE_FSM(Node):
 
@@ -268,7 +271,7 @@ class DRONE_FSM(Node):
         
         self.cv_rate_period = 0.25  # seconds
         self.target_rate_timer = self.create_timer(self.cv_rate_period,
-                                                   self._target_rate_check,
+                                                   self.target_rate_check,
                                                    callback_group=self.state_group)
 
         self.nav_state = VehicleStatus.NAVIGATION_STATE_POSCTL
@@ -320,12 +323,17 @@ class DRONE_FSM(Node):
 
         # Local Targeting 
         self.target_visible = False
-        self.target_lost = False
-        self._target_times = deque(maxlen=20)   # last 20 timestamps
-        self._target_min_hz = 0.5               # visibility threshold
-        self._target_window = 2.0               # seconds of history to use
-        self._target_min_samples = 5            # require at least 5 hits before trusting rate
+        self.last_detection_time = None         # init
+        self.target_times = deque(maxlen=20)   # last 20 timestamps
+        self.target_min_hz = 1.0               # visibility threshold
+        self.target_window = 2.0               # seconds of history to use
+        self.target_min_samples = 5            # require at least 5 hits before trusting rate
+        self.detection_timeout = 2.0            # seconds
 
+        # Tune these if drone is moving too sluggishly around targets
+        self.H_vel_min = 0.1   # m/s, horizontal velocity feed-forward minimum
+        self.V_vel_min = 0.1   # m/s, vertical velocity feed-forward minimum
+        self.A_vel_min = 5.0   # deg/s, angular velocity feed-forward minimum
 
         self.H_vel_prox_scalar = 1.0
         self.V_vel_prox_scalar = 1.0
@@ -558,7 +566,6 @@ class DRONE_FSM(Node):
                 
 
             case "PRE_AMR_SEEK":
-                self.target_lost = False
                 self.switch_camera(self.cam_down_service)
                 self.set_FSM_state("START_AMR_SEEK")
 
@@ -576,9 +583,9 @@ class DRONE_FSM(Node):
 
                 
                     seek_z = -(self.loiter_height + self.AMR_height + self.amr_seek_displacement)
-                    self.waypoint_track(target=Vector3(x=self.target_position.x, 
-                                                        y=self.target_position.y, 
-                                                        z=seek_z),
+                    self.waypoint_track(target=Vector3(x=self.target_local_position.x, 
+                                                       y=self.target_local_position.y,
+                                                       z=seek_z),
                                         velocity=self.seek_vel_lim,
                                         relative_position=False)
                     self.set_FSM_state("AMR_SEEK")
@@ -594,7 +601,6 @@ class DRONE_FSM(Node):
                     
             case "AMR_LOCK":
                 if not self.target_visible:
-                    self.target_lost = True
                     self.set_FSM_state("PRE_AMR_SEEK")
                 if (self.target_locked):
                     if (self.assert_land):
@@ -837,28 +843,30 @@ class DRONE_FSM(Node):
         response.success = True
         return response 
         
-    def _target_rate_check(self):
+    def target_rate_check(self):
         now = self.get_clock().now().nanoseconds * 1e-9
 
-        # Drop timestamps older than the time window (expiry)
-        cutoff = now - self._target_window
-        while self._target_times and self._target_times[0] < cutoff:
-            self._target_times.popleft()
-
-        n = len(self._target_times)
-
-        # Not enough *recent* samples -> treat as lost
-        if n < self._target_min_samples:
+        if self.last_detection_time is None or (now - self.last_detection_time) > self.detection_timeout:
+            self.target_times.clear()
             self.target_visible = False
             return
 
-        duration = self._target_times[-1] - self._target_times[0]
-        if duration <= 0.0:
+        cutoff = now - self.target_window
+        while self.target_times and self.target_times[0] < cutoff:
+            self.target_times.popleft()
+
+        n = len(self.target_times)
+        if n < self.target_min_samples:
             self.target_visible = False
             return
 
-        hz = n / duration
-        self.target_visible = hz >= self._target_min_hz
+        td = self.target_times[-1] - self.target_times[0]
+        if td <= 0.0:
+            self.target_visible = False
+            return
+
+        rate = (n - 1) / td
+        self.target_visible = rate >= self.target_min_hz
 
     ################################################################################################
     ### OFFBOARD CONTROL ###########################################################################
@@ -979,9 +987,8 @@ class DRONE_FSM(Node):
 
         self.amr_ang_tracking_offset = 0.
 
-        self._target_times.clear()
+        self.target_times.clear()
         self.target_visible = False
-        self.target_lost = False
 
     ################################################################################################
     ### LOCAL TARGETING ############################################################################
@@ -1030,7 +1037,7 @@ class DRONE_FSM(Node):
         # and on_target_velocity. Target locked also takes yaw into account.
 
         
-        if self.FSM_current_state is not "AMR_LOCK":
+        if self.FSM_current_state != "AMR_LOCK":
             target_radius = self.target_radius
             target_velocity = self.target_velocity_limit
         else:
@@ -1064,7 +1071,8 @@ class DRONE_FSM(Node):
 
         if isinstance(msg, AmrTarget):
             now = self.get_clock().now().nanoseconds * 1e-9
-            self._target_times.append(now)
+            self.last_detection_time = now
+            self.target_times.append(now)
 
         if self.FSM_current_state in {"CYCLE_UP", 
                                       "CYCLE_DOWN", 
@@ -1072,7 +1080,7 @@ class DRONE_FSM(Node):
                                       "AMR_ALT_RETURN", 
                                       "LAND_APPROACH",
                                       "ASSERT_LAND",
-                                      "LANDING",}:
+                                      "LANDING"}:
                                       
             # Modify targets on-the-fly...
             target_yaw = -msg.target_yaw
@@ -1186,7 +1194,6 @@ class DRONE_FSM(Node):
     def reset_timeout(self):
         self.vslam_reset_completed = True
         self.get_logger().warn("VSLAM Reset timeout occurred")
-        self.vslam_reset_completed = True
         self.vslam_reset()  # Retry after timeout
 
     def visual_slam_status_callback(self, msg):
@@ -1314,19 +1321,18 @@ class DRONE_FSM(Node):
 
     def goto_callback(self):
         if self.assert_offboard:  
-
             # Proportional velocity refinement
             H_prox = np.linalg.norm(np.array([abs(self.target_local_position.x - self.local_position.x),
                                               abs(self.target_local_position.y - self.local_position.y)]))
             V_prox = abs(self.target_local_position.z - self.local_position.z)
             A_prox = abs(self.target_local_yaw - self.local_yaw)
 
-            target_A_vel_lim = min((self.A_vel_proc_scalar * A_prox), 
-                                    self.target_ang_vel_lim)                    # deg/s
-            target_H_vel_lim = min((self.H_vel_prox_scalar * H_prox), 
-                                self.target_vel_lim)                            # m/s
-            target_V_vel_lim = min((self.V_vel_prox_scalar * V_prox), 
-                                self.target_vel_lim)                            # m/s
+            target_A_vel_lim = max(self.A_vel_min, min((self.A_vel_proc_scalar * A_prox), 
+                                    self.target_ang_vel_lim))                    # deg/s
+            target_H_vel_lim = max(self.H_vel_min, min((self.H_vel_prox_scalar * H_prox), 
+                                self.target_vel_lim))                            # m/s
+            target_V_vel_lim = max(self.V_vel_min, min((self.V_vel_prox_scalar * V_prox), 
+                                self.target_vel_lim))                            # m/s
 
 
             goto_msg = GotoSetpoint()
@@ -1417,9 +1423,15 @@ def main(args=None):
         cypher_cycle.destroy_node()
         rclpy.shutdown()
 
-def __del__(self):
-    self.camera_loop.call_soon_threadsafe(self.camera_loop.stop)
-    self.camera_thread.join()
+        # Only stop/join if active
+        if cypher_cycle.camera_loop.is_running():
+            cypher_cycle.camera_loop.call_soon_threadsafe(
+                cypher_cycle.camera_loop.stop
+            )
+
+        if cypher_cycle.camera_thread.is_alive():
+            cypher_cycle.camera_thread.join()
+
 
 if __name__ == '__main__':
     main()

@@ -241,7 +241,6 @@ colcon build --symlink-install --base-paths ${LOCAL_WS}/src
 
 # ========== DOCKER INSTALL / ENABLE / REBOOT ==========
 if [[ "$setup_type" == "New Setup" ]]; then
-    
     echo "Installing and configuring Docker..."
     curl https://get.docker.com | sh -s -- --version 27.5.1
     sudo systemctl --now enable docker
