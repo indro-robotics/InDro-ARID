@@ -2,6 +2,17 @@
 
 set -euo pipefail
 
+PS4='+ ${BASH_SOURCE}:${LINENO}:${FUNCNAME[0]:-main}: '
+
+failure() {
+  local exit_code=$?
+  local line=$1
+  echo "Error: command failed at ${BASH_SOURCE[0]}:${line}: '${BASH_COMMAND}' (exit: ${exit_code})" >&2
+  exit "$exit_code"
+}
+
+trap 'failure ${LINENO}' ERR
+
 USERNAME="jetson"
 BASHRC_FILE=${HOME}/.bashrc
 EXPORT_DISPLAY="export DISPLAY=:1001"
@@ -13,6 +24,7 @@ EXPORT_LOCAL_WS="export LOCAL_WS=${LOCAL_WS}"
 SOURCE_LOCAL_WS="source ${LOCAL_WS}/install/setup.bash"
 ISAAC_ROS_WS="${WORKSPACES}/isaac_ros-dev"
 EXPORT_ISAAC_WS="export ISAAC_ROS_WS=${ISAAC_ROS_WS}"
+PX4_DIR="${LOCAL_WS}/auxiliary/PX4-Autopilot"
 ISAAC_RUN_ALIAS='alias run_isaac="/bin/bash $ISAAC_ROS_WS/container_scripts/run_isaac_docker.sh"'
 ISAAC_BUILD_ALIAS='alias build_isaac="/bin/bash $ISAAC_ROS_WS/container_scripts/build_isaac_docker.sh"'
 ISAAC_START_ALIAS='alias start_isaac="/bin/bash $ISAAC_ROS_WS/container_scripts/start_isaac_docker.sh"'
@@ -55,6 +67,36 @@ select setup_type in "New Setup" "Patch"; do
             ;;
     esac
 done
+
+
+
+if [ -d "${PX4_DIR}" ]; then
+    while true; do
+        read -r -p "Install PX4 build dependencies? (y/n)" px4_setup
+        case "$px4_setup" in
+            [yY] )
+                echo "Running PX4 Tools/setup/ubuntu.sh..."
+                (   
+                    sudo apt install -y gdb-multiarch
+                    cd "${PX4_DIR}/Tools/setup"
+                    bash ubuntu.sh </dev/null
+                )
+                echo "PX4 build dependencies installation complete."
+                break
+                ;;
+            [nN] )
+                echo "Skipping PX4 build dependencies installation."
+                break
+                ;;
+            * )
+                echo "choose y/n."
+                ;;
+        esac
+    done
+else
+    echo "PX4-Autopilot not found at ${PX4_DIR}, skipping PX4 setup."
+fi
+
 
 
 # Cache credentials in memory for 7 days
@@ -114,7 +156,6 @@ append_if_not_exists "$ROSDEP_ALIAS"
 append_if_not_exists "$COLCON_ALIAS"
 append_if_not_exists "$CLEAN_ALIAS"
 
-# Reload shell config for aliases / exports
 if [ -f "${BASHRC_FILE}" ]; then
     source "${BASHRC_FILE}"
 fi
@@ -195,7 +236,7 @@ sudo usermod -aG dialout,gpio ${USERNAME}
 # Create polkit rule
 echo "Creating Polkit rule..."
 sudo tee "$POLKIT_RULE_FILE" > /dev/null <<EOL
-polkit.addRule(function(action, subject) {
+polkit.addRule(function(action, subject) {RAV4
     if (action.id == "org.freedesktop.systemd1.manage-units" &&
         action.lookup("unit") == "reset_usb.service" &&
         subject.user == "$USERNAME") {
@@ -227,10 +268,17 @@ sudo systemctl daemon-reload
 # ========== START ROS2 / COLCON / DEPENDENCIES FOR LOCAL_WS ==========
 sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg
 sudo apt update
-python3 -m pip install websockets==15.0.1 pyudev==0.24.3 pyserial==3.5 colcon-clean==0.2.1
+
+python3 -m pip install \
+  "websockets==15.0.1" \
+  "pyudev==0.24.3" \
+  "pyserial==3.5" \
+  "colcon-clean==0.2.1" \
+  "empy<4" \
+  --force-reinstall --no-deps
 
 cd ${LOCAL_WS}
-sudo rosdep init
+sudo rosdep init || true
 rosdep update
 
 rosdep install --from-paths ${LOCAL_WS}/src/ --ignore-src -y
@@ -238,30 +286,30 @@ colcon build --symlink-install --base-paths ${LOCAL_WS}/src
 # ========== END ROS2 / COLCON / DEPENDENCIES FOR LOCAL_WS ==========
 
 
-
 # ========== DOCKER INSTALL / ENABLE / REBOOT ==========
 if [[ "$setup_type" == "New Setup" ]]; then
     echo "Installing and configuring Docker..."
-    curl https://get.docker.com | sh -s -- --version 27.5.1
-    sudo systemctl --now enable docker
-    sudo nvidia-ctk runtime configure --runtime=docker
-    sudo systemctl restart docker
-    sudo usermod -aG docker "$USER"
-    newgrp docker
-    sudo systemctl daemon-reload
-    sudo systemctl restart docker
-    sudo apt-get update
-    sudo apt-get install -y ca-certificates curl gnupg
-    sudo install -m 0755 -d /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
-        | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-    sudo chmod a+r /etc/apt/keyrings/docker.gpg
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
-    $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
-    sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-    sudo apt-get update
-    sudo apt install -y docker-buildx-plugin
-    sudo systemctl restart docker
+    (
+        curl https://get.docker.com | sh -s -- --version 27.5.1
+        sudo systemctl --now enable docker
+        sudo nvidia-ctk runtime configure --runtime=docker
+        sudo systemctl restart docker
+        sudo usermod -aG docker "$USER"
+        newgrp docker
+        sudo systemctl daemon-reload
+        sudo systemctl restart docker
+        sudo apt-get update
+        sudo apt-get install -y ca-certificates curl gnupg
+        sudo install -m 0755 -d /etc/apt/keyrings
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+            | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+        sudo chmod a+r /etc/apt/keyrings/docker.gpg
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+        $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+        sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+        sudo apt-get update
+        sudo apt install -y docker-buildx-plugin
+    )
     echo "Setup complete. Rebooting system..."
 else
     echo "Patch complete. Re-applying Docker enables if Docker is installed..."
