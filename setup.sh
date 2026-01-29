@@ -15,7 +15,6 @@ trap 'failure ${LINENO}' ERR
 
 USERNAME="jetson"
 BASHRC_FILE=${HOME}/.bashrc
-EXPORT_DISPLAY="export DISPLAY=:1001"
 EXPORT_ROS_DOMAIN_ID="export ROS_DOMAIN_ID=23"
 WORKSPACES="${HOME}/workspaces/"
 EXPORT_WORKSPACES="export WORKSPACES=${WORKSPACES}"
@@ -35,7 +34,16 @@ RESET_USB_ALIAS='alias reset_usb="/bin/bash $WORKSPACES/scripts/usb_reset.sh"'
 ROSDEP_ALIAS="alias rosdep_local='rosdep install --from-paths \${LOCAL_WS}/src/ --ignore-src -y'"
 COLCON_ALIAS="alias colcon_local='cd \${LOCAL_WS} && colcon build --symlink-install --base-paths src && source ./install/setup.bash'"
 CLEAN_ALIAS="alias clean_local='cd \${LOCAL_WS} && colcon clean workspace --base-select build install log'"
+EXPORT_X11_LOCAL='xhost +local: >/dev/null 2>&1 || true'
 
+
+EXPORT_DISPLAY='if [ -d /tmp/.X11-unix ]; then
+    sock=$(ls /tmp/.X11-unix/X* 2>/dev/null | head -n1)
+    if [ -n "$sock" ]; then
+        num=${sock##*/X}
+        export DISPLAY=":${num}"
+    fi
+fi'
 
 SUDOERS_FILE="/etc/sudoers.d/${USERNAME}_systemctl"
 SUDOERS_LINE="$USERNAME ALL=(ALL) NOPASSWD: \
@@ -141,6 +149,7 @@ append_if_not_exists() {
 }
 
 append_if_not_exists "$EXPORT_DISPLAY"
+append_if_not_exists "$EXPORT_X11_LOCAL"
 append_if_not_exists "$EXPORT_ISAAC_WS"
 append_if_not_exists "$ISAAC_BUILD_ALIAS"
 append_if_not_exists "$ISAAC_RUN_ALIAS"
