@@ -77,9 +77,8 @@ if [ -d "${PX4_DIR}" ]; then
             [yY] )
                 echo "Running PX4 Tools/setup/ubuntu.sh..."
                 (   
-                    sudo apt install -y gdb-multiarch
                     cd "${PX4_DIR}/Tools/setup"
-                    bash ubuntu.sh </dev/null
+                    bash ubuntu.sh #</dev/null
                 )
                 echo "PX4 build dependencies installation complete."
                 break
