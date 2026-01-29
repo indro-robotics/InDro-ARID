@@ -3,7 +3,6 @@ import launch
 from launch.actions import LogInfo
 from launch_ros.actions import Node
 from launch.actions import DeclareLaunchArgument
-from launch.actions import DeclareLaunchArgument
 from launch_ros.descriptions import ComposableNode
 from launch.actions import IncludeLaunchDescription
 from launch.substitutions import LaunchConfiguration

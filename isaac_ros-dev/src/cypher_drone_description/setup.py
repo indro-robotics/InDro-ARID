@@ -35,7 +35,10 @@ setup(
     name=package_name,
     version='0.0.0',
     packages=[package_name],
-    data_files=package_files(data_files, ['models/','launch/', 'rviz/']),
+    data_files=package_files(
+        data_files,
+        ['models/', 'launch/', 'rviz/', 'urdf/']  # <-- added 'urdf/'
+    ),
     install_requires=['setuptools'],
     zip_safe=True,
     maintainer='liam',

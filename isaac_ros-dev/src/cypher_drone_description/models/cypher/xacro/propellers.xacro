@@ -1,44 +1,49 @@
-<?xml version="1.0"?>
+<?xml version="3.0"?>
+<robot name="Cypher_Drone_V3" xmlns:xacro="http://wiki.ros.org/xacro">
 
-<robot name="cypher_drone_v1-0" xmlns:xacro="http://wiki.ros.org/xacro">
-    <xacro:macro
-        name="propellers"
-        params="
-        name
-        parent
-        fb_reflect
-        lr_reflect
-        prop_force_offset
-        prop_housing_radius
-        prop_housing_height
-        prop_housing_center_offset
-        ">
-        <link name="${name}_propeller_link">
-            <visual>
-                <origin xyz="0 0 ${prop_force_offset}" rpy="0 0 0"/>
-                <geometry>
-                    <cylinder radius="${prop_housing_radius}" length="${prop_housing_height}" />
-                </geometry>
-                <material name="${name}_propeller-material" >
-                    <color rgba="0.107 0.003676 0.2747 1" />
-                </material>
-            </visual>
-            <collision>
-                <origin xyz="0 0 0.0091" rpy="0 0 0"/>
-                <geometry>
-                    <cylinder radius="${prop_housing_radius}" length="${prop_housing_height}" />
-                </geometry>
-            </collision>
-            <inertial>
-                <origin xyz="0 0 0.0091" rpy="0 0 0" />
-                <mass value="0.1" />
-                <inertia ixx="0.033333333" ixy="0" ixz="0" iyy="0.05" iyz="0" izz="0.033333333" />
-            </inertial>
-        </link>
-        <joint name="${parent}_to_${name}_propeller_link" type="fixed">
-            <parent link="${parent}"/>
-            <child link="${name}_propeller_link" />
-            <origin xyz="${fb_reflect * prop_housing_center_offset} ${lr_reflect * prop_housing_center_offset} 0" rpy="0 0 0" />
-        </joint>
-    </xacro:macro>
+  <xacro:macro
+      name="propellers"
+      params="
+      name
+      parent
+      fb_reflect
+      lr_reflect
+      prop_force_offset
+      prop_housing_radius
+      prop_housing_height
+      prop_housing_center_offset
+      ">
+    <link name="${name}_propeller_link">
+      <visual>
+        <origin xyz="0 0 ${prop_force_offset}" rpy="0 0 0"/>
+        <geometry>
+          <cylinder radius="${prop_housing_radius}" length="${prop_housing_height}"/>
+        </geometry>
+        <material name="${name}_propeller-material">
+          <color rgba="0.107 0.003676 0.2747 1"/>
+        </material>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0.0091" rpy="0 0 0"/>
+        <geometry>
+          <cylinder radius="${prop_housing_radius}" length="${prop_housing_height}"/>
+        </geometry>
+      </collision>
+      <inertial>
+        <origin xyz="0 0 0.0091" rpy="0 0 0"/>
+        <mass value="0.1"/>
+        <inertia
+          ixx="0.033333333" ixy="0" ixz="0"
+          iyy="0.05"       iyz="0"
+          izz="0.033333333"/>
+      </inertial>
+    </link>
+
+    <joint name="${parent}_to_${name}_propeller_link" type="fixed">
+      <parent link="${parent}"/>
+      <child  link="${name}_propeller_link"/>
+      <origin xyz="${fb_reflect * prop_housing_center_offset} ${lr_reflect * prop_housing_center_offset} 0" rpy="0 0 0"/>
+    </joint>
+  </xacro:macro>
+
 </robot>

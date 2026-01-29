@@ -1,16 +1,13 @@
-<?xml version="2.99"?>
-<robot xmlns:xacro="http://wiki.ros.org/xacro" name="cypher_drone_v2_99">
+<?xml version="3.0"?>
+<robot xmlns:xacro="http://wiki.ros.org/xacro" name="Cypher_Drone_V3">
 
-  <!-- Include submodules -->
-  <xacro:include filename="$(find cypher_description)/urdf/propellers.xacro"/>
-  <xacro:include filename="$(find cypher_description)/urdf/cameras.xacro"/>
+  <xacro:include filename="$(find cypher_drone_description)/models/cypher/xacro/propellers.xacro"/>
+  <xacro:include filename="$(find cypher_drone_description)/models/cypher/xacro/cameras.xacro"/>
 
-  <!-- Basic body -->
   <link name="base_link">
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <!-- Simple body -->
         <box size="0.25 0.25 0.05"/>
       </geometry>
       <material name="body_material">
@@ -33,7 +30,6 @@
     </inertial>
   </link>
 
-  <!-- FMU/IMU frame -->
   <link name="imu_link"/>
   <joint name="base_link_to_imu" type="fixed">
     <parent link="base_link"/>
@@ -41,13 +37,11 @@
     <origin xyz="0.042523 0.031 0.0735" rpy="0 0 0"/>
   </joint>
 
-  <!-- Propeller parameters -->
   <xacro:property name="prop_force_offset"          value="0.0"/>
   <xacro:property name="prop_housing_radius"        value="0.07"/>
   <xacro:property name="prop_housing_height"        value="0.02"/>
   <xacro:property name="prop_housing_center_offset" value="0.15"/>
 
-  <!-- Front-left propeller -->
   <xacro:propellers
       name="front_left"
       parent="base_link"
@@ -58,7 +52,6 @@
       prop_housing_height="${prop_housing_height}"
       prop_housing_center_offset="${prop_housing_center_offset}"/>
 
-  <!-- Front-right propeller -->
   <xacro:propellers
       name="front_right"
       parent="base_link"
@@ -69,7 +62,6 @@
       prop_housing_height="${prop_housing_height}"
       prop_housing_center_offset="${prop_housing_center_offset}"/>
 
-  <!-- Rear-left propeller -->
   <xacro:propellers
       name="rear_left"
       parent="base_link"
@@ -80,7 +72,6 @@
       prop_housing_height="${prop_housing_height}"
       prop_housing_center_offset="${prop_housing_center_offset}"/>
 
-  <!-- Rear-right propeller -->
   <xacro:propellers
       name="rear_right"
       parent="base_link"
@@ -91,7 +82,6 @@
       prop_housing_height="${prop_housing_height}"
       prop_housing_center_offset="${prop_housing_center_offset}"/>
 
-  <!-- Cameras + rangefinder block, all relative to base_link -->
   <xacro:cypher_cameras_block parent="base_link"/>
 
 </robot>
