@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Change to the root directory of the git repository (one level up from scripts)
-cd "$ISAAC_ROS_WS/.." || exit
+cd "$ISAAC_ROS_WS" || exit
 
 # Update all submodules to their specified branches
 git submodule foreach 'git checkout $(git config -f $toplevel/.gitmodules submodule.$name.branch || echo master)'
