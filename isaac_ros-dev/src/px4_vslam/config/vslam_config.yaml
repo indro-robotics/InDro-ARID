@@ -14,7 +14,7 @@ left_realsense/left_realsense_link:
     enable_gyro: false
     enable_accel: false
     initial_reset: true
-    serial_no: "254122304595"               # left RS serial number (no leading underscore)
+    serial_no: "254122302810"               # left RS serial number (no leading underscore)
     camera_name: "left_realsense"
     use_intra_process_comms: true
 
@@ -34,7 +34,7 @@ front_realsense/front_realsense_link:
     enable_gyro: false
     enable_accel: false
     initial_reset: true
-    serial_no: "254122304021"               # front RS serial number (no leading underscore)
+    serial_no: "254122304595"               # front RS serial number (no leading underscore)
     camera_name: "front_realsense"
     use_intra_process_comms: true
 
@@ -54,7 +54,7 @@ right_realsense/right_realsense_link:
     enable_gyro: false
     enable_accel: false
     initial_reset: true
-    serial_no: "254122302810"               # right RS serial number (no leading underscore)
+    serial_no: "254122304021"               # right RS serial number (no leading underscore)
     camera_name: "right_realsense"
     use_intra_process_comms: true
 

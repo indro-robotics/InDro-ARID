@@ -47,7 +47,8 @@ class vslam_reactor(Node):
         self.displacement_delta = 0.25                      # meters tolerance
 
         self.fmu_lockout = False
-        
+        self.R_FRD_TO_FLU = R.from_euler('x', np.pi)
+
         ### TF BUFFERING ###########################################################################
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -203,12 +204,10 @@ class vslam_reactor(Node):
         # publish drone posestamped
         self.pub_drone_pose_.publish(drone_pose_msg)
 
-
     def fmu_lockout_callback(self, msg):
         self.fmu_lockout = msg.data
         self.ev_fusion_started = False
         self.init_flag = True
-
 
     # Potentially switch to message_filters.ApproximateTimeSynchronizer to trigger main odom callback
     def sync_msg(self, target_time: rclpy.time.Time, target_msg_cache: message_filters.Cache):
@@ -264,10 +263,11 @@ class vslam_reactor(Node):
                         -pos_frd[1],
                         -pos_frd[2]])
 
-
     def quat_frd_to_flu(self, q_frd):
-        return [float(q_frd[0]), float(-q_frd[1]), float(-q_frd[2]), float(q_frd[3])]
-    
+        R_body_world_frd = R.from_quat(q_frd)
+        R_body_world_flu = self.R_FRD_TO_FLU * R_body_world_frd * self.R_FRD_TO_FLU.inv()
+        q_flu = R_body_world_flu.as_quat()
+        return [float(q_flu[0]), float(q_flu[1]), float(q_flu[2]), float(q_flu[3])]
 
     def est_status_callback(self, msg):
         if not self.ev_fusion_started:
