@@ -141,6 +141,11 @@ sudo cp -f "${ISAAC_ROS_WS}/container_scripts/workspace-entrypoint.sh" \
 
 # ========== START BASHRC ALIASES (ISAAC + LOCAL) ==========
 echo "Adding aliases..."
+
+if ! grep -qF 'export DISPLAY=' "$BASHRC_FILE"; then
+    echo "$EXPORT_DISPLAY" >> "$BASHRC_FILE"
+fi
+
 append_if_not_exists() {
     local line="$1"
     if ! grep -qF "$line" "$BASHRC_FILE"; then
@@ -148,7 +153,6 @@ append_if_not_exists() {
     fi
 }
 
-append_if_not_exists "$EXPORT_DISPLAY"
 append_if_not_exists "$EXPORT_X11_LOCAL"
 append_if_not_exists "$EXPORT_ISAAC_WS"
 append_if_not_exists "$ISAAC_BUILD_ALIAS"
@@ -163,6 +167,7 @@ append_if_not_exists "$RESET_USB_ALIAS"
 append_if_not_exists "$ROSDEP_ALIAS"
 append_if_not_exists "$COLCON_ALIAS"
 append_if_not_exists "$CLEAN_ALIAS"
+
 
 if [ -f "${BASHRC_FILE}" ]; then
     source "${BASHRC_FILE}"
