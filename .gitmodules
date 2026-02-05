@@ -19,15 +19,15 @@
 [submodule "isaac_ros-dev/src/isaac_ros_common"]
 	path = isaac_ros-dev/src/isaac_ros_common
 	url = https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_common.git
-	branch = release-3.1
+	branch = release-3.2
 [submodule "isaac_ros-dev/src/isaac_ros_visual_slam"]
 	path = isaac_ros-dev/src/isaac_ros_visual_slam
 	url = https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_visual_slam.git
-	branch = release-3.1
+	branch = release-3.2
 [submodule "isaac_ros-dev/src/isaac_ros_nitros"]
 	path = isaac_ros-dev/src/isaac_ros_nitros
 	url = https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_nitros.git
-	branch = release-3.1
+	branch = release-3.2
 [submodule "isaac_ros-dev/src/foxglove-sdk"]
 	path = isaac_ros-dev/src/foxglove-sdk
 	url = https://github.com/foxglove/foxglove-sdk.git
@@ -44,3 +44,11 @@
 	path = isaac_ros-dev/src/px4_msgs
 	url = https://github.com/PX4/px4_msgs.git
 	branch = release/1.15
+[submodule "isaac_ros-dev/src/isaac_ros_apriltag"]
+	path = isaac_ros-dev/src/isaac_ros_apriltag
+	url = https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_apriltag.git
+	branch = release-3.2
+[submodule "isaac_ros-dev/src/isaac_ros_argus_camera"]
+	path = isaac_ros-dev/src/isaac_ros_argus_camera
+	url = https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_argus_camera.git
+	branch = release-3.2
