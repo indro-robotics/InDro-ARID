@@ -63,7 +63,17 @@ cd "$REPO_ROOT" || exit
 # set power mode
 sudo /usr/sbin/nvpmodel -m 0
 
+sudo apt-mark hold \
+  nvidia-l4t-core \
+  linux-firmware \
+  nvidia-l4t-kernel \
+  nvidia-l4t-kernel-dtbs \
+  nvidia-l4t-firmware \
+  nvidia-l4t-kernel-headers \
+  nvidia-l4t-kernel-oot-headers \
+  wireless-regdb
 
+  
 echo "Select setup type:"
 select setup_type in "New Setup" "Patch"; do
     case $setup_type in
@@ -118,6 +128,13 @@ find ${WORKSPACES}/scripts -type f \( -name "*.bash" -o -name "*.sh" \) -exec ch
 find ${ISAAC_ROS_WS}/container_scripts -type f \( -name "*.bash" -o -name "*.sh" \) -exec chmod +x {} \;
 
 
+echo "Update/checkout submodules..."
+"${WORKSPACES}/scripts/update_isaac_submods.sh"
+
+# Ensure no changes to config folders (update apriltag and camera calibration paths)
+git update-index --assume-unchanged ${ISAAC_ROS_WS}/src/px4_vslam/config/
+
+
 # Copy custom docker-config files
 echo "Patching dockerfiles..."
 sudo cp -f "${ISAAC_ROS_WS}/docker_resources/patched_dockerfiles/.isaac_ros_common-config" \
@@ -128,16 +145,14 @@ sudo cp -f "${ISAAC_ROS_WS}/docker_resources/patched_dockerfiles/Dockerfile.aarc
     "${ISAAC_ROS_WS}/src/isaac_ros_common/docker/"
 
 
-# Copy patched run_dev.sh script to keep persistent docker container
-sudo cp -f "${ISAAC_ROS_WS}/container_scripts/run_dev.sh" \
-    "${ISAAC_ROS_WS}/src/isaac_ros_common/scripts/"
+# # Copy patched run_dev.sh script to keep persistent docker container
+# sudo cp -f "${ISAAC_ROS_WS}/container_scripts/run_dev.sh" \
+#     "${ISAAC_ROS_WS}/src/isaac_ros_common/scripts/"
 
 
 # Copy patched workspace-entrypoint.sh script to stop crashing on container start
-sudo cp -f "${ISAAC_ROS_WS}/container_scripts/workspace-entrypoint.sh" \
-    "${ISAAC_ROS_WS}/src/isaac_ros_common/docker/scripts/"
-
-
+sudo cp -f "${ISAAC_ROS_WS}/container_scripts/additional_entry.sh" \
+    "${ISAAC_ROS_WS}/src/isaac_ros_common/docker/scripts/entrypoint_additions"
 
 # ========== START BASHRC ALIASES (ISAAC + LOCAL) ==========
 echo "Adding aliases..."
@@ -176,14 +191,6 @@ fi
 
 
 
-echo "Update/checkout submodules..."
-"${WORKSPACES}/scripts/update_isaac_submods.sh"
-
-# Ensure no changes to config folders (update apriltag and camera calibration paths)
-git update-index --assume-unchanged ${ISAAC_ROS_WS}/src/px4_vslam/config/
-
-
-
 # ========== START SUDOER RULES ==========
 if sudo grep -Fxq "$SUDOERS_LINE" "$SUDOERS_FILE" 2>/dev/null; then
     echo "Rule already present in $SUDOERS_FILE"
@@ -195,14 +202,12 @@ fi
 # ========== END SUDOER RULES ==========
 
 
-
+# For previous jetpack, evaluate necessity
 # ========== START CRITICAL L4T COMPATIBILITY ==========
-echo "Synchronizing L4T firmware + core..."
-    sudo apt update && sudo apt install --allow-downgrades --reinstall \
-      nvidia-l4t-firmware=36.3.0-20240719161631 \
-      nvidia-l4t-core=36.3.0-20240719161631
-
-sudo apt-mark hold nvidia-l4t-firmware nvidia-l4t-core
+# echo "Synchronizing L4T firmware + core..."
+#     sudo apt update && sudo apt install --allow-downgrades --reinstall \
+#       nvidia-l4t-firmware=36.3.0-20240719161631 \
+#       nvidia-l4t-core=36.3.0-20240719161631
 # ========== END CRITICAL L4T COMPATIBILITY ==========
 
 
