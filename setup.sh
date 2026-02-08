@@ -16,7 +16,7 @@ trap 'failure ${LINENO}' ERR
 USERNAME="jetson"
 BASHRC_FILE=${HOME}/.bashrc
 EXPORT_ROS_DOMAIN_ID="export ROS_DOMAIN_ID=23"
-WORKSPACES="${HOME}/workspaces/"
+WORKSPACES="${HOME}/workspaces"
 EXPORT_WORKSPACES="export WORKSPACES=${WORKSPACES}"
 LOCAL_WS="${WORKSPACES}/local_ws"
 EXPORT_LOCAL_WS="export LOCAL_WS=${LOCAL_WS}"
@@ -35,7 +35,8 @@ ROSDEP_ALIAS="alias rosdep_local='rosdep install --from-paths \${LOCAL_WS}/src/ 
 COLCON_ALIAS="alias colcon_local='cd \${LOCAL_WS} && colcon build --symlink-install --base-paths src && source ./install/setup.bash'"
 CLEAN_ALIAS="alias clean_local='cd \${LOCAL_WS} && colcon clean workspace --base-select build install log'"
 EXPORT_X11_LOCAL='xhost +local: >/dev/null 2>&1 || true'
-
+ADD_ENTRY_DIR="${ISAAC_ROS_WS}/src/isaac_ros_common/docker/scripts/entrypoint_additions"
+ADD_ENTRY_FILE="${ADD_ENTRY_DIR}/additional_entry.user.sh"
 
 EXPORT_DISPLAY='if [ -d /tmp/.X11-unix ]; then
     sock=$(ls /tmp/.X11-unix/X* 2>/dev/null | head -n1)
@@ -145,14 +146,15 @@ sudo cp -f "${ISAAC_ROS_WS}/docker_resources/patched_dockerfiles/Dockerfile.aarc
     "${ISAAC_ROS_WS}/src/isaac_ros_common/docker/"
 
 
-# # Copy patched run_dev.sh script to keep persistent docker container
-# sudo cp -f "${ISAAC_ROS_WS}/container_scripts/run_dev.sh" \
-#     "${ISAAC_ROS_WS}/src/isaac_ros_common/scripts/"
+# Copy patched run_dev.sh script to keep persistent docker container
+sudo cp -f "${ISAAC_ROS_WS}/container_scripts/run_dev.sh" \
+    "${ISAAC_ROS_WS}/src/isaac_ros_common/scripts/"
 
 
 # Copy patched workspace-entrypoint.sh script to stop crashing on container start
-sudo cp -f "${ISAAC_ROS_WS}/container_scripts/additional_entry.sh" \
-    "${ISAAC_ROS_WS}/src/isaac_ros_common/docker/scripts/entrypoint_additions"
+sudo mkdir -p "$ADD_ENTRY_DIR"
+sudo cp -f "${ISAAC_ROS_WS}/container_scripts/additional_entry.sh" "$ADD_ENTRY_FILE"
+sudo chmod +x "$ADD_ENTRY_FILE"
 
 # ========== START BASHRC ALIASES (ISAAC + LOCAL) ==========
 echo "Adding aliases..."
