@@ -22,5 +22,5 @@ RUN apt-get update && apt-get install -y \
     ros-humble-apriltag-msgs
 
 # Python dependencies
-# pip3 install -U jetson-stats
-RUN pip3 install --ignore-installed transforms3d
+RUN pip3 install -U jetson-stats && \
+    pip3 install --ignore-installed transforms3d

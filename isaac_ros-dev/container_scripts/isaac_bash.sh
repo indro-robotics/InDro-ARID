@@ -3,6 +3,7 @@ num=${sock##*/X}
 DISPLAY=":${num}"
 
 docker exec -it \
+  -u admin \
   -e DISPLAY="$DISPLAY" \
   isaac_ros_dev-aarch64-container \
   /bin/bash -c "source ~/.bashrc && exec /bin/bash"
