@@ -140,10 +140,10 @@ git update-index --assume-unchanged ${ISAAC_ROS_WS}/src/px4_vslam/config/
 echo "Patching dockerfiles..."
 sudo cp -f "${ISAAC_ROS_WS}/docker_resources/patched_dockerfiles/.isaac_ros_common-config" \
     "${ISAAC_ROS_WS}/src/isaac_ros_common/scripts/"
-sudo cp -f "${ISAAC_ROS_WS}/docker_resources/patched_dockerfiles/Dockerfile.ros2_humble" \
-    "${ISAAC_ROS_WS}/src/isaac_ros_common/docker/"
-sudo cp -f "${ISAAC_ROS_WS}/docker_resources/patched_dockerfiles/Dockerfile.aarch64" \
-    "${ISAAC_ROS_WS}/src/isaac_ros_common/docker/"
+# sudo cp -f "${ISAAC_ROS_WS}/docker_resources/patched_dockerfiles/Dockerfile.ros2_humble" \
+#     "${ISAAC_ROS_WS}/src/isaac_ros_common/docker/"
+# sudo cp -f "${ISAAC_ROS_WS}/docker_resources/patched_dockerfiles/Dockerfile.aarch64" \
+#     "${ISAAC_ROS_WS}/src/isaac_ros_common/docker/"
 
 
 # Copy patched run_dev.sh script to keep persistent docker container
