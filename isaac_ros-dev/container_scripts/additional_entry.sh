@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# Set ROS domain for this container/session
+export ROS_DOMAIN_ID=23
+
 # Source setup so we can ros2 immediately
 source install/setup.bash
 
