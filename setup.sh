@@ -74,7 +74,7 @@ sudo apt-mark hold \
   nvidia-l4t-kernel-oot-headers \
   wireless-regdb
 
-  
+
 echo "Select setup type:"
 select setup_type in "New Setup" "Patch"; do
     case $setup_type in
@@ -308,11 +308,28 @@ colcon build --symlink-install --base-paths ${LOCAL_WS}/src
 # ========== END ROS2 / COLCON / DEPENDENCIES FOR LOCAL_WS ==========
 
 
+
+
+sudo nvidia-ctk cdi generate --mode=csv --output=/etc/cdi/nvidia.yaml
+
+# Add Jetson public APT repository
+sudo apt-get update
+sudo apt-get install software-properties-common
+sudo apt-key adv --fetch-key https://repo.download.nvidia.com/jetson/jetson-ota-public.asc
+sudo add-apt-repository 'deb https://repo.download.nvidia.com/jetson/common r36.4 main'
+sudo apt-get update
+sudo apt-get install -y pva-allow-2
+
+
+
 # ========== DOCKER INSTALL / ENABLE / REBOOT ==========
 if [[ "$setup_type" == "New Setup" ]]; then
     echo "Installing and configuring Docker..."
     (
-        curl https://get.docker.com | sh -s -- --version 27.5.1
+        if ! command -v docker >/dev/null 2>&1; then
+            curl https://get.docker.com | sh -s -- --version 27.5.1
+        fi
+        
         sudo systemctl --now enable docker
         sudo nvidia-ctk runtime configure --runtime=docker
         sudo systemctl restart docker
