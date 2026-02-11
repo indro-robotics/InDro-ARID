@@ -3,8 +3,10 @@
 # Set ROS domain for this container/session
 export ROS_DOMAIN_ID=23
 
-# Source setup so we can ros2 immediately
-source install/setup.bash
+# Source setup so we can ros2 immediately (only if it exists)
+if [ -f install/setup.bash ]; then
+  source install/setup.bash
+fi
 
 # Append aliases to the per-user .bashrc
 BASHRC="/home/${USERNAME}/.bashrc"
@@ -28,5 +30,3 @@ alias state_machine='ros2 launch px4_state_machine px4_state_machine.launch.py'
 alias foxglove_bridge='ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765'
 EOF
 fi
-
-$@
