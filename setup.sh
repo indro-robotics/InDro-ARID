@@ -206,15 +206,6 @@ fi
 # ========== END SUDOER RULES ==========
 
 
-# For previous jetpack, evaluate necessity
-# ========== START CRITICAL L4T COMPATIBILITY ==========
-# echo "Synchronizing L4T firmware + core..."
-#     sudo apt update && sudo apt install --allow-downgrades --reinstall \
-#       nvidia-l4t-firmware=36.3.0-20240719161631 \
-#       nvidia-l4t-core=36.3.0-20240719161631
-# ========== END CRITICAL L4T COMPATIBILITY ==========
-
-
 
 # ========== START CRITICAL USB CNTL ==========
 # Install dependencies for USB control
@@ -309,10 +300,8 @@ colcon build --symlink-install --base-paths ${LOCAL_WS}/src
 
 
 
-
+# ========== PVA ==========
 sudo nvidia-ctk cdi generate --mode=csv --output=/etc/cdi/nvidia.yaml
-
-# Add Jetson public APT repository
 sudo apt-get update
 sudo apt-get install software-properties-common
 sudo apt-key adv --fetch-key https://repo.download.nvidia.com/jetson/jetson-ota-public.asc
@@ -327,7 +316,7 @@ if [[ "$setup_type" == "New Setup" ]]; then
     echo "Installing and configuring Docker..."
     (
         if ! command -v docker >/dev/null 2>&1; then
-            curl https://get.docker.com | sh -s -- --version 27.5.1
+            curl https://get.docker.com | sh -s -- --version 29.2.1
         fi
         
         sudo systemctl --now enable docker

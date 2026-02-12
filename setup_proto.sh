@@ -57,7 +57,8 @@ if [ ! -f /usr/share/keyrings/ros-archive-keyring.gpg ]; then
     -o /usr/share/keyrings/ros-archive-keyring.gpg
 fi
 
-# Jetson public repo
+# PVA
+sudo nvidia-ctk cdi generate --mode=csv --output=/etc/cdi/nvidia.yaml
 if ! grep -q "repo.download.nvidia.com/jetson/common" /etc/apt/sources.list.d/nvidia-l4t-apt-source.list 2>/dev/null; then
   sudo apt-key adv --fetch-key https://repo.download.nvidia.com/jetson/jetson-ota-public.asc
   echo "deb https://repo.download.nvidia.com/jetson/common r36.4 main" \
@@ -296,13 +297,11 @@ colcon build --symlink-install --base-paths "${LOCAL_WS}/src"
 ###############################################################################
 # NVIDIA CDI + DOCKER ENGINE + BUILDX
 ###############################################################################
-sudo nvidia-ctk cdi generate --mode=csv --output=/etc/cdi/nvidia.yaml
-
 if [[ "$setup_type" == "New Setup" ]]; then
   echo "Installing and configuring Docker..."
   (
     if ! command -v docker >/dev/null 2>&1; then
-      curl https://get.docker.com | sh -s -- --version 27.5.1
+      curl https://get.docker.com | sh -s -- --version 29.2.1
     fi
 
     sudo systemctl --now enable docker
