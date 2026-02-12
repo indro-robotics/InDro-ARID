@@ -142,9 +142,7 @@ sudo cp -f "${ISAAC_ROS_WS}/docker_resources/patched_dockerfiles/.isaac_ros_comm
     "${ISAAC_ROS_WS}/src/isaac_ros_common/scripts/"
     
 sudo cp -f \
-  "${ISAAC_ROS_WS}/docker_resources/dockerfiles/Dockerfile.user" \
   "${ISAAC_ROS_WS}/docker_resources/dockerfiles/Dockerfile.cypher" \
-  "${ISAAC_ROS_WS}/docker_resources/dockerfiles/Dockerfile.aarch64" \
   "${ISAAC_ROS_WS}/src/isaac_ros_common/docker/"
 
 
