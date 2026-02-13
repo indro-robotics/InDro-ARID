@@ -1,48 +1,58 @@
 #!/bin/bash
+set -euo pipefail
 
-# Change to the root directory of the git repository (one level up from scripts)
-cd "$ISAAC_ROS_WS" || exit
+# Always start from the superproject root (workspaces)
+cd "$(git rev-parse --show-toplevel)"
 
-# Update all submodules to their specified branches
-git submodule foreach 'git checkout $(git config -f $toplevel/.gitmodules submodule.$name.branch || echo master)'
+# 1) Put each submodule on its configured branch or recorded SHA
+git submodule foreach '
+  branch=$(git config -f "$toplevel/.gitmodules" submodule.$name.branch || echo "");
+  if [ -n "$branch" ]; then
+    git checkout "$branch";
+  else
+    git checkout "$sha1";
+  fi
+'
 
-# Checkout realsense-ros to the specific tag
-if [ -d "src/realsense-ros" ]; then
-    cd src/realsense-ros || exit
+# Helper: checkout a specific tag in a named submodule, wherever it lives
+checkout_tag_if_exists() {
+  local module_name="$1"   # e.g. realsense-ros
+  local tag="$2"           # e.g. 4.51.1
+
+  # Find the submodule path from .gitmodules
+  local path
+  path=$(git config -f .gitmodules --get "submodule.${module_name}.path" || true)
+  if [ -z "$path" ]; then
+    # Fallback: search by leaf dir name
+    path=$(git config -f .gitmodules --get-regexp '^submodule\..*\.path$' \
+      | awk '{print $2}' \
+      | grep "/${module_name}$" || true)
+  fi
+
+  if [ -z "$path" ] || [ ! -d "$path" ]; then
+    echo "Warning: submodule '${module_name}' directory not found"
+    return
+  fi
+
+  (
+    cd "$path"
     git fetch --all --tags
-    git checkout 4.51.1
-    cd ../..
-else
-    echo "Warning: src/realsense-ros directory not found"
-fi
+    git checkout "$tag"
+  )
+}
 
-# Checkout px4-ros2-interface-lib to the specific tag
-if [ -d "src/px4-ros2-interface-lib" ]; then
-    cd src/px4-ros2-interface-lib || exit
-    git fetch --all --tags
-    git checkout 1.4.0
-    cd ../..
-else
-    echo "Warning: src/px4-ros2-interface-lib directory not found"
-fi
+# 2) Tag-specific submodules, regardless of whether they are under local_ws/src or isaac_ros-dev/src
+checkout_tag_if_exists "realsense-ros" "4.51.1"
+checkout_tag_if_exists "px4-ros2-interface-lib" "1.4.0"
+checkout_tag_if_exists "foxglove-sdk" "sdk/v0.16.3"
 
-# Checkout foxglove-sdk to the specific tag
-if [ -d "src/foxglove-sdk" ]; then
-    cd src/foxglove-sdk || exit
-    git fetch --all --tags
-    git checkout sdk/v0.16.3
-    cd ../..
-else
-    echo "Warning: src/foxglove-sdk directory not found"
-fi
-
-# Check if any submodules were updated
+# 3) Report changes
 if [ -n "$(git status --porcelain)" ]; then
-    echo "Submodules updated. Changes detected in the following submodules:"
-    git status --porcelain | grep "src/" | awk '{print $2}'
-    echo "realsense-ros is now at tag 4.51.1 (if it exists)"
-    echo "px4-ros2-interface-lib is now at tag 1.4.0 (if it exists)"
-    echo "foxglove-sdk is now at tag sdk/v0.16.3 (if it exists)"
+  echo "Submodules updated. Changes detected in the following submodules:"
+  git status --porcelain | awk '{print $2}' | grep '^.*src/' || true
+  echo "realsense-ros is now at tag 4.51.1 (if it exists)"
+  echo "px4-ros2-interface-lib is now at tag 1.4.0 (if it exists)"
+  echo "foxglove-sdk is now at tag sdk/v0.16.3 (if it exists)"
 else
-    echo "No changes detected in submodules."
+  echo "No changes detected in submodules."
 fi

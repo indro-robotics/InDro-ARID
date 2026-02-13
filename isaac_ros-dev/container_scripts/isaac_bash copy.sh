@@ -6,4 +6,4 @@ docker exec -it \
   -u admin \
   -e DISPLAY="$DISPLAY" \
   isaac_ros_dev-aarch64-container \
-  bash
+  bash -ic 'source "$ISAAC_ROS_WS/install/setup.bash" 2>/dev/null || true; source "$ISAAC_ROS_WS/isaac_aliases.sh" 2>/dev/null || true; exec bash'

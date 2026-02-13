@@ -1,7 +1,7 @@
 #!/bin/bash
-echo "/// Starting container... ///"
-docker start isaac_ros_dev-aarch64-container
-echo "/// Sourcing dependencies... ///"
-docker exec isaac_ros_dev-aarch64-container "/workspaces/isaac_ros-dev/container_scripts/isaac_source.sh"
-echo "/// Restarting services... ///"
-docker exec isaac_ros_dev-aarch64-container /bin/bash -c "sudo service udev restart"
+set -e
+
+CONTAINER=isaac_ros_dev-aarch64-container
+
+echo "/// Starting container ${CONTAINER}... ///"
+docker start "${CONTAINER}" >/dev/null 2>&1 || true

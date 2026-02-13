@@ -19,8 +19,12 @@ RUN apt-get update && apt-get install -y \
     ros-humble-isaac-ros-image-proc \
     ros-humble-isaac-ros-h264-decoder \
     ros-humble-ament-cmake-clang-format \
-    ros-humble-apriltag-msgs
+    ros-humble-apriltag-msgs \
+ && rm -rf /var/lib/apt/lists/*
 
-# Python dependencies
-RUN pip3 install -U jetson-stats && \
-    pip3 install --ignore-installed transforms3d
+RUN pip3 install --ignore-installed transforms3d
+
+# Core Cypher env & aliases
+COPY scripts/cypher_env.sh /etc/profile.d/cypher_env.sh
+RUN chmod 644 /etc/profile.d/cypher_env.sh \
+ && echo 'source /etc/profile.d/cypher_env.sh' >> /etc/bash.bashrc

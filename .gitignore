@@ -6,3 +6,6 @@
 **/install/**
 **/cc_internals/**
 **/log/**
+
+# Ignore setup logs
+workspaces/log/

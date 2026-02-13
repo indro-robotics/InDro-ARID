@@ -23,6 +23,34 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
 ###############################################################################
+# LOG SETUP
+###############################################################################
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOG_DIR="${SCRIPT_DIR}/log"
+mkdir -p "${LOG_DIR}"
+LOG_FILE="${LOG_DIR}/setup_log_$(date +%Y%m%d_%H%M%S).log"
+exec > >(tee -a "${LOG_FILE}") 2>&1
+
+###############################################################################
+# PROMPT: NEW SETUP vs PATCH
+###############################################################################
+echo "Select setup type:"
+select setup_type in "New Setup" "Patch"; do
+  case $setup_type in
+    "New Setup"|"Patch") break ;;
+    *) echo "Invalid option, choose 1 or 2." ;;
+  esac
+done
+
+while true; do
+  read -r -p "Install PX4 build dependencies? (y/n) " PX4_INSTALL_DEPS
+  case "$PX4_INSTALL_DEPS" in
+    [yYnN]) break ;;
+    *) echo "Invalid option, choose y or n." ;;
+  esac
+done
+
+###############################################################################
 # POWER & HOLDS
 ###############################################################################
 sudo /usr/sbin/nvpmodel -m 0
@@ -35,17 +63,6 @@ sudo apt-mark hold \
   nvidia-l4t-kernel-headers \
   nvidia-l4t-kernel-oot-headers \
   wireless-regdb
-
-###############################################################################
-# PROMPT: NEW SETUP vs PATCH
-###############################################################################
-echo "Select setup type:"
-select setup_type in "New Setup" "Patch"; do
-  case $setup_type in
-    "New Setup"|"Patch") break ;;
-    *) echo "Invalid option, please choose 1 or 2." ;;
-  esac
-done
 
 ###############################################################################
 # REPOSITORIES (ROS, JETSON, DOCKER) – NO INSTALLS YET
@@ -89,33 +106,23 @@ sudo apt-get install -y \
   software-properties-common \
   ca-certificates curl gnupg \
   libusb-1.0-0-dev pkgconf gpiod \
-  pva-allow-2
+  pva-allow-2 \
+  python3-colcon-clean
 
 ###############################################################################
 # OPTIONAL PX4 DEPS
 ###############################################################################
 if [ -d "${PX4_DIR}" ]; then
-  while true; do
-    read -r -p "Install PX4 build dependencies? (y/n) " px4_setup
-    case "$px4_setup" in
-      [yY])
-        echo "Running PX4 Tools/setup/ubuntu.sh..."
-        (
-          cd "${PX4_DIR}/Tools/setup"
-          bash ubuntu.sh
-        )
-        echo "PX4 build dependencies installation complete."
-        break
-        ;;
-      [nN])
-        echo "Skipping PX4 build dependencies installation."
-        break
-        ;;
-      *)
-        echo "choose y/n."
-        ;;
-    esac
-  done
+  if [[ "$PX4_INSTALL_DEPS" == [yY] ]]; then
+    echo "Running PX4 Tools/setup/ubuntu.sh..."
+    (
+      cd "${PX4_DIR}/Tools/setup"
+      bash ubuntu.sh
+    )
+    echo "PX4 build dependencies installation complete."
+  else
+    echo "Skipping PX4 build dependencies installation."
+  fi
 else
   echo "PX4-Autopilot not found at ${PX4_DIR}, skipping PX4 setup."
 fi
@@ -139,18 +146,14 @@ echo "Patching dockerfiles..."
 sudo cp -f "${ISAAC_ROS_WS}/docker_resources/patched_dockerfiles/.isaac_ros_common-config" \
   "${ISAAC_ROS_WS}/src/isaac_ros_common/scripts/"
 
-sudo cp -f \
-  "${ISAAC_ROS_WS}/docker_resources/dockerfiles/Dockerfile.cypher" \
+sudo cp -f "${ISAAC_ROS_WS}/docker_resources/dockerfiles/Dockerfile.cypher" \
   "${ISAAC_ROS_WS}/src/isaac_ros_common/docker/"
 
 sudo cp -f "${ISAAC_ROS_WS}/container_scripts/run_dev.sh" \
   "${ISAAC_ROS_WS}/src/isaac_ros_common/scripts/"
 
-ADD_ENTRY_DIR="${ISAAC_ROS_WS}/src/isaac_ros_common/docker/scripts/entrypoint_additions"
-ADD_ENTRY_FILE="${ADD_ENTRY_DIR}/additional_entry.user.sh"
-sudo mkdir -p "$ADD_ENTRY_DIR"
-sudo cp -f "${ISAAC_ROS_WS}/container_scripts/additional_entry.sh" "$ADD_ENTRY_FILE"
-sudo chmod +x "$ADD_ENTRY_FILE"
+sudo cp -f "${ISAAC_ROS_WS}/container_scripts/cypher_env.sh" \
+  "${ISAAC_ROS_WS}/src/isaac_ros_common/docker/scripts"
 
 ###############################################################################
 # BASHRC ALIASES / ENV
@@ -246,7 +249,7 @@ SUBSYSTEM=="usb", DRIVER=="usb", \
 EOL
 
 sudo tee /etc/udev/rules.d/99-gpio.rules >/dev/null <<'EOL'
-SUBSYSTEM=="gpio", GROUP=="gpio", MODE="0660"
+SUBSYSTEM=="gpio", GROUP=="gpio", MODE=="0660"
 EOL
 
 sudo usermod -aG dialout,gpio "${USERNAME}"
@@ -279,19 +282,50 @@ sudo systemctl daemon-reload
 ###############################################################################
 # ROS2 / LOCAL_WS DEPS (apt already refreshed)
 ###############################################################################
-python3 -m pip install \
-  "websockets==15.0.1" \
-  "pyudev==0.24.3" \
-  "pyserial==3.5" \
-  "colcon-clean==0.2.1" \
-  "empy<4" \
-  --force-reinstall --no-deps
+ensure_pip_pkg() {
+  local pkg="$1"       # e.g. websockets==15.0.1 or empy<4
+  local name="$2"      # e.g. websockets
+  local want_version="$3" # e.g. 15.0.1 or 3.3.4 or empty for unconstrained
+
+  local have
+  have=$(python3 -m pip show "$name" 2>/dev/null | awk '/^Version: / {print $2}' || true)
+
+  if [ -z "$have" ]; then
+    echo "Installing $pkg (not currently installed)..."
+    python3 -m pip install "$pkg" --no-deps
+  elif [ -n "$want_version" ] && [ "$have" != "$want_version" ]; then
+    echo "Upgrading $name from $have to $want_version..."
+    python3 -m pip install "$pkg" --no-deps
+  else
+    echo "$name==$have already satisfies requirement $pkg, skipping."
+  fi
+}
+
+# websockets==15.0.1
+ensure_pip_pkg "websockets==15.0.1" "websockets" "15.0.1"
+# pyudev==0.24.3
+ensure_pip_pkg "pyudev==0.24.3" "pyudev" "0.24.3"
+# pyserial==3.5
+ensure_pip_pkg "pyserial==3.5" "pyserial" "3.5"
+# empy<4 (just ensure installed; version bound is loose)
+ensure_pip_pkg "empy<4" "empy" ""
 
 cd "${LOCAL_WS}"
-sudo rosdep init || true
+# rosdep init only if not already initialized
+if [ ! -f /etc/ros/rosdep/sources.list.d/20-default.list ]; then
+  sudo rosdep init
+else
+  echo "rosdep already initialized, skipping init."
+fi
+
 rosdep update
 rosdep install --from-paths "${LOCAL_WS}/src/" --ignore-src -y
-colcon build --symlink-install --base-paths "${LOCAL_WS}/src"
+
+colcon build \
+  --symlink-install \
+  --base-paths "${LOCAL_WS}/src" \
+  --event-handlers console_direct+ \
+  --cmake-args -DCMAKE_VERBOSE_MAKEFILE=ON
 
 ###############################################################################
 # NVIDIA CDI + DOCKER ENGINE + BUILDX
@@ -307,21 +341,17 @@ if [[ "$setup_type" == "New Setup" ]]; then
     sudo nvidia-ctk runtime configure --runtime=docker
     sudo systemctl restart docker
     sudo usermod -aG docker "$USER"
-    newgrp docker
-    sudo systemctl daemon-reload
-    sudo systemctl restart docker
 
-    sudo apt-get update
     sudo apt-get install -y docker-buildx-plugin
+    sudo systemctl --now enable docker || true
   )
 else
-  echo "Patch complete. Re-applying Docker enables if Docker is installed..."
   if command -v docker >/dev/null 2>&1; then
     sudo systemctl --now enable docker || true
   else
-    echo "Docker is not installed, skipping docker.service enable."
+    echo "Docker is not installed... repeat and choose 'New Setup'"
   fi
 fi
 
-echo "Setup complete. Rebooting system..."
+echo "Rebooting system..."
 sudo reboot
