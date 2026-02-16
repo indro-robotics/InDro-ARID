@@ -14,7 +14,7 @@ left_realsense/left_realsense_link:
     enable_gyro: false
     enable_accel: false
     initial_reset: true
-    serial_no: "254122304054"               # left RS serial number (no leading underscore)
+    serial_no: ""               # left RS serial number (no leading underscore)
     camera_name: "left_realsense"
     use_intra_process_comms: true
 
@@ -22,7 +22,7 @@ front_realsense/front_realsense_link:
   ros__parameters:
     enable_infra1: true
     enable_infra2: true
-    enable_color: false
+    enable_color: true
     enable_sync: true
     enable_depth: false
     depth_module:
@@ -30,11 +30,12 @@ front_realsense/front_realsense_link:
       enable_auto_exposure: true
       profile: '640x360x90'
     rgb_camera:
-      power_line_frequency: 1 
+      profile: '1280x800x30'
+      power_line_frequency: 1  # 60 Hz
     enable_gyro: false
     enable_accel: false
     initial_reset: true
-    serial_no: "254122305363"               # front RS serial number (no leading underscore)
+    serial_no: ""               # front RS serial number (no leading underscore)
     camera_name: "front_realsense"
     use_intra_process_comms: true
 
@@ -54,7 +55,7 @@ right_realsense/right_realsense_link:
     enable_gyro: false
     enable_accel: false
     initial_reset: true
-    serial_no: "254122300883"               # right RS serial number (no leading underscore)
+    serial_no: ""               # right RS serial number (no leading underscore)
     camera_name: "right_realsense"
     use_intra_process_comms: true
 
