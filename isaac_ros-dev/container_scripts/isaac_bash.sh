@@ -6,4 +6,4 @@ docker exec -it \
   -u admin \
   -e DISPLAY="$DISPLAY" \
   isaac_ros_dev-aarch64-container \
-  bash -i -c "source /etc/profile.d/cypher_env.sh && exec bash"
+  bash
