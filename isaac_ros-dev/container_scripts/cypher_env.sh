@@ -2,9 +2,9 @@
 
 export ROS_DOMAIN_ID=23
 export ISAAC_ROS_WS=/workspaces/isaac_ros-dev
-export ROS_SOURCE="source /opt/ros/humble/setup.bash"
-export ISAAC_SOURCE="source /workspaces/isaac_ros-dev/install/setup.bash"
-export ROS_PACKAGE_PATH=/workspaces/isaac_ros-dev/src:$ROS_PACKAGE_PATH
+export ROS_PACKAGE_PATH=${ISAAC_ROS_WS}/src:$ROS_PACKAGE_PATH
+
+source /opt/ros/humble/setup.bash && source "${ISAAC_ROS_WS}/install/setup.bash"
 
 alias takeoff='ros2 service call px4_state_machine/launch state_machine_interfaces/srv/Launch "{loiter_altitude: 1.5}"'
 alias land='ros2 service call px4_state_machine/land state_machine_interfaces/srv/Land'
@@ -14,9 +14,8 @@ alias fland='ros2 service call px4_state_machine/force_land state_machine_interf
 alias fmu_reboot="ros2 service call px4_state_machine/fmu_reboot state_machine_interfaces/srv/FMUreboot"
 alias fkill='ros2 service call px4_state_machine/panic state_machine_interfaces/srv/Panic'
 alias reset_usb='ros2 service call /reset_usb std_srvs/srv/Trigger "{}"'
-alias rosdep_isaac='rosdep install --from-paths ${ISAAC_ROS_WS}/src/ --ignore-src -y'
-alias colcon_isaac='cd ${ISAAC_ROS_WS} && colcon build --symlink-install --base-paths src && source ./install/setup.bash'
-alias clean_isaac='cd ${ISAAC_ROS_WS} && colcon clean workspace --base-select build install log'
+alias rosdep_isaac='sudo apt update && rosdep install --from-paths ${ISAAC_ROS_WS}/src/ --ignore-src -y'
+alias colcon_isaac='cd ${ISAAC_ROS_WS} && colcon build --symlink-install --base-paths src --cmake-args -DBUILD_TESTING=OFF && source ./install/setup.bash'
 alias vslam='ros2 launch px4_vslam vslam.launch.py'
 alias state_machine='ros2 launch px4_state_machine px4_state_machine.launch.py'
 alias foxglove_bridge='ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765'

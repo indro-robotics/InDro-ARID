@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y \
     libwebsocketpp-dev \
     libgstreamer1.0-dev \
     python3-colcon-clean \
+    python3-posix-ipc \
     gir1.2-gstreamer-1.0 \
     libgstreamer-plugins-base1.0-dev \
     ros-humble-camera-ros \
