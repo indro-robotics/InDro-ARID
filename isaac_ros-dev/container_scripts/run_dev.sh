@@ -202,7 +202,7 @@ print_info "Launching Isaac ROS Dev container with image key ${BASE_IMAGE_KEY}: 
 # Build image to launch
 if [[ $SKIP_IMAGE_BUILD -ne 1 ]]; then
     print_info "Building $BASE_IMAGE_KEY base as image: $BASE_NAME"
-   $ROOT/build_image_layers.sh --image_key "$BASE_IMAGE_KEY" --image_name "$BASE_NAME"
+    $ROOT/build_image_layers.sh --image_key "$BASE_IMAGE_KEY" --image_name "$BASE_NAME"
 
     # Check result
     if [ $? -ne 0 ]; then
@@ -261,9 +261,14 @@ if [[ $PLATFORM == "aarch64" ]]; then
     DOCKER_ARGS+=("-v /usr/share/vpi3:/usr/share/vpi3")
     DOCKER_ARGS+=("-v /dev/input:/dev/input")
 
-    # If jtop present, give the container access
-    if [[ $(getent group jtop) ]]; then
-        DOCKER_ARGS+=("-v /run/jtop.sock:/run/jtop.sock:ro")
+    # Robust jtop mount: only mount if socket actually exists
+    if getent group jtop >/dev/null 2>&1; then
+        if [[ -S /run/jtop.sock ]]; then
+            print_info "Found jtop group and /run/jtop.sock socket; enabling jtop mount into container."
+            DOCKER_ARGS+=("-v /run/jtop.sock:/run/jtop.sock:ro")
+        else
+            print_warning "Group 'jtop' exists but /run/jtop.sock is missing or not a socket; skipping jtop mount."
+        fi
     fi
 fi
 
