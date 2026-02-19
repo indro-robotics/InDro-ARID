@@ -233,11 +233,23 @@ DOCKER_ARGS+=("-e ISAAC_ROS_WS=/workspaces/isaac_ros-dev")
 DOCKER_ARGS+=("-e HOST_USER_UID=`id -u`")
 DOCKER_ARGS+=("-e HOST_USER_GID=`id -g`")
 
-# Forward SSH Agent to container if the ssh agent is active.
-if [[ -n $SSH_AUTH_SOCK ]]; then
-    DOCKER_ARGS+=("-v $SSH_AUTH_SOCK:/ssh-agent")
-    DOCKER_ARGS+=("-e SSH_AUTH_SOCK=/ssh-agent")
+# --- Robust SSH agent forwarding block ---
+
+# Always provide a directory in the container for SSH agent
+HOST_SSH_AGENT_DIR="/tmp/ssh-agent-$USER"
+mkdir -p "$HOST_SSH_AGENT_DIR"
+DOCKER_ARGS+=("-v $HOST_SSH_AGENT_DIR:/ssh-agent")
+
+# Forward SSH Agent to container if the ssh agent socket is active and valid.
+if [[ -n "$SSH_AUTH_SOCK" ]] && [[ -S "$SSH_AUTH_SOCK" ]]; then
+    print_info "Forwarding SSH agent socket: $SSH_AUTH_SOCK"
+    DOCKER_ARGS+=("-v $SSH_AUTH_SOCK:/ssh-agent/ssh-agent.sock")
+    DOCKER_ARGS+=("-e SSH_AUTH_SOCK=/ssh-agent/ssh-agent.sock")
+else
+    print_warning "SSH_AUTH_SOCK is not a valid socket ($SSH_AUTH_SOCK); skipping SSH agent forwarding into container."
 fi
+
+# ----------------------------------------
 
 if [[ $PLATFORM == "aarch64" ]]; then
     DOCKER_ARGS+=("-e NVIDIA_VISIBLE_DEVICES=nvidia.com/gpu=all") # exclude nvidia.com/pva=all
