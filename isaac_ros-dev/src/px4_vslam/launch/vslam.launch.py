@@ -68,7 +68,11 @@ def generate_launch_description():
                 plugin='realsense2_camera::RealSenseNodeFactory',
                 name='front_realsense_link',
                 namespace='front_realsense',
-                parameters=[param_file]
+                parameters=[param_file],
+                remappings=[
+                    ('color/image_raw',  'image_raw'),
+                    ('color/camera_info','camera_info'),
+                ],
             ),
             ComposableNode(
                 package='realsense2_camera',
@@ -76,6 +80,12 @@ def generate_launch_description():
                 name='right_realsense_link',
                 namespace='right_realsense',
                 parameters=[param_file]
+            ),
+           ComposableNode(
+                package='isaac_ros_image_proc',
+                plugin='nvidia::isaac_ros::image_proc::RectifyNode',
+                name='front_color_rectify',
+                namespace='front_realsense'
             ),
             # Visual SLAM Node
             ComposableNode(

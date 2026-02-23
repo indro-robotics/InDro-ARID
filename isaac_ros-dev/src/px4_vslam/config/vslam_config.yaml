@@ -30,7 +30,7 @@ front_realsense/front_realsense_link:
       enable_auto_exposure: true
       profile: '640x360x90'
     rgb_camera:
-      profile: '1280x800x30'
+      profile: '1280x800x15'
       power_line_frequency: 1  # 60 Hz
     enable_gyro: false
     enable_accel: false

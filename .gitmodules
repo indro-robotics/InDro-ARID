@@ -48,10 +48,6 @@
 	path = isaac_ros-dev/src/isaac_ros_apriltag
 	url = https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_apriltag.git
 	branch = release-3.2
-[submodule "isaac_ros-dev/src/isaac_ros_argus_camera"]
-	path = isaac_ros-dev/src/isaac_ros_argus_camera
-	url = https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_argus_camera.git
-	branch = release-3.2
 [submodule "isaac_ros-dev/src/isaac_ros_image_pipeline"]
 	path = isaac_ros-dev/src/isaac_ros_image_pipeline
 	url = https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_image_pipeline.git

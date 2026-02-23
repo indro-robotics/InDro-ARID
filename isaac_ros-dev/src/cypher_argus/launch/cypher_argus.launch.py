@@ -1,3 +1,4 @@
+import os
 import yaml
 from pathlib import Path
 
@@ -39,36 +40,6 @@ def generate_nodes(context, *args, **kwargs):
     if frame_name is None:
         raise RuntimeError(f"Could not read camera_name from calibration file: {calib_path}")
 
-# argus_node = ComposableNode(
-#     package='isaac_ros_argus_camera',
-#     plugin='nvidia::isaac_ros::argus::ArgusMonoNode',
-#     name='argus_mono',
-#     namespace=image_ns,
-#     parameters=[{
-#         'video_device': video_device,
-#         'mode': camera_mode,
-#         'camera_info_url': camera_info_url,
-#         'optical_frame_name': frame_name,
-#     }],
-#     remappings=[
-#         # Argus internally uses left/image_raw + left/camera_info.
-#         # Remap them to image_raw + camera_info in this namespace.
-#         ('left/image_raw', 'image_raw'),
-#         ('left/camera_info', 'camera_info'),
-#         ('left/image_raw/nitros', 'image_raw/nitros'),
-#         ('left/camera_info/nitros', 'camera_info/nitros'),
-#     ],
-# )
-
-# rectify_node = ComposableNode(
-#     package='isaac_ros_image_proc',
-#     plugin='nvidia::isaac_ros::image_proc::RectifyNode',
-#     name='image_rectify',
-#     namespace=image_ns,
-#     # Rectify subscribes to image + camera_info in its namespace,
-#     # which resolve to /<image_ns>/image_raw and /<image_ns>/camera_info
-# )
-
     argus_node = ComposableNode(
         package='isaac_ros_argus_camera',
         plugin='nvidia::isaac_ros::argus::ArgusMonoNode',
@@ -79,10 +50,9 @@ def generate_nodes(context, *args, **kwargs):
             'mode': camera_mode,
             'camera_info_url': camera_info_url,
             'optical_frame_name': frame_name,
+            'framerate': 10.0,
         }],
         remappings=[
-            # Argus internally uses left/image_raw + left/camera_info.
-            # Remap them to image_raw + camera_info in this namespace.
             ('left/image_raw', 'image_raw'),
             ('left/camera_info', 'camera_info'),
             ('left/image_raw/nitros', 'image_raw/nitros'),
@@ -95,18 +65,29 @@ def generate_nodes(context, *args, **kwargs):
         plugin='nvidia::isaac_ros::image_proc::RectifyNode',
         name='image_rectify',
         namespace=image_ns,
-        # Rectify subscribes to image + camera_info in its namespace,
-        # which resolve to /<image_ns>/image_raw and /<image_ns>/camera_info
+        # Rectify subscribes to image + camera_info in its namespace.
     )
+
+    # Start from current shell environment
+    env = dict(os.environ)
+
+    # Drop display-related vars so Argus behaves like after `unset DISPLAY`
+    for bad in ['DISPLAY', 'WAYLAND_DISPLAY']:
+        env.pop(bad, None)
+
+    # Ensure Humble lib path is first in LD_LIBRARY_PATH
+    ld = env.get('LD_LIBRARY_PATH', '')
+    env['LD_LIBRARY_PATH'] = f"/opt/ros/humble/lib:{ld}" if ld else "/opt/ros/humble/lib"
 
     container = ComposableNodeContainer(
         name='cypher_argus_container',
-        namespace='',  # container itself at root; nodes live under image_ns
+        namespace='',
         package='rclcpp_components',
         executable='component_container_mt',
         composable_node_descriptions=[argus_node, rectify_node],
         output='screen',
         arguments=['--ros-args', '--log-level', 'info'],
+        env=env,
     )
 
     return [container]
