@@ -33,6 +33,12 @@ def generate_launch_description():
     config_file = LaunchConfiguration('camera_config_file')
     param_file = ParameterFile(config_file, allow_substs=True)
 
+    env = dict(os.environ)
+    for bad in ['DISPLAY', 'WAYLAND_DISPLAY']:
+        env.pop(bad, None)
+    ld = env.get('LD_LIBRARY_PATH', '')
+    env['LD_LIBRARY_PATH'] = f"/opt/ros/humble/lib:{ld}" if ld else "/opt/ros/humble/lib"
+
     # Converts VIO solution to PX4 topic
     vio_transform_node = Node(
         name='vio_transform',
@@ -52,16 +58,17 @@ def generate_launch_description():
         name='vslam_container',
         namespace='',
         package='rclcpp_components',
-        executable='component_container',
+        executable='component_container_mt',
         output='screen',
+        env=env,
         composable_node_descriptions=[
-            # RealSense Nodes
             ComposableNode(
                 package='realsense2_camera',
                 plugin='realsense2_camera::RealSenseNodeFactory',
                 name='left_realsense_link',
                 namespace='left_realsense',
-                parameters=[param_file]
+                parameters=[param_file],
+                extra_arguments=[{'use_intra_process_comms': True}] # experimental
             ),
             ComposableNode(
                 package='realsense2_camera',
@@ -73,21 +80,20 @@ def generate_launch_description():
                     ('color/image_raw',  'image_raw'),
                     ('color/camera_info','camera_info'),
                 ],
+                extra_arguments=[{'use_intra_process_comms': True}] # experimental
             ),
             ComposableNode(
                 package='realsense2_camera',
                 plugin='realsense2_camera::RealSenseNodeFactory',
                 name='right_realsense_link',
                 namespace='right_realsense',
-                parameters=[param_file]
+                parameters=[param_file],
+                extra_arguments=[{'use_intra_process_comms': True}] # experimental
             ),
-           ComposableNode(
-                package='isaac_ros_image_proc',
-                plugin='nvidia::isaac_ros::image_proc::RectifyNode',
-                name='front_color_rectify',
-                namespace='front_realsense'
-            ),
-            # Visual SLAM Node
+            # ComposableNode(package='isaac_ros_image_proc',
+            #                plugin='nvidia::isaac_ros::image_proc::RectifyNode',
+            #                name='front_color_rectify',
+            #                namespace='front_realsense'),
             ComposableNode(
                 package='isaac_ros_visual_slam',
                 plugin='nvidia::isaac_ros::visual_slam::VisualSlamNode',

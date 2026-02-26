@@ -113,7 +113,7 @@
       name="down_cv"
       parent="${parent}"
       xyz="${down_cv_xyz}"
-      l_r="0"        l_p="${pi}"   l_y="${pi/2}"
+      l_r="0"        l_p="${0}"   l_y="${0}"
       j_r="0"        j_p="${pi}"   j_y="${pi/2}"/>
 
     <xacro:rangefinder

@@ -56,3 +56,7 @@
 	path = isaac_ros-dev/src/isaac_ros_argus_camera
 	url = https://github.com/indro-robotics/isaac_ros_argus_camera.git
 	branch = release-3.2
+[submodule "isaac_ros-dev/src/apriltag_cypher"]
+	path = isaac_ros-dev/src/apriltag_cypher
+	url = https://github.com/indro-robotics/apriltag_cypher.git
+	branch = cypher_v3
