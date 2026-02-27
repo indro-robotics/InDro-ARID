@@ -68,7 +68,7 @@ def generate_launch_description():
                 name='left_realsense_link',
                 namespace='left_realsense',
                 parameters=[param_file],
-                extra_arguments=[{'use_intra_process_comms': True}] # experimental
+                #extra_arguments=[{'use_intra_process_comms': True}] # experimental = BAD BEHAVIOR
             ),
             ComposableNode(
                 package='realsense2_camera',
@@ -80,7 +80,7 @@ def generate_launch_description():
                     ('color/image_raw',  'image_raw'),
                     ('color/camera_info','camera_info'),
                 ],
-                extra_arguments=[{'use_intra_process_comms': True}] # experimental
+                #extra_arguments=[{'use_intra_process_comms': True}] # experimental = BAD BEHAVIOR
             ),
             ComposableNode(
                 package='realsense2_camera',
@@ -88,12 +88,8 @@ def generate_launch_description():
                 name='right_realsense_link',
                 namespace='right_realsense',
                 parameters=[param_file],
-                extra_arguments=[{'use_intra_process_comms': True}] # experimental
+                #extra_arguments=[{'use_intra_process_comms': True}] # experimental = BAD BEHAVIOR
             ),
-            # ComposableNode(package='isaac_ros_image_proc',
-            #                plugin='nvidia::isaac_ros::image_proc::RectifyNode',
-            #                name='front_color_rectify',
-            #                namespace='front_realsense'),
             ComposableNode(
                 package='isaac_ros_visual_slam',
                 plugin='nvidia::isaac_ros::visual_slam::VisualSlamNode',
