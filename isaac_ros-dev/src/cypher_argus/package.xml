@@ -4,7 +4,8 @@
   <version>0.0.1</version>
   <description>Argus camera + rectification + mono conversion with calibration-based frame_id</description>
 
-  <maintainer email="calvin.rubens@indrorobotics.com">Calvin Rubens</maintainer>
+  <maintainer email="calvin.rubens@indrorobotics.com">Calvin-InDro
+</maintainer>
   <license>BSD-3-Clause</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
@@ -15,6 +16,7 @@
   <exec_depend>launch_ros</exec_depend>
 
   <exec_depend>isaac_ros_argus_camera</exec_depend>
+  <exec_depend>apriltag_ros</exec_depend>
   <exec_depend>isaac_ros_image_proc</exec_depend>
 
   <exec_depend>ament_index_cpp</exec_depend>

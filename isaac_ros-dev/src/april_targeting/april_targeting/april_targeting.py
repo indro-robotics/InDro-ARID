@@ -170,17 +170,17 @@ class april_tracker(Node):
 
         ############################################################################################
         # STATISTICAL RING FILTERS #################################################################
-        self.tag_delta_a_buffer_size = 6   
+        self.tag_delta_a_buffer_size = 5   
         self.tag_ang_std_dev = 1.0         
 
-        self.tag_delta_d_buffer_size = 3   
+        self.tag_delta_d_buffer_size = 5   
         self.tag_d_std_dev = 1.0        
 
-        self.tag_proj_buffer_size = 3      
+        self.tag_proj_buffer_size = 5      
         self.tag_proj_std_dev = 1.0        
         
-        self.amr_buffer_size = 3
-        self.amr_std_dev = 1.5
+        self.amr_buffer_size = 5
+        self.amr_std_dev = 1.0
 
         self.delta_a_buffer = Stat_Ring_Buffer(self.tag_delta_a_buffer_size, self.tag_ang_std_dev)
         self.delta_d_buffer = Stat_Ring_Buffer(self.tag_delta_d_buffer_size, self.tag_d_std_dev)

@@ -13,4 +13,8 @@
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>rclcpp_components</exec_depend>
   <exec_depend>isaac_ros_image_proc</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
 </package>
