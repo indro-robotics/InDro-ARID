@@ -1,0 +1,14 @@
+# Node Manager Pipeline Definitions
+# Each entry creates a ROS2 service: /node_manager/<name>  (std_srvs/SetBool)
+#   data: true  -> launch the command
+#   data: false -> kill the process
+#
+# Add any ros2 launch / ros2 run command here and it will get its own service automatically.
+
+pipelines:
+
+  front_cv_pipe:
+    command: "ros2 launch realsense_cv_pipe realsense_cv_pipe.launch.py input_namespace:=front_realsense output_namespace:=cam_front"
+
+  down_cv_pipe:
+    command: "ros2 launch cypher_argus cypher_argus.launch.py video_device:=0 camera_mode:=0 image_namespace:=cam_down frame_name:=down_cv_link framerate:=10.0"

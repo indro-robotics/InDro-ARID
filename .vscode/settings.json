@@ -95,11 +95,32 @@
         "ios": "cpp"
     },
     "python.analysis.extraPaths": [
-        "/opt/ros/humble/lib/python3.10/site-packages/"
+        "/opt/ros/humble/lib/python3.10/site-packages",
+        "/opt/ros/humble/local/lib/python3.10/dist-packages",
+        "/home/jetson/workspaces/isaac_ros-dev/install/april_targeting_interfaces/local/lib/python3.10/dist-packages",
+        "/home/jetson/workspaces/isaac_ros-dev/install/state_machine_interfaces/local/lib/python3.10/dist-packages",
+        "/home/jetson/workspaces/isaac_ros-dev/install/isaac_ros_visual_slam_interfaces/local/lib/python3.10/dist-packages",
+        "/home/jetson/workspaces/isaac_ros-dev/install/px4_msgs/local/lib/python3.10/dist-packages",
+        "/home/jetson/workspaces/isaac_ros-dev/install/realsense2_camera_msgs/local/lib/python3.10/dist-packages",
+        "/home/jetson/workspaces/isaac_ros-dev/install/isaac_ros_apriltag_interfaces/local/lib/python3.10/dist-packages",
+        "/home/jetson/workspaces/isaac_ros-dev/install/isaac_ros_common/local/lib/python3.10/dist-packages",
+        "/home/jetson/workspaces/isaac_ros-dev/install/foxglove_msgs/local/lib/python3.10/dist-packages",
+        "/home/jetson/workspaces/isaac_ros-dev/install/custom_nitros_message_filter_interfaces/local/lib/python3.10/dist-packages",
+        "/home/jetson/workspaces/isaac_ros-dev/install/isaac_ros_nova_interfaces/local/lib/python3.10/dist-packages",
+        "/home/jetson/workspaces/isaac_ros-dev/install/isaac_ros_pointcloud_interfaces/local/lib/python3.10/dist-packages",
+        "/home/jetson/workspaces/isaac_ros-dev/install/isaac_ros_tensor_list_interfaces/local/lib/python3.10/dist-packages",
+        "/home/jetson/workspaces/isaac_ros-dev/install/isaac_ros_nitros_bridge_interfaces/local/lib/python3.10/dist-packages",
+        "/home/jetson/workspaces/isaac_ros-dev/install/isaac_ros_bi3d_interfaces/local/lib/python3.10/dist-packages",
+        "/home/jetson/workspaces/local_ws/install/px4_msgs/local/lib/python3.10/dist-packages"
     ],
 
     "python.autoComplete.extraPaths": [
-        "/opt/ros/humble/lib/python3.10/site-packages/"
+        "/opt/ros/humble/lib/python3.10/site-packages",
+        "/opt/ros/humble/local/lib/python3.10/dist-packages",
+        "/home/jetson/workspaces/isaac_ros-dev/install/april_targeting_interfaces/local/lib/python3.10/dist-packages",
+        "/home/jetson/workspaces/isaac_ros-dev/install/state_machine_interfaces/local/lib/python3.10/dist-packages",
+        "/home/jetson/workspaces/isaac_ros-dev/install/isaac_ros_visual_slam_interfaces/local/lib/python3.10/dist-packages",
+        "/home/jetson/workspaces/isaac_ros-dev/install/px4_msgs/local/lib/python3.10/dist-packages"
     ],
     
     "python.envFile": "${workspaceFolder}/.env",

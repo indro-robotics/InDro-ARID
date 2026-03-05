@@ -22,5 +22,14 @@ def generate_launch_description():
             executable='px4_state_control',
         )
 
+        node_manager = Node(
+            package='node_manager',
+            executable='node_manager',
+            name='node_manager',
+            output='screen',
+            emulate_tty=True
+        )
+
         return LaunchDescription([april_tracker,
-                                  px4_controller])
+                                  px4_controller,
+                                  node_manager])

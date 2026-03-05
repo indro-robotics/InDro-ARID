@@ -16,7 +16,7 @@ from rclpy.executors import MultiThreadedExecutor
 
 from rclpy.node import Node
 from rclpy.clock import Clock
-from std_srvs.srv import Trigger
+from std_srvs.srv import Trigger, SetBool
 from geometry_msgs.msg import Vector3
 from std_msgs.msg import String, Float32, Bool
 
@@ -45,7 +45,6 @@ from state_machine_interfaces.srv import (Launch,
                                           FMUreboot, 
                                           Panic)
 
-from gst_camera_interfaces.srv import ControlService
 from isaac_ros_visual_slam_interfaces.srv import Reset
 from isaac_ros_visual_slam_interfaces.msg import VisualSlamStatus
 from april_targeting_interfaces.msg import ShelfTarget, AmrTarget
@@ -115,17 +114,20 @@ class DRONE_FSM(Node):
             self.get_logger().info('REACTOR INITIALIZING...')
 
         
-        ### CAMERA SERVICE MANAGEMENT ##############################################################
-        self.start_camera = self.create_client(ControlService, '/start_camera')
-        self.stop_camera = self.create_client(ControlService, '/stop_camera')
+        ### CAMERA PIPELINE MANAGEMENT (node_manager) #############################################
+        self.camera_pipe_clients = {
+            'front_cv_pipe': self.create_client(SetBool, '/node_manager/front_cv_pipe'),
+            'down_cv_pipe':  self.create_client(SetBool, '/node_manager/down_cv_pipe'),
+        }
 
-        while not self.start_camera.wait_for_service(timeout_sec=3.0) and not self.stop_camera.wait_for_service(timeout_sec=3.0):
-            self.get_logger().info('CV INITIALIZING...')
-        
-        # Manage external camera_manager asynchronously
+        for name, client in self.camera_pipe_clients.items():
+            while not client.wait_for_service(timeout_sec=3.0):
+                self.get_logger().info('NODE MANAGER: waiting for %s...' % name)
+
+        # Async loop for non-blocking service calls from within FSM callbacks
         self.camera_loop = asyncio.new_event_loop()
         self.camera_thread = threading.Thread(
-            target=self.camera_loop.run_forever, 
+            target=self.camera_loop.run_forever,
             daemon=True
         )
         self.camera_thread.start()
@@ -206,6 +208,22 @@ class DRONE_FSM(Node):
                                                      self.est_status_callback, 
                                                      self.qos_fmu, 
                                                      callback_group=self.passive_group)
+
+
+        ### CAMERA ALIVE SUBSCRIPTIONS (node_manager) #############################################
+        # TRANSIENT_LOCAL (latched) — we get current state immediately on subscribe
+        # pipeline_active gates FSM transitions; only set True when the requested pipeline is alive
+        self.front_cv_alive_sub = self.create_subscription(Bool,
+                                                           '/node_manager/front_cv_pipe/alive',
+                                                           self._front_cv_alive_cb,
+                                                           self.qos_transient,
+                                                           callback_group=self.passive_group)
+
+        self.down_cv_alive_sub  = self.create_subscription(Bool,
+                                                           '/node_manager/down_cv_pipe/alive',
+                                                           self._down_cv_alive_cb,
+                                                           self.qos_transient,
+                                                           callback_group=self.passive_group)
 
 
         ### TARGETING SPECIFIC SUBSCRIPTIONS #######################################################
@@ -429,10 +447,8 @@ class DRONE_FSM(Node):
         self.rangefinder_prox_loiter = False
 
         # Camera Management ########################################################################
-        self.cam_down_service = 'cam_down_2k_20'
-        self.cam_front_service = 'cam_front_4k_10'
-        self.cam_stop_service = ''
-        self.camera_result = False
+        self.active_pipeline = None              # pipeline name we are waiting to go alive
+        self.pipeline_active = False
 
         # VSLAM management #########################################################################
         self.vslam_status = 0
@@ -506,17 +522,17 @@ class DRONE_FSM(Node):
 
             case "INITIATE_RESET":
                 self.pub_tracking_params()
-                self.switch_camera(self.cam_stop_service)
+                self.set_pipeline()
                 self.set_FSM_state("STOP_CV_CAMERAS") 
 
 
             case "STOP_CV_CAMERAS":
-                self.switch_camera(self.cam_stop_service, action="stop")
+                self.set_pipeline()
                 self.set_FSM_state("REBOOT_FMU") 
 
 
             case "REBOOT_FMU":
-                if self.camera_result: 
+                if self.pipeline_active: 
                     #self.reset_fmu()
                     self.set_FSM_state("FMU_REBOOTING") 
 
@@ -535,14 +551,14 @@ class DRONE_FSM(Node):
             
 
             case "START_CV_CAMERAS":
-                self.switch_camera(self.cam_down_service)
+                self.set_pipeline('down_cv_pipe')
                 self.set_FSM_state("INITIALIZING")
 
 
             case "INITIALIZING":
                 if (self.ekf2_ev_online and
                     #self.vslam_set and # do not need to monitor if vslam_reset() is called
-                    self.camera_result):
+                    self.pipeline_active):
                     self.set_FSM_state("ASSERT_TAKEOFF")
                     self.set_pre_launch()
                     
@@ -566,13 +582,13 @@ class DRONE_FSM(Node):
                 
 
             case "PRE_AMR_SEEK":
-                self.switch_camera(self.cam_down_service)
+                self.set_pipeline('down_cv_pipe')
                 self.set_FSM_state("START_AMR_SEEK")
 
 
             case "START_AMR_SEEK":
                 # If we are stable and the cameras successfully switch, 
-                if (self.on_target_velocity and self.camera_result):
+                if (self.on_target_velocity and self.pipeline_active):
 
                     # This needs to go to absolute heights, as we might get caught in a loop. 
                     # Temp fix below.
@@ -581,7 +597,6 @@ class DRONE_FSM(Node):
                     # self.waypoint_track(target=Vector3(x=0., y=0., z=-self.amr_seek_displacement),
                     #                     velocity=self.seek_vel_lim)
 
-                
                     seek_z = -(self.loiter_height + self.AMR_height + self.amr_seek_displacement)
                     self.waypoint_track(target=Vector3(x=self.target_local_position.x, 
                                                        y=self.target_local_position.y,
@@ -611,13 +626,13 @@ class DRONE_FSM(Node):
             
 
             case "CYCLE_SETUP":
-                self.switch_camera(self.cam_front_service)
+                self.set_pipeline('front_cv_pipe')
                 self.waypoint_track(yaw = self.cycle_orientation)
                 self.set_FSM_state("PRE_CYCLE_SEEK_FLOOR")
             
 
             case "PRE_CYCLE_SEEK_FLOOR":
-                if (self.target_locked and self.camera_result):
+                if (self.target_locked and self.pipeline_active):
                     # Start descent to impossibly low altitute
                     self.waypoint_track(target=Vector3(x=0., y=0., z=100.), 
                                         velocity=self.homing_vel_lim)
@@ -778,28 +793,58 @@ class DRONE_FSM(Node):
             if (self.FSM_current_state in self.vslam_failsafe_modes):
                 self.FSM_current_state = "ASSERT_LAND"
 
-    def switch_camera(self, service_name: str, action: str = "start"):        
-        self.camera_result = False
+    def set_pipeline(self, target_pipe: str = None):
+        """
+        Kill all camera pipelines then optionally start one.
+        target_pipe = 'front_cv_pipe' | 'down_cv_pipe' | None (stop all)
+
+        pipeline_active is gated on the alive topic:
+          - target_pipe set  -> True only when that pipeline's /alive topic fires True
+          - target_pipe None -> True immediately after all stop calls complete
+        """
+        self.pipeline_active = False
+        self.active_pipeline = target_pipe
+
         async def _async_switch():
-            req = ControlService.Request()
-            req.service_name = service_name
+            req_off = SetBool.Request()
+            req_off.data = False
 
-            if action == "start":
-                future = self.start_camera.call_async(req)
+            # Kill every camera pipeline first — clean slate
+            for name, client in self.camera_pipe_clients.items():
+                if not client.service_is_ready():
+                    self.get_logger().warn('set_pipeline: node_manager/%s not available — skipping disable' % name)
+                    continue
+                try:
+                    await client.call_async(req_off)
+                except Exception as e:
+                    self.get_logger().warn('set_pipeline: failed to disable %s: %s' % (name, str(e)))
+
+            if target_pipe is not None:
+                client = self.camera_pipe_clients[target_pipe]
+                if not client.service_is_ready():
+                    self.get_logger().error('set_pipeline: node_manager/%s not available — cannot start pipeline' % target_pipe)
+                    return
+                req_on = SetBool.Request()
+                req_on.data = True
+                try:
+                    await client.call_async(req_on)
+                    # pipeline_active will be set True by the alive subscription once the
+                    # process is confirmed running — do not advance until then
+                except Exception as e:
+                    self.get_logger().warn('set_pipeline: failed to enable %s: %s' % (target_pipe, str(e)))
             else:
-                future = self.stop_camera.call_async(req)
+                # Stop-all — no pipeline to wait on, we're done
+                self.pipeline_active = True
 
-            try:
-                await future
-                self.camera_result = future.result().success
-            except Exception as e:
-                self.camera_result = False
+        asyncio.run_coroutine_threadsafe(_async_switch(), self.camera_loop)
 
-        # Schedule the coroutine on the dedicated camera loop
-        asyncio.run_coroutine_threadsafe(
-            _async_switch(),
-            self.camera_loop
-        )
+    def _front_cv_alive_cb(self, msg):
+        if self.active_pipeline == 'front_cv_pipe':
+            self.pipeline_active = msg.data
+
+    def _down_cv_alive_cb(self, msg):
+        if self.active_pipeline == 'down_cv_pipe':
+            self.pipeline_active = msg.data
 
     def launch_callback(self, request, response):
         self.assert_launch = True  
@@ -964,7 +1009,7 @@ class DRONE_FSM(Node):
         self.rangefinder_prox_land = False
         self.rangefinder_prox_loiter = False
 
-        self.camera_result = False
+        self.pipeline_active = False
 
         self.vslam_status = 0
         self.vslam_reset_completed = False
