@@ -8,7 +8,7 @@
 pipelines:
 
   front_cv_pipe:
-    command: "ros2 launch realsense_cv_pipe realsense_cv_pipe.launch.py input_namespace:=front_realsense output_namespace:=cam_front"
+    command: "ros2 launch realsense_cv_pipe realsense_cv_pipe.launch.py"
 
   down_cv_pipe:
-    command: "ros2 launch cypher_argus cypher_argus.launch.py video_device:=0 camera_mode:=1 image_namespace:=cam_down frame_name:=down_cv_link framerate:=10.0"
+    command: "ros2 launch cypher_argus cypher_argus.launch.py"
