@@ -1,17 +1,17 @@
 image_width: 3840
 image_height: 2160
-camera_name: down_cv
+camera_name: cam_down
 camera_matrix:
   rows: 3
   cols: 3
-  data: [1.0, 0.0, 1920.0,
-         0.0, 1.0, 1080.0,
+  data: [2533.7470783730746, 0.0, 1933.8738498581428,
+         0.0, 2534.4293921899066, 1013.5977791820298,
          0.0, 0.0, 1.0]
 distortion_model: plumb_bob
 distortion_coefficients:
   rows: 1
   cols: 5
-  data: [0.0, 0.0, 0.0, 0.0, 0.0]
+  data: [0.00943229457090835, -0.03432091894685051, -0.0012773324236460028, -0.0003855596424427947, 0.0]
 rectification_matrix:
   rows: 3
   cols: 3
@@ -21,6 +21,6 @@ rectification_matrix:
 projection_matrix:
   rows: 3
   cols: 4
-  data: [1.0, 0.0, 1920.0, 0.0,
-         0.0, 1.0, 1080.0, 0.0,
+  data: [2516.982421875, 0.0, 1931.6135396965546, 0.0,
+         0.0, 2533.171142578125, 1010.7434115001088, 0.0,
          0.0, 0.0, 1.0, 0.0]

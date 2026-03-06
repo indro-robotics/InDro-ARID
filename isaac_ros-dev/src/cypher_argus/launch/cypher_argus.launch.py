@@ -12,8 +12,8 @@ from launch_ros.descriptions import ComposableNode
 
 # LAUNCH
 # ros2 launch cypher_argus cypher_argus.launch.py \
-#   video_device:=0 camera_mode:=0 image_namespace:=cam_down \
-#   frame_name:=down_cv_link framerate:=10.0
+#   video_device:=0 camera_mode:=1 image_namespace:=cam_down \
+#   frame_name:=down_cv_link framerate:=10.0 output_encoding:=mono8
 
 
 def generate_nodes(context, *args, **kwargs):
@@ -26,6 +26,7 @@ def generate_nodes(context, *args, **kwargs):
     image_ns_arg = LaunchConfiguration('image_namespace').perform(context)
     frame_name = LaunchConfiguration('frame_name').perform(context)
     framerate = float(LaunchConfiguration('framerate').perform(context))
+    output_encoding = LaunchConfiguration('output_encoding').perform(context)
 
     # Pick calibration file: IMX477_<camera_mode>.yaml
     calib_filename = f'IMX477_{camera_mode}.yaml'
@@ -34,12 +35,17 @@ def generate_nodes(context, *args, **kwargs):
     camera_info_url = ''
     yaml_cam_name = None
 
+    image_width = None
+    image_height = None
+
     if calib_path.is_file():
         camera_info_url = f'file://{calib_path}'
         try:
             with calib_path.open('r') as f:
                 calib_data = yaml.safe_load(f)
             yaml_cam_name = calib_data.get('camera_name', None)
+            image_width = calib_data.get('image_width', None)
+            image_height = calib_data.get('image_height', None)
         except Exception:
             pass
 
@@ -65,6 +71,8 @@ def generate_nodes(context, *args, **kwargs):
 
     april_name = 'april_' + image_ns
 
+    raw_image_topic = 'image_raw_color' if output_encoding != 'rgb8' else 'image_raw'
+
     argus_node = ComposableNode(
         package='isaac_ros_argus_camera',
         plugin='nvidia::isaac_ros::argus::ArgusMonoNode',
@@ -79,9 +87,9 @@ def generate_nodes(context, *args, **kwargs):
             'framerate': framerate,
         }],
         remappings=[
-            ('left/image_raw', 'image_raw'),
+            ('left/image_raw', raw_image_topic),
             ('left/camera_info', 'camera_info'),
-            ('left/image_raw/nitros', 'image_raw/nitros'),
+            ('left/image_raw/nitros', f'{raw_image_topic}/nitros'),
             ('left/camera_info/nitros', 'camera_info/nitros'),
         ],
     )
@@ -93,7 +101,26 @@ def generate_nodes(context, *args, **kwargs):
         namespace=image_ns,
     )
 
-    composable_nodes = [argus_node, rectify_node]
+    composable_nodes = [argus_node]
+
+    if output_encoding != 'rgb8':
+        composable_nodes.append(ComposableNode(
+            package='isaac_ros_image_proc',
+            plugin='nvidia::isaac_ros::image_proc::ImageFormatConverterNode',
+            name='image_format_converter',
+            namespace=image_ns,
+            parameters=[{
+                'encoding_desired': output_encoding,
+                'image_width': image_width,
+                'image_height': image_height,
+            }],
+            remappings=[
+                ('image_raw', 'image_raw_color'),
+                ('image', 'image_raw'),
+            ],
+        ))
+
+    composable_nodes.append(rectify_node)
 
     if image_ns in tag_config_map:
         config_info = tag_config_map[image_ns]
@@ -153,6 +180,13 @@ def generate_launch_description():
         description='Camera framerate (Hz)',
     )
 
+    output_encoding_arg = DeclareLaunchArgument(
+        'output_encoding',
+        default_value='mono8',
+        description='Output encoding before rectification. Use "mono8" (default) or any '
+                    'encoding supported by isaac_ros_image_proc (e.g. "rgb8").',
+    )
+
     setup = OpaqueFunction(function=generate_nodes)
 
     return LaunchDescription([
@@ -161,5 +195,6 @@ def generate_launch_description():
         image_ns_arg,
         frame_arg,
         framerate_arg,
+        output_encoding_arg,
         setup,
     ])

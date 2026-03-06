@@ -1,5 +1,10 @@
 import os
 
+# LAUNCH
+# ros2 launch realsense_cv_pipe realsense_cv_pipe.launch.py \
+#   input_namespace:=front_realsense output_namespace:=cam_front \
+#   output_encoding:=mono8
+
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
@@ -11,6 +16,7 @@ from launch_ros.descriptions import ComposableNode
 def generate_nodes(context, *args, **kwargs):
     input_ns  = LaunchConfiguration('input_namespace').perform(context)
     output_ns = LaunchConfiguration('output_namespace').perform(context)
+    output_encoding = LaunchConfiguration('output_encoding').perform(context)
 
     if not input_ns:
         input_ns = 'front_realsense'
@@ -34,7 +40,24 @@ def generate_nodes(context, *args, **kwargs):
         },
     }
 
+    raw_image_topic = 'image_raw_color' if output_encoding != 'rgb8' else 'image_raw'
+
     composable_nodes = []
+
+    if output_encoding != 'rgb8':
+        composable_nodes.append(ComposableNode(
+            package='isaac_ros_image_proc',
+            plugin='nvidia::isaac_ros::image_proc::ImageFormatConverterNode',
+            name='image_format_converter',
+            namespace=input_ns,
+            parameters=[{
+                'encoding_desired': output_encoding,
+            }],
+            remappings=[
+                ('image_raw', 'image_raw'),
+                ('image', 'image_raw_color'),
+            ],
+        ))
 
     rectify_node = ComposableNode(
         package="isaac_ros_image_proc",
@@ -42,6 +65,7 @@ def generate_nodes(context, *args, **kwargs):
         name="realsense_image_rectify",
         namespace=input_ns,
         remappings=[
+            ('image_raw', raw_image_topic),
             ('image_rect', f'/{output_ns}/image_rect'),
             ('camera_info_rect', f'/{output_ns}/camera_info_rect'),
         ],
@@ -93,10 +117,18 @@ def generate_launch_description():
         description='Namespace for rectified image topics and AprilTag processing.',
     )
 
+    output_encoding_arg = DeclareLaunchArgument(
+        'output_encoding',
+        default_value='mono8',
+        description='Output encoding before rectification. Use "mono8" (default) or any '
+                    'encoding supported by isaac_ros_image_proc (e.g. "rgb8").',
+    )
+
     setup = OpaqueFunction(function=generate_nodes)
 
     return LaunchDescription([
         input_ns_arg,
         output_ns_arg,
+        output_encoding_arg,
         setup,
     ])
