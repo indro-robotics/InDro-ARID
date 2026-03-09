@@ -146,7 +146,7 @@ setup_repos() {
     fi
 
     # Nvidia CDI (safe to regenerate every run)
-    sudo nvidia-ctk cdi generate --mode=csv --output=/etc/cdi/nvidia.yaml
+    sudo nvidia-ctk cdi generate --mode=csv --output=/etc/cdi/nvidia.yaml >/dev/null 2>&1
     ok "CDI config regenerated"
 
     # Nvidia Jetson APT repo
