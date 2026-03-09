@@ -1,261 +1,387 @@
 #!/bin/bash
+# Cypher Drone Workspace Setup
+# Usage: ./setup.sh [--fresh | --patch]
+#   --fresh   First-time installation on a new system
+#   --patch   Re-run after a git pull (auto-selected if sentinel exists)
 set -euo pipefail
-PS4='+ ${BASH_SOURCE}:${LINENO}:${FUNCNAME[0]:-main}: '
 
+###############################################################################
+# COLOURS & OUTPUT HELPERS
+###############################################################################
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
+BLUE='\033[1;34m'; BOLD='\033[1m'; NC='\033[0m'
+
+step() { echo -e "\n${BLUE}${BOLD}==> $*${NC}"; }
+ok()   { echo -e "  ${GREEN}[OK]${NC}   $*"; }
+warn() { echo -e "  ${YELLOW}[WARN]${NC} $*"; }
+skip() { echo -e "  [SKIP]  $*"; }
+err()  { echo -e "  ${RED}[ERROR]${NC} $*" >&2; }
+
+STEPS_RUN=()
+STEPS_SKIPPED=()
+
+###############################################################################
+# ERROR TRAP
+###############################################################################
 failure() {
-  local exit_code=$?
-  local line=$1
-  echo "Error: command failed at ${BASH_SOURCE[0]}:${line}: '${BASH_COMMAND}' (exit: ${exit_code})" >&2
-  exit "$exit_code"
+    err "Command failed at ${BASH_SOURCE[0]}:$1: '${BASH_COMMAND}' (exit: $?)"
+    exit 1
 }
 trap 'failure ${LINENO}' ERR
 
+###############################################################################
+# CONSTANTS
+###############################################################################
 USERNAME="jetson"
-BASHRC_FILE="${HOME}/.bashrc"
-WORKSPACES="${HOME}/workspaces"
+HOME_DIR="/home/${USERNAME}"
+BASHRC_FILE="${HOME_DIR}/.bashrc"
+WORKSPACES="${HOME_DIR}/workspaces"
 LOCAL_WS="${WORKSPACES}/local_ws"
 ISAAC_ROS_WS="${WORKSPACES}/isaac_ros-dev"
 PX4_DIR="${LOCAL_WS}/auxiliary/PX4-Autopilot"
 POLKIT_RULE_FILE="/etc/polkit-1/rules.d/10-reset-usb.rules"
 SUDOERS_FILE="/etc/sudoers.d/${USERNAME}_systemctl"
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-
-cd "$REPO_ROOT"
+SENTINEL="/etc/cypher_first_setup_done"
+REPO_ROOT="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
 
 ###############################################################################
-# LOG SETUP
+# LOGGING
 ###############################################################################
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="${SCRIPT_DIR}/log"
 mkdir -p "${LOG_DIR}"
 LOG_FILE="${LOG_DIR}/setup_log_$(date +%Y%m%d_%H%M%S).log"
 exec > >(tee -a "${LOG_FILE}") 2>&1
+echo "Logging to ${LOG_FILE}"
 
 ###############################################################################
-# PROMPT: NEW SETUP vs PATCH
+# ARGUMENT PARSING
 ###############################################################################
-echo "Select setup type:"
-select setup_type in "New Setup" "Patch"; do
-  case $setup_type in
-    "New Setup"|"Patch") break ;;
-    *) echo "Invalid option, choose 1 or 2." ;;
-  esac
-done
+SETUP_MODE=""
 
-while true; do
-  read -r -p "Install PX4 build dependencies? (y/n) " PX4_INSTALL_DEPS
-  case "$PX4_INSTALL_DEPS" in
-    [yYnN]) break ;;
-    *) echo "Invalid option, choose y or n." ;;
-  esac
-done
+parse_args() {
+    for arg in "$@"; do
+        case "$arg" in
+            --fresh) SETUP_MODE="fresh" ;;
+            --patch) SETUP_MODE="patch" ;;
+            --help|-h)
+                echo "Usage: $0 [--fresh | --patch]"
+                echo "  --fresh  First-time installation"
+                echo "  --patch  Re-run after a git pull"
+                exit 0 ;;
+            *) err "Unknown argument: $arg"; exit 1 ;;
+        esac
+    done
 
-###############################################################################
-# POWER & HOLDS
-###############################################################################
-sudo /usr/sbin/nvpmodel -m 0
-sudo apt-mark hold \
-  nvidia-l4t-core \
-  linux-firmware \
-  nvidia-l4t-kernel \
-  nvidia-l4t-kernel-dtbs \
-  nvidia-l4t-firmware \
-  nvidia-l4t-kernel-headers \
-  nvidia-l4t-kernel-oot-headers \
-  wireless-regdb
-
-###############################################################################
-# REPOSITORIES (ROS, JETSON, DOCKER) – NO INSTALLS YET
-###############################################################################
-# ROS key
-if [ ! -f /usr/share/keyrings/ros-archive-keyring.gpg ]; then
-  sudo curl -sSL \
-    https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
-    -o /usr/share/keyrings/ros-archive-keyring.gpg
-fi
-
-# PVA
-sudo nvidia-ctk cdi generate --mode=csv --output=/etc/cdi/nvidia.yaml
-if ! grep -q "repo.download.nvidia.com/jetson/common" /etc/apt/sources.list.d/nvidia-l4t-apt-source.list 2>/dev/null; then
-  sudo apt-key adv --fetch-key https://repo.download.nvidia.com/jetson/jetson-ota-public.asc
-  echo "deb https://repo.download.nvidia.com/jetson/common r36.4 main" \
-    | sudo tee /etc/apt/sources.list.d/nvidia-l4t-apt-source.list >/dev/null
-  echo "deb https://repo.download.nvidia.com/jetson/t234 r36.4 main" \
-    | sudo tee -a /etc/apt/sources.list.d/nvidia-l4t-apt-source.list >/dev/null
-fi
-
-# Docker official repo (key + list); engine itself handled later
-if [ ! -f /etc/apt/keyrings/docker.gpg ]; then
-  sudo install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
-    | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-  sudo chmod a+r /etc/apt/keyrings/docker.gpg
-  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-https://download.docker.com/linux/ubuntu \
-$(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
-    | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
-fi
-
-###############################################################################
-# SINGLE GLOBAL APT REFRESH + BULK INSTALLS
-###############################################################################
-sudo apt-get update
-
-# Base system deps used across the script (no docker-buildx-plugin here)
-sudo apt-get install -y \
-  software-properties-common \
-  ca-certificates curl gnupg \
-  libusb-1.0-0-dev pkgconf gpiod \
-  pva-allow-2 \
-  python3-colcon-clean
-
-###############################################################################
-# OPTIONAL PX4 DEPS
-###############################################################################
-if [ -d "${PX4_DIR}" ]; then
-  if [[ "$PX4_INSTALL_DEPS" == [yY] ]]; then
-    echo "Running PX4 Tools/setup/ubuntu.sh..."
-    (
-      cd "${PX4_DIR}/Tools/setup"
-      bash ubuntu.sh
-    )
-    echo "PX4 build dependencies installation complete."
-  else
-    echo "Skipping PX4 build dependencies installation."
-  fi
-else
-  echo "PX4-Autopilot not found at ${PX4_DIR}, skipping PX4 setup."
-fi
-
-###############################################################################
-# GIT / ISAAC PATCHING
-###############################################################################
-git config --global credential.helper "cache --timeout=604800"
-
-echo "Setting script permissions..."
-find "${WORKSPACES}/scripts" -type f \( -name "*.bash" -o -name "*.sh" \) -exec chmod +x {} \;
-find "${ISAAC_ROS_WS}/container_scripts" -type f \( -name "*.bash" -o -name "*.sh" \) -exec chmod +x {} \;
-
-echo "Update/checkout submodules..."
-"${WORKSPACES}/scripts/update_isaac_submods.sh"
-
-git update-index --assume-unchanged \
-  "${ISAAC_ROS_WS}/src/px4_vslam/config/"
-
-echo "Patching dockerfiles..."
-sudo cp -f "${ISAAC_ROS_WS}/docker_resources/patched_dockerfiles/.isaac_ros_common-config" \
-  "${ISAAC_ROS_WS}/src/isaac_ros_common/scripts/"
-
-sudo cp -f "${ISAAC_ROS_WS}/docker_resources/dockerfiles/Dockerfile.cypher" \
-  "${ISAAC_ROS_WS}/src/isaac_ros_common/docker/"
-
-sudo cp -f "${ISAAC_ROS_WS}/container_scripts/run_dev.sh" \
-  "${ISAAC_ROS_WS}/src/isaac_ros_common/scripts/"
-
-sudo cp -f "${ISAAC_ROS_WS}/container_scripts/cypher_env.sh" \
-  "${ISAAC_ROS_WS}/src/isaac_ros_common/docker/scripts"
-
-###############################################################################
-# BASHRC ALIASES / ENV
-###############################################################################
-EXPORT_DISPLAY='if [ -d /tmp/.X11-unix ]; then
-    sock=$(ls /tmp/.X11-unix/X* 2>/dev/null | head -n1)
-    if [ -n "$sock" ]; then
-        num=${sock##*/X}
-        export DISPLAY=":${num}"
+    if [[ -z "$SETUP_MODE" ]]; then
+        if [[ -f "$SENTINEL" ]]; then
+            SETUP_MODE="patch"
+            echo "Sentinel found — running as patch."
+        else
+            echo "Select setup type:"
+            select SETUP_MODE in "fresh" "patch"; do
+                [[ -n "$SETUP_MODE" ]] && break
+                echo "Choose 1 or 2."
+            done
+        fi
     fi
-fi'
 
-EXPORT_X11_LOCAL='xhost +local: >/dev/null 2>&1 || true'
-EXPORT_ROS_DOMAIN_ID='export ROS_DOMAIN_ID=23'
-EXPORT_WORKSPACES="export WORKSPACES=${WORKSPACES}"
-EXPORT_LOCAL_WS="export LOCAL_WS=${LOCAL_WS}"
-SOURCE_LOCAL_WS="source ${LOCAL_WS}/install/setup.bash"
-EXPORT_ISAAC_WS="export ISAAC_ROS_WS=${ISAAC_ROS_WS}"
-
-ISAAC_RUN_ALIAS="alias run_isaac='/bin/bash ${ISAAC_ROS_WS}/container_scripts/run_isaac_docker.sh'"
-ISAAC_BUILD_ALIAS="alias build_isaac='/bin/bash ${ISAAC_ROS_WS}/container_scripts/build_isaac_docker.sh'"
-ISAAC_START_ALIAS="alias start_isaac='/bin/bash ${ISAAC_ROS_WS}/container_scripts/start_isaac_docker.sh'"
-ISAAC_STOP_ALIAS="alias stop_isaac='docker stop isaac_ros_dev-aarch64-container'"
-ISAAC_BASH_ALIAS="alias isaac_bash='/bin/bash ${ISAAC_ROS_WS}/container_scripts/isaac_bash.sh'"
-RESET_USB_ALIAS="alias reset_usb='/bin/bash ${WORKSPACES}/scripts/usb_reset.sh'"
-ROSDEP_ALIAS="alias rosdep_local=\"rosdep install --from-paths \${LOCAL_WS}/src/ --ignore-src -y\""
-COLCON_ALIAS="alias colcon_local=\"cd \${LOCAL_WS} && colcon build --symlink-install --base-paths src && source ./install/setup.bash\""
-CLEAN_ALIAS="alias clean_local=\"cd \${LOCAL_WS} && colcon clean workspace --base-select build install log\""
-
-append_if_not_exists() {
-  local line="$1"
-  if ! grep -qF "$line" "$BASHRC_FILE" 2>/dev/null; then
-    echo "$line" >> "$BASHRC_FILE"
-  fi
+    echo -e "Mode: ${BOLD}${SETUP_MODE}${NC}\n"
 }
 
-append_if_not_exists "$EXPORT_DISPLAY"
-append_if_not_exists "$EXPORT_X11_LOCAL"
-append_if_not_exists "$EXPORT_WORKSPACES"
-append_if_not_exists "$EXPORT_LOCAL_WS"
-append_if_not_exists "$SOURCE_LOCAL_WS"
-append_if_not_exists "$EXPORT_ISAAC_WS"
-append_if_not_exists "$ISAAC_BUILD_ALIAS"
-append_if_not_exists "$ISAAC_RUN_ALIAS"
-append_if_not_exists "$ISAAC_START_ALIAS"
-append_if_not_exists "$ISAAC_STOP_ALIAS"
-append_if_not_exists "$ISAAC_BASH_ALIAS"
-append_if_not_exists "$EXPORT_ROS_DOMAIN_ID"
-append_if_not_exists "$RESET_USB_ALIAS"
-append_if_not_exists "$ROSDEP_ALIAS"
-append_if_not_exists "$COLCON_ALIAS"
-append_if_not_exists "$CLEAN_ALIAS"
+###############################################################################
+# PREFLIGHT
+###############################################################################
+preflight() {
+    step "Preflight checks"
 
-[ -f "${BASHRC_FILE}" ] && source "${BASHRC_FILE}"
+    [[ $EUID -eq 0 ]] && { err "Do not run as root."; exit 1; }
+    command -v git >/dev/null || { err "git not found."; exit 1; }
+
+    if git -C "$REPO_ROOT" submodule status 2>/dev/null | grep -q "^-"; then
+        err "Uninitialized submodules detected."
+        err "Run: git submodule update --init --recursive"
+        exit 1
+    fi
+
+    ok "Preflight passed"
+}
+
+###############################################################################
+# POWER & PACKAGE HOLDS
+###############################################################################
+setup_power() {
+    step "Power mode & package holds"
+
+    sudo /usr/sbin/nvpmodel -m 0
+
+    sudo apt-mark hold \
+        nvidia-l4t-core \
+        linux-firmware \
+        nvidia-l4t-kernel \
+        nvidia-l4t-kernel-dtbs \
+        nvidia-l4t-firmware \
+        nvidia-l4t-kernel-headers \
+        nvidia-l4t-kernel-oot-headers \
+        wireless-regdb
+
+    STEPS_RUN+=("power")
+    ok "Max power mode set, critical packages held"
+}
+
+###############################################################################
+# APT REPOSITORIES
+###############################################################################
+setup_repos() {
+    step "APT repositories"
+
+    # ROS keyring
+    if [[ ! -f /usr/share/keyrings/ros-archive-keyring.gpg ]]; then
+        sudo curl -sSL \
+            https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+            -o /usr/share/keyrings/ros-archive-keyring.gpg
+        ok "ROS keyring added"
+    else
+        skip "ROS keyring already present"
+    fi
+
+    # Nvidia CDI (safe to regenerate every run)
+    sudo nvidia-ctk cdi generate --mode=csv --output=/etc/cdi/nvidia.yaml
+    ok "CDI config regenerated"
+
+    # Nvidia Jetson APT repo
+    if ! grep -q "repo.download.nvidia.com/jetson/common" \
+            /etc/apt/sources.list.d/nvidia-l4t-apt-source.list 2>/dev/null; then
+        sudo apt-key adv --fetch-key \
+            https://repo.download.nvidia.com/jetson/jetson-ota-public.asc
+        echo "deb https://repo.download.nvidia.com/jetson/common r36.4 main" \
+            | sudo tee /etc/apt/sources.list.d/nvidia-l4t-apt-source.list >/dev/null
+        echo "deb https://repo.download.nvidia.com/jetson/t234 r36.4 main" \
+            | sudo tee -a /etc/apt/sources.list.d/nvidia-l4t-apt-source.list >/dev/null
+        ok "Nvidia Jetson repo added"
+    else
+        skip "Nvidia Jetson repo already present"
+    fi
+
+    # Docker APT repo
+    if [[ ! -f /etc/apt/keyrings/docker.gpg ]]; then
+        sudo install -m 0755 -d /etc/apt/keyrings
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+            | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+        sudo chmod a+r /etc/apt/keyrings/docker.gpg
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+https://download.docker.com/linux/ubuntu \
+$(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+            | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
+        ok "Docker repo added"
+    else
+        skip "Docker repo already present"
+    fi
+
+    STEPS_RUN+=("repos")
+}
+
+###############################################################################
+# APT PACKAGES
+###############################################################################
+setup_apt_packages() {
+    step "APT packages"
+
+    sudo apt-get update
+    sudo apt-get install -y \
+        software-properties-common \
+        ca-certificates curl gnupg \
+        libusb-1.0-0-dev pkgconf gpiod \
+        pva-allow-2 \
+        python3-colcon-clean
+
+    STEPS_RUN+=("apt")
+    ok "APT packages installed"
+}
+
+###############################################################################
+# PX4 BUILD DEPENDENCIES  (fresh only)
+###############################################################################
+setup_px4_deps() {
+    if [[ "$SETUP_MODE" != "fresh" ]]; then
+        skip "PX4 deps (patch mode — skipped)"
+        return
+    fi
+
+    step "PX4 build dependencies"
+
+    if [[ ! -d "${PX4_DIR}" ]]; then
+        skip "PX4-Autopilot not found at ${PX4_DIR}"
+        STEPS_SKIPPED+=("px4_deps")
+        return
+    fi
+
+    local install_px4
+    while true; do
+        read -r -p "Install PX4 build dependencies? (y/n): " install_px4
+        case "$install_px4" in [yYnN]) break ;; *) echo "Choose y or n." ;; esac
+    done
+
+    if [[ "$install_px4" =~ ^[yY]$ ]]; then
+        (cd "${PX4_DIR}/Tools/setup" && bash ubuntu.sh)
+        STEPS_RUN+=("px4_deps")
+        ok "PX4 dependencies installed"
+    else
+        skip "PX4 dependencies"
+        STEPS_SKIPPED+=("px4_deps")
+    fi
+}
+
+###############################################################################
+# GIT CONFIG & SUBMODULES
+###############################################################################
+setup_git() {
+    step "Git config & submodules"
+
+    git config --global credential.helper "cache --timeout=604800"
+
+    find "${WORKSPACES}/scripts" -type f \( -name "*.bash" -o -name "*.sh" \) \
+        -exec chmod +x {} \;
+    find "${ISAAC_ROS_WS}/container_scripts" -type f \( -name "*.bash" -o -name "*.sh" \) \
+        -exec chmod +x {} \;
+    ok "Script permissions set"
+
+    "${WORKSPACES}/scripts/update_isaac_submods.sh"
+    ok "Submodules updated"
+
+    STEPS_RUN+=("git")
+}
+
+###############################################################################
+# ISAAC ROS DOCKER PATCHES
+###############################################################################
+setup_docker_patches() {
+    step "Isaac ROS Docker patches"
+
+    cp -f "${ISAAC_ROS_WS}/docker_resources/patched_dockerfiles/.isaac_ros_common-config" \
+        "${ISAAC_ROS_WS}/src/isaac_ros_common/scripts/"
+
+    cp -f "${ISAAC_ROS_WS}/docker_resources/dockerfiles/Dockerfile.cypher" \
+        "${ISAAC_ROS_WS}/src/isaac_ros_common/docker/"
+
+    cp -f "${ISAAC_ROS_WS}/container_scripts/run_dev.sh" \
+        "${ISAAC_ROS_WS}/src/isaac_ros_common/scripts/"
+
+    cp -f "${ISAAC_ROS_WS}/container_scripts/cypher_env.sh" \
+        "${ISAAC_ROS_WS}/src/isaac_ros_common/docker/scripts/"
+
+    # Protect patched files in isaac_ros_common submodule from git modification
+    git -C "${ISAAC_ROS_WS}/src/isaac_ros_common" update-index --skip-worktree \
+        scripts/.isaac_ros_common-config \
+        docker/Dockerfile.cypher \
+        scripts/run_dev.sh \
+        docker/scripts/cypher_env.sh 2>/dev/null || true
+
+    STEPS_RUN+=("docker_patches")
+    ok "Docker patches applied and protected"
+}
+
+###############################################################################
+# CALIBRATION & CONFIG FILE PROTECTION (skip-worktree)
+# Dynamically finds all config/ and cfg/ dirs under src/ so new packages
+# (e.g. cypher_argus) are covered automatically without editing this script.
+###############################################################################
+setup_skip_worktree() {
+    step "Protecting calibration & config files"
+
+    local protected=0
+
+    while IFS= read -r dir; do
+        local rel_dir
+        rel_dir=$(realpath --relative-to="$REPO_ROOT" "$dir")
+        local files
+        files=$(git -C "$REPO_ROOT" ls-files "$rel_dir" 2>/dev/null || true)
+        if [[ -n "$files" ]]; then
+            echo "$files" | xargs git -C "$REPO_ROOT" update-index --skip-worktree \
+                2>/dev/null || true
+            ok "Protected: ${rel_dir}"
+            (( protected++ )) || true
+        fi
+    done < <(find "${ISAAC_ROS_WS}/src" -type d \( -name "config" -o -name "cfg" \) 2>/dev/null)
+
+    STEPS_RUN+=("skip_worktree")
+    ok "${protected} config/calibration directories protected"
+}
+
+###############################################################################
+# .BASHRC
+# Always removes and rewrites the Cypher block so patch runs pick up
+# any alias or export changes without leaving stale duplicates.
+###############################################################################
+setup_bashrc() {
+    step ".bashrc environment"
+
+    # Remove existing block (idempotent)
+    sed -i '/# BEGIN CYPHER SETUP/,/# END CYPHER SETUP/d' "$BASHRC_FILE"
+
+    cat >> "$BASHRC_FILE" << EOF
+# BEGIN CYPHER SETUP
+if [ -d /tmp/.X11-unix ]; then
+    sock=\$(ls /tmp/.X11-unix/X* 2>/dev/null | head -n1)
+    if [ -n "\$sock" ]; then export DISPLAY=":\${sock##*/X}"; fi
+fi
+xhost +local: >/dev/null 2>&1 || true
+export ROS_DOMAIN_ID=23
+export WORKSPACES=${WORKSPACES}
+export LOCAL_WS=${LOCAL_WS}
+export ISAAC_ROS_WS=${ISAAC_ROS_WS}
+source ${LOCAL_WS}/install/setup.bash
+alias run_isaac='/bin/bash ${ISAAC_ROS_WS}/container_scripts/run_isaac_docker.sh'
+alias build_isaac='/bin/bash ${ISAAC_ROS_WS}/container_scripts/build_isaac_docker.sh'
+alias start_isaac='/bin/bash ${ISAAC_ROS_WS}/container_scripts/start_isaac_docker.sh'
+alias stop_isaac='docker stop isaac_ros_dev-aarch64-container'
+alias isaac_bash='/bin/bash ${ISAAC_ROS_WS}/container_scripts/isaac_bash.sh'
+alias reset_usb='/bin/bash ${WORKSPACES}/scripts/usb_reset.sh'
+alias rosdep_local='rosdep install --from-paths ${LOCAL_WS}/src/ --ignore-src -y'
+alias colcon_local='cd ${LOCAL_WS} && colcon build --symlink-install --base-paths src && source ./install/setup.bash'
+alias clean_local='cd ${LOCAL_WS} && colcon clean workspace --base-select build install log'
+# END CYPHER SETUP
+EOF
+
+    STEPS_RUN+=("bashrc")
+    ok ".bashrc updated"
+}
 
 ###############################################################################
 # SUDOERS / UDEV / POLKIT / GROUPS
 ###############################################################################
-SUDOERS_LINE="$USERNAME ALL=(ALL) NOPASSWD: \
-    /usr/sbin/uhubctl, \
-    /usr/bin/gpioset, \
-    /bin/systemctl start *, \
-    /bin/systemctl stop *, \
-    /bin/systemctl restart *, \
-    /bin/systemctl kill *, \
-    ${WORKSPACES}/scripts/usb_reset.sh"
+setup_permissions() {
+    step "Sudoers, udev, polkit, groups"
 
-if sudo grep -Fxq "$SUDOERS_LINE" "$SUDOERS_FILE" 2>/dev/null; then
-  echo "Rule already present in $SUDOERS_FILE"
-else
-  echo "$SUDOERS_LINE" | sudo tee "$SUDOERS_FILE" >/dev/null
-  sudo chmod 440 "$SUDOERS_FILE"
-  echo "Rule added to $SUDOERS_FILE"
-fi
+    # Sudoers — always write (idempotent, fixed content)
+    sudo tee "$SUDOERS_FILE" > /dev/null << EOF
+${USERNAME} ALL=(ALL) NOPASSWD: /usr/sbin/uhubctl, /usr/bin/gpioset, /bin/systemctl start *, /bin/systemctl stop *, /bin/systemctl restart *, /bin/systemctl kill *, ${WORKSPACES}/scripts/usb_reset.sh
+EOF
+    sudo chmod 440 "$SUDOERS_FILE"
+    ok "Sudoers rule written"
 
-UHUBCTL_DIR="${HOME}/uhubctl"
-if [ ! -d "${UHUBCTL_DIR}" ]; then
-  git clone https://github.com/mvp/uhubctl "${UHUBCTL_DIR}"
-fi
-cd "${UHUBCTL_DIR}"
-make
-sudo make install
-cd ~
-
-sudo tee /etc/udev/rules.d/52-usb.rules >/dev/null <<'EOL'
-# USB2/3 hub permissions
+    # udev rules
+    sudo tee /etc/udev/rules.d/52-usb.rules > /dev/null << 'EOL'
 SUBSYSTEM=="usb", DRIVER=="usb", MODE="0664", GROUP="dialout", ATTR{idVendor}=="2109"
 SUBSYSTEM=="usb", DRIVER=="usb", MODE="0664", GROUP="dialout", ATTR{idVendor}=="1d6b"
-# Linux 6.0+ interface
 SUBSYSTEM=="usb", DRIVER=="usb", \
-  RUN+="/bin/sh -c \"chown -f root:dialout \$sys\$devpath/*port*/disable || true\"", \
-  RUN+="/bin/sh -c \"chmod -f 660 \$sys\$devpath/*port*/disable || true\""
+  RUN+="/bin/sh -c \"chown -f root:dialout $sys$devpath/*port*/disable || true\"", \
+  RUN+="/bin/sh -c \"chmod -f 660 $sys$devpath/*port*/disable || true\""
 EOL
 
-sudo tee /etc/udev/rules.d/99-gpio.rules >/dev/null <<'EOL'
+    sudo tee /etc/udev/rules.d/99-gpio.rules > /dev/null << 'EOL'
 SUBSYSTEM=="gpio", GROUP=="gpio", MODE=="0660"
 EOL
 
-sudo usermod -aG dialout,gpio "${USERNAME}"
+    sudo udevadm control --reload-rules
+    ok "udev rules written and reloaded"
 
-echo "Creating Polkit rule..."
-sudo tee "$POLKIT_RULE_FILE" >/dev/null <<EOL
+    # Groups
+    sudo usermod -aG dialout,gpio "${USERNAME}"
+    ok "Groups: dialout, gpio"
+
+    # Polkit rule for reset_usb.service
+    sudo tee "$POLKIT_RULE_FILE" > /dev/null << EOF
 polkit.addRule(function(action, subject) {
     if (action.id == "org.freedesktop.systemd1.manage-units" &&
         action.lookup("unit") == "reset_usb.service" &&
@@ -263,95 +389,220 @@ polkit.addRule(function(action, subject) {
         return polkit.Result.YES;
     }
 });
-EOL
-sudo chmod 644 "$POLKIT_RULE_FILE"
+EOF
+    sudo chmod 644 "$POLKIT_RULE_FILE"
+    ok "Polkit rule written"
+
+    STEPS_RUN+=("permissions")
+}
+
+###############################################################################
+# UHUBCTL
+###############################################################################
+setup_uhubctl() {
+    step "uhubctl"
+
+    if command -v uhubctl >/dev/null 2>&1; then
+        skip "uhubctl already installed"
+        STEPS_SKIPPED+=("uhubctl")
+        return
+    fi
+
+    local UHUBCTL_DIR="${HOME_DIR}/uhubctl"
+    if [[ ! -d "${UHUBCTL_DIR}" ]]; then
+        git clone https://github.com/mvp/uhubctl "${UHUBCTL_DIR}"
+    fi
+
+    (
+        cd "${UHUBCTL_DIR}"
+        make
+        sudo make install
+    )
+
+    STEPS_RUN+=("uhubctl")
+    ok "uhubctl installed"
+}
 
 ###############################################################################
 # SYSTEMD SERVICES
 ###############################################################################
-echo "Copying system service files..."
-sudo cp -f "${ISAAC_ROS_WS}/services/"*.service "/etc/systemd/system/"
-sudo cp -f "${LOCAL_WS}/services/"*.service "/etc/systemd/system/"
+setup_systemd() {
+    step "systemd services"
 
-sudo systemctl enable usb_ros_reset.service
-sudo systemctl enable uwb_ros_node.service
-sudo systemctl enable start_isaac_docker.service
-sudo systemctl enable jetson-clocks.service
-sudo systemctl daemon-reload
+    sudo cp -f "${ISAAC_ROS_WS}/services/"*.service "/etc/systemd/system/"
+    sudo cp -f "${LOCAL_WS}/services/"*.service "/etc/systemd/system/"
 
-###############################################################################
-# ROS2 / LOCAL_WS DEPS (apt already refreshed)
-###############################################################################
-ensure_pip_pkg() {
-  local pkg="$1"       # e.g. websockets==15.0.1 or empy<4
-  local name="$2"      # e.g. websockets
-  local want_version="$3" # e.g. 15.0.1 or 3.3.4 or empty for unconstrained
+    sudo systemctl enable usb_ros_reset.service
+    sudo systemctl enable uwb_ros_node.service
+    sudo systemctl enable start_isaac_docker.service
+    sudo systemctl enable jetson-clocks.service
+    sudo systemctl daemon-reload
 
-  local have
-  have=$(python3 -m pip show "$name" 2>/dev/null | awk '/^Version: / {print $2}' || true)
-
-  if [ -z "$have" ]; then
-    echo "Installing $pkg (not currently installed)..."
-    python3 -m pip install "$pkg" --no-deps
-  elif [ -n "$want_version" ] && [ "$have" != "$want_version" ]; then
-    echo "Upgrading $name from $have to $want_version..."
-    python3 -m pip install "$pkg" --no-deps
-  else
-    echo "$name==$have already satisfies requirement $pkg, skipping."
-  fi
+    STEPS_RUN+=("systemd")
+    ok "Services enabled and daemon reloaded"
 }
 
-# websockets==15.0.1
-ensure_pip_pkg "websockets==15.0.1" "websockets" "15.0.1"
-# pyudev==0.24.3
-ensure_pip_pkg "pyudev==0.24.3" "pyudev" "0.24.3"
-# pyserial==3.5
-ensure_pip_pkg "pyserial==3.5" "pyserial" "3.5"
-# empy<4 (just ensure installed; version bound is loose)
-ensure_pip_pkg "empy<4" "empy" ""
+###############################################################################
+# PYTHON PACKAGES
+###############################################################################
+ensure_pip_pkg() {
+    local pkg="$1"
+    local name="$2"
+    local want_version="$3"
 
-cd "${LOCAL_WS}"
-# rosdep init only if not already initialized
-if [ ! -f /etc/ros/rosdep/sources.list.d/20-default.list ]; then
-  sudo rosdep init
-else
-  echo "rosdep already initialized, skipping init."
-fi
+    local have
+    have=$(python3 -m pip show "$name" 2>/dev/null | awk '/^Version: / {print $2}' || true)
 
-rosdep update
-rosdep install --from-paths "${LOCAL_WS}/src/" --ignore-src -y
-
-colcon build \
-  --symlink-install \
-  --base-paths "${LOCAL_WS}/src" \
-  --event-handlers console_direct+ \
-  --cmake-args -DCMAKE_VERBOSE_MAKEFILE=ON
+    if [[ -z "$have" ]]; then
+        ok "Installing ${pkg}..."
+        python3 -m pip install "$pkg" --no-deps --break-system-packages
+    elif [[ -n "$want_version" && "$have" != "$want_version" ]]; then
+        ok "Upgrading ${name} from ${have} to ${want_version}..."
+        python3 -m pip install "$pkg" --no-deps --break-system-packages
+    else
+        skip "${name}==${have} already satisfies ${pkg}"
+    fi
+}
 
 ###############################################################################
-# NVIDIA CDI + DOCKER ENGINE + BUILDX
+# ROS2 LOCAL WORKSPACE
 ###############################################################################
-if [[ "$setup_type" == "New Setup" ]]; then
-  echo "Installing and configuring Docker..."
-  (
+setup_ros_workspace() {
+    step "ROS2 local workspace"
+
+    ensure_pip_pkg "websockets==15.0.1" "websockets" "15.0.1"
+    ensure_pip_pkg "pyudev==0.24.3"     "pyudev"     "0.24.3"
+    ensure_pip_pkg "pyserial==3.5"      "pyserial"   "3.5"
+    ensure_pip_pkg "empy<4"             "empy"       ""
+
+    if [[ ! -f /etc/ros/rosdep/sources.list.d/20-default.list ]]; then
+        sudo rosdep init
+    else
+        skip "rosdep already initialized"
+    fi
+
+    rosdep update
+    rosdep install --from-paths "${LOCAL_WS}/src/" --ignore-src -y
+
+    (
+        cd "${LOCAL_WS}"
+        colcon build \
+            --symlink-install \
+            --base-paths src \
+            --event-handlers console_direct+ \
+            --cmake-args -DCMAKE_VERBOSE_MAKEFILE=ON
+    )
+
+    STEPS_RUN+=("ros_workspace")
+    ok "ROS2 local workspace built"
+}
+
+###############################################################################
+# DOCKER  (install only on fresh; ensure running on patch)
+###############################################################################
+setup_docker() {
+    step "Docker"
+
+    if [[ "$SETUP_MODE" == "patch" ]]; then
+        if command -v docker >/dev/null 2>&1; then
+            sudo systemctl --now enable docker
+            skip "Docker already installed (patch mode)"
+            STEPS_SKIPPED+=("docker_install")
+        else
+            warn "Docker not installed — re-run with --fresh"
+        fi
+        return
+    fi
+
+    # Fresh install
     if ! command -v docker >/dev/null 2>&1; then
-      curl https://get.docker.com | sh -s -- --version 29.2.1
+        curl https://get.docker.com | sh -s -- --version 29.2.1
+        ok "Docker engine installed"
+    else
+        skip "Docker binary already present"
     fi
 
     sudo systemctl --now enable docker
     sudo nvidia-ctk runtime configure --runtime=docker
     sudo systemctl restart docker
-    sudo usermod -aG docker "$USER"
-
+    sudo usermod -aG docker "${USERNAME}"
     sudo apt-get install -y docker-buildx-plugin
-    sudo systemctl --now enable docker || true
-  )
-else
-  if command -v docker >/dev/null 2>&1; then
-    sudo systemctl --now enable docker || true
-  else
-    echo "Docker is not installed... repeat and choose 'New Setup'"
-  fi
-fi
 
-echo "Rebooting system..."
-sudo reboot
+    STEPS_RUN+=("docker")
+    ok "Docker configured with NVIDIA runtime"
+}
+
+###############################################################################
+# SENTINEL
+###############################################################################
+write_sentinel() {
+    [[ "$SETUP_MODE" != "fresh" ]] && return
+    sudo touch "$SENTINEL"
+    ok "Sentinel written to ${SENTINEL} (future runs will default to patch)"
+}
+
+###############################################################################
+# SUMMARY
+###############################################################################
+print_summary() {
+    echo ""
+    echo -e "${BOLD}======================================${NC}"
+    echo -e "${BOLD}  Setup Complete${NC}"
+    echo -e "${BOLD}======================================${NC}"
+    echo -e "  Mode:  ${BOLD}${SETUP_MODE}${NC}"
+    echo -e "  Log:   ${LOG_FILE}"
+
+    if [[ ${#STEPS_RUN[@]} -gt 0 ]]; then
+        echo ""
+        echo -e "  ${GREEN}Completed:${NC}"
+        for s in "${STEPS_RUN[@]}"; do echo "    - ${s}"; done
+    fi
+
+    if [[ ${#STEPS_SKIPPED[@]} -gt 0 ]]; then
+        echo ""
+        echo -e "  ${YELLOW}Skipped:${NC}"
+        for s in "${STEPS_SKIPPED[@]}"; do echo "    - ${s}"; done
+    fi
+
+    echo -e "${BOLD}======================================${NC}"
+}
+
+###############################################################################
+# REBOOT PROMPT
+###############################################################################
+prompt_reboot() {
+    echo ""
+    echo -e "${YELLOW}${BOLD}A reboot is required for all changes to take effect.${NC}"
+    read -r -p "Reboot now? (y/n): " do_reboot
+    if [[ "$do_reboot" =~ ^[yY]$ ]]; then
+        sudo reboot
+    else
+        echo "Remember to reboot before using this system."
+    fi
+}
+
+###############################################################################
+# MAIN
+###############################################################################
+main() {
+    parse_args "$@"
+    preflight
+    setup_power
+    setup_repos
+    setup_apt_packages
+    setup_px4_deps
+    setup_git
+    setup_docker_patches
+    setup_skip_worktree
+    setup_bashrc
+    setup_permissions
+    setup_uhubctl
+    setup_systemd
+    setup_ros_workspace
+    setup_docker
+    write_sentinel
+    print_summary
+    prompt_reboot
+}
+
+main "$@"
