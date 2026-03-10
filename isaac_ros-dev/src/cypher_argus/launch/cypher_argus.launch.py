@@ -94,14 +94,25 @@ def generate_nodes(context, *args, **kwargs):
         ],
     )
 
+    # Pipeline order: argus → rectify → format_converter → apriltag
+    # For non-rgb8: argus outputs image_raw_color (rgb8), rectify reads that and
+    # outputs image_rect_color (bgr8), format_converter converts to image_rect (target encoding).
+    # apriltag reads image_rect (default) regardless of encoding.
+    # For rgb8: argus outputs image_raw directly, rectify uses default topics, no converter needed.
+    rectify_remaps = [
+        ('image_raw', 'image_raw_color'),
+        ('image_rect', 'image_rect_color'),
+    ] if output_encoding != 'rgb8' else []
+
     rectify_node = ComposableNode(
         package='isaac_ros_image_proc',
         plugin='nvidia::isaac_ros::image_proc::RectifyNode',
         name='image_rectify',
         namespace=image_ns,
+        remappings=rectify_remaps,
     )
 
-    composable_nodes = [argus_node]
+    composable_nodes = [argus_node, rectify_node]
 
     if output_encoding != 'rgb8':
         composable_nodes.append(ComposableNode(
@@ -115,12 +126,10 @@ def generate_nodes(context, *args, **kwargs):
                 'image_height': image_height,
             }],
             remappings=[
-                ('image_raw', 'image_raw_color'),
-                ('image', 'image_raw'),
+                ('image_raw', 'image_rect_color'),
+                ('image', 'image_rect'),
             ],
         ))
-
-    composable_nodes.append(rectify_node)
 
     if image_ns in tag_config_map:
         config_info = tag_config_map[image_ns]
