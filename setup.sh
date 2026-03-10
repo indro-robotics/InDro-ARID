@@ -307,7 +307,7 @@ setup_skip_worktree() {
             ok "Protected: ${rel_dir}"
             (( protected++ )) || true
         fi
-    done < <(find "${ISAAC_ROS_WS}/src" -type d \( -name "config" -o -name "cfg" \) 2>/dev/null)
+    done < <(find "${ISAAC_ROS_WS}/src" "${LOCAL_WS}" -type d \( -name "config" -o -name "cfg" -o -name "camera_calibrations" \) 2>/dev/null)
 
     STEPS_RUN+=("skip_worktree")
     ok "${protected} config/calibration directories protected"
