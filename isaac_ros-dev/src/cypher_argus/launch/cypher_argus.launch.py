@@ -109,6 +109,10 @@ def generate_nodes(context, *args, **kwargs):
         plugin='nvidia::isaac_ros::image_proc::RectifyNode',
         name='image_rectify',
         namespace=image_ns,
+        parameters=[{k: v for k, v in {
+            'output_width': image_width,
+            'output_height': image_height,
+        }.items() if v is not None}],
         remappings=rectify_remaps,
     )
 
@@ -120,11 +124,11 @@ def generate_nodes(context, *args, **kwargs):
             plugin='nvidia::isaac_ros::image_proc::ImageFormatConverterNode',
             name='image_format_converter',
             namespace=image_ns,
-            parameters=[{
+            parameters=[{k: v for k, v in {
                 'encoding_desired': output_encoding,
                 'image_width': image_width,
                 'image_height': image_height,
-            }],
+            }.items() if v is not None}],
             remappings=[
                 ('image_raw', 'image_rect_color'),
                 ('image', 'image_rect'),
@@ -167,8 +171,8 @@ def generate_launch_description():
 
     camera_mode_arg = DeclareLaunchArgument(
         'camera_mode',
-        default_value='1',
-        description='Camera mode index (0 -> IMX477_0.yaml, 1 -> IMX477_1.yaml, etc.)',
+        default_value='0',
+        description='Camera mode index (0 -> IMX477_0.yaml, etc.)',
     )
 
     image_ns_arg = DeclareLaunchArgument(
