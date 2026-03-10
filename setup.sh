@@ -95,10 +95,10 @@ parse_args() {
 }
 
 ###############################################################################
-# PREFLIGHT
+# SANITY CHECKS
 ###############################################################################
 preflight() {
-    step "Preflight checks"
+    step "Sanity checks"
 
     [[ $EUID -eq 0 ]] && { err "Do not run as root."; exit 1; }
     command -v git >/dev/null || { err "git not found."; exit 1; }
@@ -109,7 +109,7 @@ preflight() {
         exit 1
     fi
 
-    ok "Preflight passed"
+    ok "Sanity checks passed"
 }
 
 ###############################################################################
