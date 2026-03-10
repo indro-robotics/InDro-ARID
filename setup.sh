@@ -11,7 +11,8 @@ set -euo pipefail
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[1;34m'; BOLD='\033[1m'; NC='\033[0m'
 
-step() { echo -e "\n${BLUE}${BOLD}==> $*${NC}"; }
+CURRENT_STEP="(not started)"
+step() { CURRENT_STEP="$*"; echo -e "\n${BLUE}${BOLD}==> $*${NC}"; }
 ok()   { echo -e "  ${GREEN}[OK]${NC}   $*"; }
 warn() { echo -e "  ${YELLOW}[WARN]${NC} $*"; }
 skip() { echo -e "  [SKIP]  $*"; }
@@ -24,7 +25,11 @@ STEPS_SKIPPED=()
 # ERROR TRAP
 ###############################################################################
 failure() {
-    err "Command failed at ${BASH_SOURCE[0]}:$1: '${BASH_COMMAND}' (exit: $?)"
+    err "======================================================"
+    err "SETUP FAILED in step: ${CURRENT_STEP}"
+    err "Line $1: '${BASH_COMMAND}'"
+    err "Log: ${LOG_FILE:-<not yet set>}"
+    err "======================================================"
     exit 1
 }
 trap 'failure ${LINENO}' ERR

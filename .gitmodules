@@ -1,9 +1,11 @@
 [submodule "local_ws/src/reset_ark_usb"]
 	path = local_ws/src/reset_ark_usb
 	url = https://github.com/indro-robotics/reset_ark_usb.git
+	branch = main
 [submodule "local_ws/src/uwb_drone"]
 	path = local_ws/src/uwb_drone
 	url = https://github.com/indro-robotics/uwb_drone.git
+	branch = websocket-server
 [submodule "local_ws/src/px4_msgs"]
 	path = local_ws/src/px4_msgs
 	url = https://github.com/PX4/px4_msgs.git
