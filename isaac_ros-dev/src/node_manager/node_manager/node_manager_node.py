@@ -240,10 +240,13 @@ class NodeManager(Node):
         with self.process_lock:
             proc = self.processes[name]
 
-            # Already running — do not spawn a second instance
+            # Already running — do not spawn a second instance.
+            # Re-publish alive=True so any subscriber that reset pipeline_active
+            # (e.g. set_pipeline()) gets the confirmation without a full restart.
             if proc is not None and proc.poll() is None:
                 msg = '%s already running (pid=%d)' % (name, proc.pid)
                 self.get_logger().info(msg)
+                self._publish_alive(name, True)
                 return True, msg
 
             command  = self.pipelines[name]

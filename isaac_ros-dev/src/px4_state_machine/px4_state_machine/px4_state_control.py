@@ -119,10 +119,13 @@ class DRONE_FSM(Node):
             'front_cv_pipe': self.create_client(SetBool, '/node_manager/front_cv_pipe'),
             'down_cv_pipe':  self.create_client(SetBool, '/node_manager/down_cv_pipe'),
         }
+        self.stop_all_client = self.create_client(Trigger, '/node_manager/stop_all')
 
         for name, client in self.camera_pipe_clients.items():
             while not client.wait_for_service(timeout_sec=3.0):
                 self.get_logger().info('NODE MANAGER: waiting for %s...' % name)
+        while not self.stop_all_client.wait_for_service(timeout_sec=3.0):
+            self.get_logger().info('NODE MANAGER: waiting for stop_all...')
 
         # Async loop for non-blocking service calls from within FSM callbacks
         self.camera_loop = asyncio.new_event_loop()
@@ -131,6 +134,13 @@ class DRONE_FSM(Node):
             daemon=True
         )
         self.camera_thread.start()
+
+        # Serializes pipeline calls — prevents interleaving when stop and start
+        # are submitted back-to-back from FSM state transitions.
+        self.camera_switch_lock = asyncio.Lock()
+
+        # Ensure clean slate — kill anything left over from a previous run
+        self.stop_all_pipelines()
 
 
         ### QoS PARAMETERS #########################################################################
@@ -522,19 +532,18 @@ class DRONE_FSM(Node):
 
             case "INITIATE_RESET":
                 self.pub_tracking_params()
-                self.set_pipeline()
-                self.set_FSM_state("STOP_CV_CAMERAS") 
+                self.stop_all_pipelines()
+                self.set_FSM_state("STOP_CV_CAMERAS")
 
 
             case "STOP_CV_CAMERAS":
-                self.set_pipeline()
-                self.set_FSM_state("REBOOT_FMU") 
+                self.stop_all_pipelines()
+                self.set_FSM_state("REBOOT_FMU")
 
 
             case "REBOOT_FMU":
-                if self.pipeline_active: 
-                    #self.reset_fmu()
-                    self.set_FSM_state("FMU_REBOOTING") 
+                #self.reset_fmu()
+                self.set_FSM_state("FMU_REBOOTING")
 
 
             case "FMU_REBOOTING":
@@ -582,6 +591,7 @@ class DRONE_FSM(Node):
                 
 
             case "PRE_AMR_SEEK":
+                self.stop_pipeline('front_cv_pipe')
                 self.set_pipeline('down_cv_pipe')
                 self.set_FSM_state("START_AMR_SEEK")
 
@@ -626,6 +636,7 @@ class DRONE_FSM(Node):
             
 
             case "CYCLE_SETUP":
+                self.stop_pipeline('down_cv_pipe')
                 self.set_pipeline('front_cv_pipe')
                 self.waypoint_track(yaw = self.cycle_orientation)
                 self.set_FSM_state("PRE_CYCLE_SEEK_FLOOR")
@@ -793,50 +804,69 @@ class DRONE_FSM(Node):
             if (self.FSM_current_state in self.vslam_failsafe_modes):
                 self.FSM_current_state = "ASSERT_LAND"
 
-    def set_pipeline(self, target_pipe: str = None):
+    def set_pipeline(self, target_pipe: str):
         """
-        Kill all camera pipelines then optionally start one.
-        target_pipe = 'front_cv_pipe' | 'down_cv_pipe' | None (stop all)
-
-        pipeline_active is gated on the alive topic:
-          - target_pipe set  -> True only when that pipeline's /alive topic fires True
-          - target_pipe None -> True immediately after all stop calls complete
+        Start a specific pipeline without stopping anything else.
+        pipeline_active is set True only when the target's /alive topic fires True.
         """
         self.pipeline_active = False
         self.active_pipeline = target_pipe
 
-        async def _async_switch():
-            req_off = SetBool.Request()
-            req_off.data = False
-
-            # Kill every camera pipeline first — clean slate
-            for name, client in self.camera_pipe_clients.items():
+        async def _async_start():
+            async with self.camera_switch_lock:
+                client = self.camera_pipe_clients.get(target_pipe)
+                if client is None:
+                    self.get_logger().error('set_pipeline: unknown pipeline: %s' % target_pipe)
+                    return
                 if not client.service_is_ready():
-                    self.get_logger().warn('set_pipeline: node_manager/%s not available — skipping disable' % name)
-                    continue
-                try:
-                    await client.call_async(req_off)
-                except Exception as e:
-                    self.get_logger().warn('set_pipeline: failed to disable %s: %s' % (name, str(e)))
-
-            if target_pipe is not None:
-                client = self.camera_pipe_clients[target_pipe]
-                if not client.service_is_ready():
-                    self.get_logger().error('set_pipeline: node_manager/%s not available — cannot start pipeline' % target_pipe)
+                    self.get_logger().error('set_pipeline: node_manager/%s not available' % target_pipe)
                     return
                 req_on = SetBool.Request()
                 req_on.data = True
                 try:
                     await client.call_async(req_on)
-                    # pipeline_active will be set True by the alive subscription once the
-                    # process is confirmed running — do not advance until then
+                    # pipeline_active set True by alive subscription when confirmed running
                 except Exception as e:
                     self.get_logger().warn('set_pipeline: failed to enable %s: %s' % (target_pipe, str(e)))
-            else:
-                # Stop-all — no pipeline to wait on, we're done
-                self.pipeline_active = True
 
-        asyncio.run_coroutine_threadsafe(_async_switch(), self.camera_loop)
+        asyncio.run_coroutine_threadsafe(_async_start(), self.camera_loop)
+
+    def stop_pipeline(self, pipe_name: str):
+        """Stop one specific pipeline. Does not affect pipeline_active or other pipelines."""
+        async def _async_stop():
+            async with self.camera_switch_lock:
+                client = self.camera_pipe_clients.get(pipe_name)
+                if client is None:
+                    self.get_logger().error('stop_pipeline: unknown pipeline: %s' % pipe_name)
+                    return
+                if not client.service_is_ready():
+                    self.get_logger().warn('stop_pipeline: node_manager/%s not available — skipping' % pipe_name)
+                    return
+                req_off = SetBool.Request()
+                req_off.data = False
+                try:
+                    await client.call_async(req_off)
+                except Exception as e:
+                    self.get_logger().warn('stop_pipeline: failed to disable %s: %s' % (pipe_name, str(e)))
+
+        asyncio.run_coroutine_threadsafe(_async_stop(), self.camera_loop)
+
+    def stop_all_pipelines(self):
+        """Stop every pipeline the node_manager is running."""
+        self.pipeline_active = False
+        self.active_pipeline = None
+
+        async def _async_stop_all():
+            async with self.camera_switch_lock:
+                if not self.stop_all_client.service_is_ready():
+                    self.get_logger().warn('stop_all_pipelines: node_manager/stop_all not available — skipping')
+                    return
+                try:
+                    await self.stop_all_client.call_async(Trigger.Request())
+                except Exception as e:
+                    self.get_logger().warn('stop_all_pipelines: %s' % str(e))
+
+        asyncio.run_coroutine_threadsafe(_async_stop_all(), self.camera_loop)
 
     def _front_cv_alive_cb(self, msg):
         if self.active_pipeline == 'front_cv_pipe':
@@ -1114,63 +1144,66 @@ class DRONE_FSM(Node):
     # SHELF/AMR TARGETING ##########################################################################
     def targeting_callback(self, msg):
 
+        # Guard: drop detections from the wrong camera for the current FSM state.
+        if isinstance(msg, AmrTarget) and self.FSM_current_state not in {
+            "AMR_SEEK", "AMR_LOCK",
+            "START_LANDING", "LAND_APPROACH", "ASSERT_LAND",
+        }:
+            return
+        if isinstance(msg, ShelfTarget) and self.FSM_current_state not in {
+            "CYCLE_UP", "CYCLE_DOWN", "AMR_ALT_RETURN", "AMR_LAT_RETURN",
+        }:
+            return
+
         if isinstance(msg, AmrTarget):
             now = self.get_clock().now().nanoseconds * 1e-9
             self.last_detection_time = now
             self.target_times.append(now)
 
-        if self.FSM_current_state in {"CYCLE_UP", 
-                                      "CYCLE_DOWN", 
-                                      "AMR_LOCK", 
-                                      "AMR_ALT_RETURN", 
-                                      "LAND_APPROACH",
-                                      "ASSERT_LAND",
-                                      "LANDING"}:
-                                      
-            # Modify targets on-the-fly...
-            target_yaw = -msg.target_yaw
-            vehicle_heading_stamp = -msg.local_angle_stamp
-            delta_yaw = self.local_yaw - vehicle_heading_stamp
+        # Modify targets on-the-fly...
+        target_yaw = -msg.target_yaw
+        vehicle_heading_stamp = -msg.local_angle_stamp
+        delta_yaw = self.local_yaw - vehicle_heading_stamp
 
-            # In-progress... this is to preserve a shelf offset angle for sideways AMR tracking
-            # if self.FSM_current_state is "AMR_LOCK":
-            #     self.target_local_yaw = (target_yaw - delta_yaw - amr_ang_tracking_offset + 180) % 360 - 180
-            # else:
-            #     self.target_local_yaw = (target_yaw - delta_yaw + 180) % 360 - 180
-            
-            self.target_local_yaw = (target_yaw - delta_yaw + 180) % 360 - 180
+        # In-progress... this is to preserve a shelf offset angle for sideways AMR tracking
+        # if self.FSM_current_state is "AMR_LOCK":
+        #     self.target_local_yaw = (target_yaw - delta_yaw - amr_ang_tracking_offset + 180) % 360 - 180
+        # else:
+        #     self.target_local_yaw = (target_yaw - delta_yaw + 180) % 360 - 180
+        
+        self.target_local_yaw = (target_yaw - delta_yaw + 180) % 360 - 180
 
-            target_position = Vector3(x=msg.target_position.x,
-                                    y=-msg.target_position.y,
-                                    z=-msg.target_position.z)
-            
-            vehicle_local_position_stamp = Vector3(x=msg.local_position_stamp.x,
-                                                y=-msg.local_position_stamp.y,
-                                                z=-msg.local_position_stamp.z)
+        target_position = Vector3(x=msg.target_position.x,
+                                y=-msg.target_position.y,
+                                z=-msg.target_position.z)
+        
+        vehicle_local_position_stamp = Vector3(x=msg.local_position_stamp.x,
+                                            y=-msg.local_position_stamp.y,
+                                            z=-msg.local_position_stamp.z)
 
-            delta_pos = Vector3()
-            delta_pos.x = self.local_position.x - vehicle_local_position_stamp.x
-            delta_pos.y = self.local_position.y - vehicle_local_position_stamp.y
-            delta_pos.z = self.local_position.z - vehicle_local_position_stamp.z
+        delta_pos = Vector3()
+        delta_pos.x = self.local_position.x - vehicle_local_position_stamp.x
+        delta_pos.y = self.local_position.y - vehicle_local_position_stamp.y
+        delta_pos.z = self.local_position.z - vehicle_local_position_stamp.z
 
-            temp_target_local_position = Vector3()
-            temp_target_local_position.x = target_position.x - delta_pos.x
-            temp_target_local_position.y = target_position.y - delta_pos.y
-            temp_target_local_position.z = target_position.z - delta_pos.z
+        temp_target_local_position = Vector3()
+        temp_target_local_position.x = target_position.x - delta_pos.x
+        temp_target_local_position.y = target_position.y - delta_pos.y
+        temp_target_local_position.z = target_position.z - delta_pos.z
 
-            if self.FSM_current_state == "AMR_LOCK":
-                self.target_local_position = temp_target_local_position 
-            else:
-                z_const_target_local_position = Vector3(x=temp_target_local_position.x,
-                                                        y=temp_target_local_position.y,
-                                                        z=self.target_local_position.z)
-                self.target_local_position = z_const_target_local_position
+        if self.FSM_current_state == "AMR_LOCK":
+            self.target_local_position = temp_target_local_position 
+        else:
+            z_const_target_local_position = Vector3(x=temp_target_local_position.x,
+                                                    y=temp_target_local_position.y,
+                                                    z=self.target_local_position.z)
+            self.target_local_position = z_const_target_local_position
 
-            # Vestigal debugging...
-            # self.get_logger().info(f"CURRENT_YAW: {self.local_yaw}")
-            # self.get_logger().info(f"TARGET_YAW: {self.target_local_yaw}")
-            # self.get_logger().info(f"CURRENT_POS: {self.local_position}")
-            # self.get_logger().info(f"TARGET_POS: {self.target_local_position}")
+        # Vestigal debugging...
+        # self.get_logger().info(f"CURRENT_YAW: {self.local_yaw}")
+        # self.get_logger().info(f"TARGET_YAW: {self.target_local_yaw}")
+        # self.get_logger().info(f"CURRENT_POS: {self.local_position}")
+        # self.get_logger().info(f"TARGET_POS: {self.target_local_position}")
 
 
 
