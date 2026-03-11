@@ -198,7 +198,8 @@ setup_apt_packages() {
         ca-certificates curl gnupg \
         libusb-1.0-0-dev pkgconf gpiod \
         pva-allow-2 \
-        python3-colcon-clean
+        python3-colcon-clean \
+        ros-humble-rosbridge-server
 
     STEPS_RUN+=("apt")
     ok "APT packages installed"
@@ -441,6 +442,7 @@ setup_systemd() {
     sudo systemctl enable uwb_ros_node.service
     sudo systemctl enable start_isaac_docker.service
     sudo systemctl enable jetson-clocks.service
+    sudo systemctl enable rosbridge_websocket.service
     sudo systemctl daemon-reload
 
     STEPS_RUN+=("systemd")
