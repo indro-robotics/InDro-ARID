@@ -204,6 +204,17 @@ def generate_nodes(context, *args, **kwargs):
         )
         pipeline_nodes.append(apriltagger)
 
+    # Heartbeat: subscribes to image_rect, publishes std_msgs/Empty on
+    # /<image_ns>/heartbeat at the same rate — allows node_manager to confirm the full
+    # NITROS chain is healthy without subscribing to the full image topic cross-process.
+    pipeline_nodes.append(ComposableNode(
+        package='pipeline_health',
+        plugin='PipelineHeartbeatNode',
+        name='pipeline_heartbeat',
+        namespace=image_ns,
+        parameters=[{'watch_topic': 'image_rect'}],
+    ))
+
     pipeline_container = ComposableNodeContainer(
         name='cypher_argus_container',
         namespace='',

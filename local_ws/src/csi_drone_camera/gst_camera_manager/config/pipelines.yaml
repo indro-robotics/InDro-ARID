@@ -1,0 +1,11 @@
+pipelines:
+  phoenix_4k:
+    gst_pipeline: >-
+      aravissrc camera-name="192.168.42.199"
+      exposure=10000
+      features="AcquisitionMode=Continuous PixelFormat=Mono8 AcquisitionFrameRateEnable=true AcquisitionFrameRate=10.0"
+      gain-auto=2 ! appsink sync=false
+    calibration: "phoenix_4k"
+    topic: "scan_cam"
+    frame_id: "scan_cam_frame"
+    encoding: "bgr8"

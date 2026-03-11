@@ -199,7 +199,8 @@ setup_apt_packages() {
         libusb-1.0-0-dev pkgconf gpiod \
         pva-allow-2 \
         python3-colcon-clean \
-        ros-humble-rosbridge-server
+        ros-humble-rosbridge-server \
+        ros-humble-camera-info-manager
 
     STEPS_RUN+=("apt")
     ok "APT packages installed"

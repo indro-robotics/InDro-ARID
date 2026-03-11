@@ -520,6 +520,16 @@ class DRONE_FSM(Node):
         self.state_output()
         self.state_pub()
 
+        # RC override — highest priority, checked before any FSM state.
+        # When the RC pilot moves the sticks, PX4 exits Offboard and enters POSCTL.
+        # Without this early check, states that call waypoint_track() every tick
+        # (AMR_SEEK, CYCLE_UP, etc.) would keep publishing setpoints at 50Hz and
+        # suppress the POSCTL detection in vehicle_status_callback.
+        if (self.nav_state == VehicleStatus.NAVIGATION_STATE_POSCTL and self.assert_offboard):
+            self.unset_offboard()
+            self.set_FSM_state("RECOVERY")
+            return
+
         match self.FSM_current_state:
             
 
@@ -627,12 +637,15 @@ class DRONE_FSM(Node):
             case "AMR_LOCK":
                 if not self.target_visible:
                     self.set_FSM_state("PRE_AMR_SEEK")
-                if (self.target_locked):
+                elif self.target_locked:
                     if (self.assert_land):
                         self.set_FSM_state("START_LANDING")
                     elif (self.assert_cycle):
                         self.set_FSM_state("CYCLE_SETUP")
                         self.target_AMR_track.stamp()
+                else:
+                    # Visible but not yet locked — keep converging toward target
+                    self.waypoint_track(velocity=self.track_vel_lim)
             
 
             case "CYCLE_SETUP":
