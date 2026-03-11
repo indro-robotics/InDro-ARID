@@ -457,8 +457,9 @@ class DRONE_FSM(Node):
         self.rangefinder_prox_loiter = False
 
         # Camera Management ########################################################################
-        self.active_pipeline = None              # pipeline name we are waiting to go alive
-        self.pipeline_active = False
+        self.active_pipeline = None              # pipeline name currently requested
+        self.down_cv_alive  = False              # updated directly by subscription callback
+        self.front_cv_alive = False              # updated directly by subscription callback
 
         # VSLAM management #########################################################################
         self.vslam_status = 0
@@ -822,9 +823,8 @@ class DRONE_FSM(Node):
     def set_pipeline(self, target_pipe: str):
         """
         Start a specific pipeline without stopping anything else.
-        pipeline_active is set True only when the target's /alive topic fires True.
+        pipeline_active (property) reflects the alive state of the requested pipeline.
         """
-        self.pipeline_active = False
         self.active_pipeline = target_pipe
 
         async def _async_start():
@@ -868,7 +868,6 @@ class DRONE_FSM(Node):
 
     def stop_all_pipelines(self):
         """Stop every pipeline the node_manager is running."""
-        self.pipeline_active = False
         self.active_pipeline = None
 
         async def _async_stop_all():
@@ -884,12 +883,18 @@ class DRONE_FSM(Node):
         asyncio.run_coroutine_threadsafe(_async_stop_all(), self.camera_loop)
 
     def _front_cv_alive_cb(self, msg):
-        if self.active_pipeline == 'front_cv_pipe':
-            self.pipeline_active = msg.data
+        self.front_cv_alive = msg.data
 
     def _down_cv_alive_cb(self, msg):
+        self.down_cv_alive = msg.data
+
+    @property
+    def pipeline_active(self):
         if self.active_pipeline == 'down_cv_pipe':
-            self.pipeline_active = msg.data
+            return self.down_cv_alive
+        if self.active_pipeline == 'front_cv_pipe':
+            return self.front_cv_alive
+        return False
 
     def launch_callback(self, request, response):
         self.assert_launch = True  
@@ -1053,8 +1058,6 @@ class DRONE_FSM(Node):
         self.rangefinder_prox_alert = False
         self.rangefinder_prox_land = False
         self.rangefinder_prox_loiter = False
-
-        self.pipeline_active = False
 
         self.vslam_status = 0
         self.vslam_reset_completed = False
