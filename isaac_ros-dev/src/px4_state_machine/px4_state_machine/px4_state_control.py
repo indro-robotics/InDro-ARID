@@ -603,8 +603,7 @@ class DRONE_FSM(Node):
             case "PRE_AMR_SEEK":
                 self.stop_pipeline('front_cv_pipe')
                 self.set_pipeline('down_cv_pipe')
-                self.assert_offboard = True
-                self.assert_local_waypoint_tracking = True
+                self.waypoint_track()
                 self.set_FSM_state("START_AMR_SEEK")
 
 
