@@ -1,11 +1,29 @@
 pipelines:
   phoenix_4k:
+    # No camera-name = auto-discover first GigE Vision camera on the interface (link-local).
+    # Replace with camera-name="LUCID Vision Labs-PHXET124S-XXXXXXX" (from arv-tool-0.8)
+    # for stable identification if multiple cameras on some network interface.
+    #
+    # GevSCPSPacketSize=8192: instructs the camera to send jumbo-frame packets.
+    #   Requires MTU 9000 on the Jetson interface — configured by setup.sh.
+    #
+    # GevSCPD=0: inter-packet delay = 0. Safe at 5fps (~61 MB/s, well within GigE limits).
+    #
+    # Max sensor resolution: 4096x3000
+    
     gst_pipeline: >-
-      aravissrc camera-name="192.168.42.199"
+      aravissrc
+      gain-auto=0
       exposure=10000
-      features="AcquisitionMode=Continuous PixelFormat=Mono8 AcquisitionFrameRateEnable=true AcquisitionFrameRate=10.0"
-      gain-auto=2 ! appsink sync=false
+      features="AcquisitionMode=Continuous
+                PixelFormat=Mono8
+                AcquisitionFrameRateEnable=true
+                AcquisitionFrameRate=5.0
+                GevSCPSPacketSize=8192
+                GevSCPD=0"
+      ! video/x-raw,format=GRAY8,width=4096,height=3000,framerate=5/1
+      ! appsink sync=false
     calibration: "phoenix_4k"
     topic: "scan_cam"
     frame_id: "scan_cam_frame"
-    encoding: "bgr8"
+    encoding: "mono8"

@@ -8,14 +8,10 @@
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
-  <build_depend>rclcpp</build_depend>
-  <build_depend>ament_index_cpp</build_depend>
 
-  <exec_depend>rclcpp</exec_depend>
-  <exec_depend>ament_index_cpp</exec_depend>
-
-  <depend>libgstreamer1.0-dev</depend>
-  <depend>libgstreamer-plugins-base1.0-dev</depend>
+  <depend>rclcpp</depend>
+  <depend>rclcpp_components</depend>
+  <depend>sensor_msgs</depend>
   <depend>camera_info_manager</depend>
 
   <export>

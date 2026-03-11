@@ -506,6 +506,127 @@ setup_ros_workspace() {
 }
 
 ###############################################################################
+# GSTREAMER + ARAVIS (GigE Vision camera support)
+###############################################################################
+setup_aravis() {
+    step "GStreamer + Aravis (GigE Vision)"
+
+    # Gate entire section on GStreamer being present
+    if ! command -v gst-launch-1.0 >/dev/null 2>&1; then
+        err "GStreamer not found — install it first: sudo apt install gstreamer1.0-tools"
+        err "Skipping Aravis setup: GigE camera will not work until GStreamer is installed."
+        STEPS_SKIPPED+=("aravis")
+        return
+    fi
+
+    local gst_ver
+    gst_ver=$(gst-launch-1.0 --version | head -1 | awk '{print $NF}')
+    ok "GStreamer ${gst_ver} detected"
+
+    if gst-inspect-1.0 aravissrc >/dev/null 2>&1; then
+        skip "aravissrc plugin already available"
+        STEPS_SKIPPED+=("aravis")
+        return
+    fi
+
+    sudo apt-get install -y \
+        gstreamer1.0-aravis \
+        aravis-tools
+
+    if ! gst-inspect-1.0 aravissrc >/dev/null 2>&1; then
+        err "aravissrc plugin not found after install."
+        err "Package may not exist for this distro — aravis may need to be built from source."
+        STEPS_SKIPPED+=("aravis")
+        return
+    fi
+
+    STEPS_RUN+=("aravis")
+    ok "Aravis GStreamer plugin installed — discover cameras with: arv-tool-0.8"
+}
+
+###############################################################################
+# GIGE CAMERA ETHERNET INTERFACE
+# Configures a dedicated ethernet interface for GigE Vision cameras.
+# Uses link-local (169.254.x.x) for zero-config plug-and-play:
+#   - No static IP needed on camera or Jetson
+#   - Camera auto-negotiates link-local IP if DHCP unavailable
+#   - Aravis discovers via GVCP broadcast regardless of IP
+# MTU 9000 (jumbo frames) is critical for 4K bandwidth (~1 GB/s raw).
+###############################################################################
+setup_gige_ethernet() {
+    step "GigE camera ethernet interface"
+
+    echo ""
+    echo "  Available network interfaces:"
+    echo ""
+    while IFS= read -r line; do
+        local idx name state
+        idx=$(echo "$line"  | awk '{print $1}' | tr -d ':')
+        name=$(echo "$line" | awk -F': ' '{print $2}' | sed 's/@.*//')
+        state=$(echo "$line" | grep -o 'state [A-Z]*' | awk '{print $2}')
+        # Skip loopback, docker, veth, bridge, usb-gadget, and can bus
+        [[ "$name" == "lo" ]]      && continue
+        [[ "$name" == docker* ]]   && continue
+        [[ "$name" == veth* ]]     && continue
+        [[ "$name" == l4tbr* ]]    && continue
+        [[ "$name" == usb* ]]      && continue
+        [[ "$name" == can* ]]      && continue
+        printf "    %2s)  %-20s  [%s]\n" "$idx" "$name" "${state:-UNKNOWN}"
+    done < <(ip link show | grep -E '^[0-9]+:')
+    echo ""
+
+    local iface
+    read -r -p "  Interface connected to GigE camera (or 'skip'): " iface
+
+    if [[ "$iface" == "skip" || -z "$iface" ]]; then
+        skip "GigE ethernet setup skipped"
+        STEPS_SKIPPED+=("gige_ethernet")
+        return
+    fi
+
+    if ! ip link show "$iface" >/dev/null 2>&1; then
+        warn "Interface '${iface}' not found — skipping"
+        STEPS_SKIPPED+=("gige_ethernet")
+        return
+    fi
+
+    # Netplan config — link-local only, no DHCP, jumbo frames
+    local netplan_file="/etc/netplan/99-gige-camera.yaml"
+    sudo tee "$netplan_file" > /dev/null << EOF
+network:
+  version: 2
+  ethernets:
+    ${iface}:
+      dhcp4: false
+      link-local: [ipv4]
+      mtu: 9000
+EOF
+    sudo chmod 600 "$netplan_file"
+    ok "Netplan config written to ${netplan_file}"
+
+    # Tune kernel receive buffers for GigE Vision (prevents frame drops at 4K)
+    local sysctl_file="/etc/sysctl.d/60-gige-camera.conf"
+    if [[ ! -f "$sysctl_file" ]]; then
+        sudo tee "$sysctl_file" > /dev/null << 'EOF'
+# GigE Vision camera receive buffer tuning
+net.core.rmem_max=26214400
+net.core.rmem_default=26214400
+EOF
+        sudo sysctl -p "$sysctl_file" >/dev/null
+        ok "Kernel receive buffers tuned for GigE Vision"
+    else
+        skip "GigE kernel buffer tuning already present"
+    fi
+
+    sudo netplan apply
+    ok "Netplan applied — interface ${iface} configured (link-local, MTU 9000)"
+    ok "After connecting camera, discover it with: arv-tool-0.8"
+    ok "Use the returned name (e.g. 'LUCID Vision Labs-PHXET124S-XXXXXX') in pipelines.yaml"
+
+    STEPS_RUN+=("gige_ethernet")
+}
+
+###############################################################################
 # DOCKER  (install only on fresh; ensure running on patch)
 ###############################################################################
 setup_docker() {
@@ -606,6 +727,8 @@ main() {
     setup_permissions
     setup_uhubctl
     setup_systemd
+    setup_aravis
+    setup_gige_ethernet
     setup_ros_workspace
     setup_docker
     write_sentinel

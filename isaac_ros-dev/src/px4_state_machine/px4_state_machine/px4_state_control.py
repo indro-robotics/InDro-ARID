@@ -354,9 +354,9 @@ class DRONE_FSM(Node):
         self.last_detection_time = None         # init
         self.target_times = deque(maxlen=20)   # last 20 timestamps
         self.target_min_hz = 1.0               # visibility threshold
-        self.target_window = 2.0               # seconds of history to use
-        self.target_min_samples = 5            # require at least 5 hits before trusting rate
-        self.detection_timeout = 2.0            # seconds
+        self.target_window = 3.0               # seconds of history to use
+        self.target_min_samples = 3            # require at least 3 hits before trusting rate
+        self.detection_timeout = 3.0            # seconds
 
         # Tune these if drone is moving too sluggishly around targets
         self.H_vel_min = 0.1   # m/s, horizontal velocity feed-forward minimum
@@ -607,10 +607,12 @@ class DRONE_FSM(Node):
 
 
             case "START_AMR_SEEK":
-                # If we are stable and the cameras successfully switch, 
+                # Hold current position while waiting — this updates on_target_velocity
+                # and sets assert_offboard=True so RC override works if pilot intervenes.
+                self.waypoint_track()
                 if (self.on_target_velocity and self.pipeline_active):
 
-                    # This needs to go to absolute heights, as we might get caught in a loop. 
+                    # This needs to go to absolute heights, as we might get caught in a loop.
                     # Temp fix below.
                     # need to add a z drift estimation filter here if using permanently...
 
@@ -618,7 +620,7 @@ class DRONE_FSM(Node):
                     #                     velocity=self.seek_vel_lim)
 
                     seek_z = -(self.loiter_height + self.AMR_height + self.amr_seek_displacement)
-                    self.waypoint_track(target=Vector3(x=self.target_local_position.x, 
+                    self.waypoint_track(target=Vector3(x=self.target_local_position.x,
                                                        y=self.target_local_position.y,
                                                        z=seek_z),
                                         velocity=self.seek_vel_lim,
@@ -628,8 +630,7 @@ class DRONE_FSM(Node):
 
 
             case "AMR_SEEK":
-                # need some sort of lost / retry failsafe filter here
-                if self.target_visible:   
+                if self.target_visible:
                     self.waypoint_track(velocity = self.track_vel_lim)
                     self.set_FSM_state("AMR_LOCK")
                 
