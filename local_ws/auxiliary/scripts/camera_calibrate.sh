@@ -8,7 +8,7 @@
 # DEFAULTS (override via environment variables before calling):
 #   SIZE          Checkerboard interior corners WxH   default: 7x5
 #   SQUARE        Square side length in metres         default: 0.032 (32mm)
-#   IMAGE_TOPIC   ROS image topic to subscribe to      default: /cam_down/image_raw
+#   IMAGE_TOPIC   ROS image topic to subscribe to      default: /cam_down/image_raw_color
 #   CAMERA_NS     ROS camera namespace                 default: /cam_down
 #   ROS_DOMAIN_ID ROS domain ID                        default: 23
 #
@@ -53,7 +53,7 @@ source /opt/ros/humble/setup.bash
 # ── 5. Launch calibrator ─────────────────────────────────────────────────────
 SIZE="${SIZE:-7x5}"
 SQUARE="${SQUARE:-0.032}"
-IMAGE_TOPIC="${IMAGE_TOPIC:-/cam_down/image_raw}"
+IMAGE_TOPIC="${IMAGE_TOPIC:-/cam_down/image_raw_color}"
 CAMERA_NS="${CAMERA_NS:-/cam_down}"
 
 PYTHONNOUSERSITE=1 \

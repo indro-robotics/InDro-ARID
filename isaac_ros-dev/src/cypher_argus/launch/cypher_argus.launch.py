@@ -6,14 +6,23 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
-from launch_ros.actions import ComposableNodeContainer
+from launch_ros.actions import ComposableNodeContainer, Node
 from launch_ros.descriptions import ComposableNode
 
 
 # LAUNCH
+# DEFAULT (mono8 rectified pipeline + AprilTag detection, no compression):
 # ros2 launch cypher_argus cypher_argus.launch.py \
 #   video_device:=0 camera_mode:=1 image_namespace:=cam_down \
 #   frame_name:=down_cv_link framerate:=10.0 output_encoding:=mono8
+#
+# WITH COMPRESSION (publishes /cam_down/image_rect/compressed for Foxglove):
+# NOTE: CPU JPEG via image_transport — suitable for low-frequency use (e.g. calibration checks,
+#       one-off monitoring). NOT efficient for continuous streaming; use an Argus GPU compression
+#       package for that instead.
+# ros2 launch cypher_argus cypher_argus.launch.py \
+#   video_device:=0 camera_mode:=1 image_namespace:=cam_down \
+#   frame_name:=down_cv_link framerate:=10.0 output_encoding:=mono8 compress:=true
 
 
 def generate_nodes(context, *args, **kwargs):
@@ -27,6 +36,7 @@ def generate_nodes(context, *args, **kwargs):
     frame_name = LaunchConfiguration('frame_name').perform(context)
     framerate = float(LaunchConfiguration('framerate').perform(context))
     output_encoding = LaunchConfiguration('output_encoding').perform(context)
+    compress = LaunchConfiguration('compress').perform(context).lower() in ('true', '1', 'yes')
 
     # Pick calibration file: IMX477_<camera_mode>.yaml
     calib_filename = f'IMX477_{camera_mode}.yaml'
@@ -159,7 +169,26 @@ def generate_nodes(context, *args, **kwargs):
         env=env,
     )
 
-    return [container]
+    launch_actions = [container]
+
+    if compress:
+        # Republish image_rect as JPEG-compressed for low-bandwidth monitoring (e.g. Foxglove).
+        # Taps the same topic apriltag reads; pipeline nodes are unaffected.
+        # Output topic: <namespace>/image_rect/compressed
+        launch_actions.append(Node(
+            package='image_transport',
+            executable='republish',
+            name='image_compressor',
+            namespace=image_ns,
+            arguments=['raw', 'compressed'],
+            remappings=[
+                ('in', 'image_rect'),
+                ('out/compressed', 'image_rect/compressed'),
+            ],
+            parameters=[{'compressed.jpeg_quality': 80}],
+        ))
+
+    return launch_actions
 
 
 def generate_launch_description():
@@ -171,7 +200,7 @@ def generate_launch_description():
 
     camera_mode_arg = DeclareLaunchArgument(
         'camera_mode',
-        default_value='0',
+        default_value='1',
         description='Camera mode index (0 -> IMX477_0.yaml, etc.)',
     )
 
@@ -200,6 +229,13 @@ def generate_launch_description():
                     'encoding supported by isaac_ros_image_proc (e.g. "rgb8").',
     )
 
+    compress_arg = DeclareLaunchArgument(
+        'compress',
+        default_value='false',
+        description='Publish a JPEG-compressed image_rect/compressed topic for low-bandwidth '
+                    'monitoring (e.g. Foxglove). Does not affect the main pipeline.',
+    )
+
     setup = OpaqueFunction(function=generate_nodes)
 
     return LaunchDescription([
@@ -209,5 +245,6 @@ def generate_launch_description():
         frame_arg,
         framerate_arg,
         output_encoding_arg,
+        compress_arg,
         setup,
     ])
