@@ -603,13 +603,12 @@ class DRONE_FSM(Node):
             case "PRE_AMR_SEEK":
                 self.stop_pipeline('front_cv_pipe')
                 self.set_pipeline('down_cv_pipe')
+                self.assert_offboard = True
+                self.assert_local_waypoint_tracking = True
                 self.set_FSM_state("START_AMR_SEEK")
 
 
             case "START_AMR_SEEK":
-                # Hold current position while waiting — this updates on_target_velocity
-                # and sets assert_offboard=True so RC override works if pilot intervenes.
-                self.waypoint_track()
                 if (self.on_target_velocity and self.pipeline_active):
 
                     # This needs to go to absolute heights, as we might get caught in a loop.

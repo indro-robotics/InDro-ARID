@@ -530,8 +530,9 @@ setup_aravis() {
     fi
 
     sudo apt-get install -y \
-        gstreamer1.0-aravis \
-        aravis-tools
+        libaravis-0.8-0 \
+        aravis-tools \
+        aravis-tools-cli
 
     if ! gst-inspect-1.0 aravissrc >/dev/null 2>&1; then
         err "aravissrc plugin not found after install."
@@ -590,19 +591,24 @@ setup_gige_ethernet() {
         return
     fi
 
-    # Netplan config — link-local only, no DHCP, jumbo frames
-    local netplan_file="/etc/netplan/99-gige-camera.yaml"
-    sudo tee "$netplan_file" > /dev/null << EOF
-network:
-  version: 2
-  ethernets:
-    ${iface}:
-      dhcp4: false
-      link-local: [ipv4]
-      mtu: 9000
-EOF
-    sudo chmod 600 "$netplan_file"
-    ok "Netplan config written to ${netplan_file}"
+    # Configure interface via NetworkManager (nmcli) — Jetson does not ship netplan
+    local con_name="gige-camera-${iface}"
+
+    # Remove any existing connection for this interface to start clean
+    if sudo nmcli connection show "$con_name" >/dev/null 2>&1; then
+        sudo nmcli connection delete "$con_name" >/dev/null
+    fi
+
+    sudo nmcli connection add \
+        type ethernet \
+        con-name "$con_name" \
+        ifname "$iface" \
+        ipv4.method link-local \
+        ipv6.method disabled \
+        ethernet.mtu 9000 \
+        connection.autoconnect yes
+    sudo nmcli connection up "$con_name" >/dev/null
+    ok "NetworkManager connection '${con_name}' configured (link-local, MTU 9000)"
 
     # Tune kernel receive buffers for GigE Vision (prevents frame drops at 4K)
     local sysctl_file="/etc/sysctl.d/60-gige-camera.conf"
@@ -617,9 +623,6 @@ EOF
     else
         skip "GigE kernel buffer tuning already present"
     fi
-
-    sudo netplan apply
-    ok "Netplan applied — interface ${iface} configured (link-local, MTU 9000)"
     ok "After connecting camera, discover it with: arv-tool-0.8"
     ok "Use the returned name (e.g. 'LUCID Vision Labs-PHXET124S-XXXXXX') in pipelines.yaml"
 
