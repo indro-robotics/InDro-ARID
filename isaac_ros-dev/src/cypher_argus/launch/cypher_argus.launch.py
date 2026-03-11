@@ -11,10 +11,19 @@ from launch_ros.descriptions import ComposableNode
 
 
 # LAUNCH
-# DEFAULT (mono8 rectified pipeline + AprilTag detection, no compression):
+# Two containers: [argus] --NITROS DDS--> [flip → rectify → converter → apriltag]
+# The container split at argus→flip forces a serialized CPU copy, preventing the CUDA
+# async race condition that caused random black frames from the rectify node.
+#
+# DEFAULT (mono8 rectified pipeline + AprilTag detection, 180° flip, no compression):
 # ros2 launch cypher_argus cypher_argus.launch.py \
 #   video_device:=0 camera_mode:=1 image_namespace:=cam_down \
 #   frame_name:=down_cv_link framerate:=10.0 output_encoding:=mono8
+#
+# WITHOUT FLIP (e.g. camera not physically rotated 180°):
+# ros2 launch cypher_argus cypher_argus.launch.py \
+#   video_device:=0 camera_mode:=1 image_namespace:=cam_down \
+#   frame_name:=down_cv_link framerate:=10.0 output_encoding:=mono8 flip_image:=false
 #
 # WITH COMPRESSION (publishes /cam_down/image_rect/compressed for Foxglove):
 # NOTE: CPU JPEG via image_transport — suitable for low-frequency use (e.g. calibration checks,
@@ -37,6 +46,7 @@ def generate_nodes(context, *args, **kwargs):
     framerate = float(LaunchConfiguration('framerate').perform(context))
     output_encoding = LaunchConfiguration('output_encoding').perform(context)
     compress = LaunchConfiguration('compress').perform(context).lower() in ('true', '1', 'yes')
+    flip_image = LaunchConfiguration('flip_image').perform(context).lower() in ('true', '1', 'yes')
 
     # Pick calibration file: IMX477_<camera_mode>.yaml
     calib_filename = f'IMX477_{camera_mode}.yaml'
@@ -83,6 +93,10 @@ def generate_nodes(context, *args, **kwargs):
 
     raw_image_topic = 'image_raw_color' if output_encoding != 'rgb8' else 'image_raw'
 
+    # When flipping, argus publishes to a pre-flip topic; the flip node outputs to raw_image_topic.
+    # This keeps all downstream nodes (rectify, compress, calibrate.sh) unchanged.
+    argus_raw_topic = f'{raw_image_topic}_pre_flip' if flip_image else raw_image_topic
+
     argus_node = ComposableNode(
         package='isaac_ros_argus_camera',
         plugin='nvidia::isaac_ros::argus::ArgusMonoNode',
@@ -97,9 +111,9 @@ def generate_nodes(context, *args, **kwargs):
             'framerate': framerate,
         }],
         remappings=[
-            ('left/image_raw', raw_image_topic),
+            ('left/image_raw', argus_raw_topic),
             ('left/camera_info', 'camera_info'),
-            ('left/image_raw/nitros', f'{raw_image_topic}/nitros'),
+            ('left/image_raw/nitros', f'{argus_raw_topic}/nitros'),
             ('left/camera_info/nitros', 'camera_info/nitros'),
         ],
     )
@@ -126,10 +140,43 @@ def generate_nodes(context, *args, **kwargs):
         remappings=rectify_remaps,
     )
 
-    composable_nodes = [argus_node, rectify_node]
+    # Container 1: argus only.
+    # Separating argus into its own container means the argus→flip boundary is a NITROS
+    # DDS hop (serialized CPU copy). This guarantees the GPU buffer is fully written before
+    # the downstream pipeline ever reads it, preventing the CUDA async race that causes
+    # random black frames from the rectify node.
+    argus_container = ComposableNodeContainer(
+        name='cypher_argus_camera_container',
+        namespace='',
+        package='rclcpp_components',
+        executable='component_container_mt',
+        composable_node_descriptions=[argus_node],
+        output='screen',
+        arguments=['--ros-args', '--log-level', 'info'],
+        env=env,
+    )
+
+    # Container 2: flip (optional) → rectify → format_converter → apriltag.
+    # All nodes here communicate via NITROS zero-copy GPU buffers.
+    pipeline_nodes = []
+
+    if flip_image:
+        pipeline_nodes.append(ComposableNode(
+            package='isaac_ros_image_proc',
+            plugin='nvidia::isaac_ros::image_proc::ImageFlipNode',
+            name='image_flip',
+            namespace=image_ns,
+            parameters=[{'flip_mode': 'BOTH'}],
+            remappings=[
+                ('image', argus_raw_topic),
+                ('image_flipped', raw_image_topic),
+            ],
+        ))
+
+    pipeline_nodes.append(rectify_node)
 
     if output_encoding != 'rgb8':
-        composable_nodes.append(ComposableNode(
+        pipeline_nodes.append(ComposableNode(
             package='isaac_ros_image_proc',
             plugin='nvidia::isaac_ros::image_proc::ImageFormatConverterNode',
             name='image_format_converter',
@@ -154,22 +201,21 @@ def generate_nodes(context, *args, **kwargs):
             namespace=image_ns,
             parameters=[config_info['config']],
             extra_arguments=[{'use_intra_process_comms': True}]
-            # 1:1 remappings removed
         )
-        composable_nodes.append(apriltagger)
+        pipeline_nodes.append(apriltagger)
 
-    container = ComposableNodeContainer(
+    pipeline_container = ComposableNodeContainer(
         name='cypher_argus_container',
         namespace='',
         package='rclcpp_components',
         executable='component_container_mt',
-        composable_node_descriptions=composable_nodes,
+        composable_node_descriptions=pipeline_nodes,
         output='screen',
         arguments=['--ros-args', '--log-level', 'info'],
         env=env,
     )
 
-    launch_actions = [container]
+    launch_actions = [argus_container, pipeline_container]
 
     if compress:
         # Republish image_rect as JPEG-compressed for low-bandwidth monitoring (e.g. Foxglove).
@@ -236,6 +282,14 @@ def generate_launch_description():
                     'monitoring (e.g. Foxglove). Does not affect the main pipeline.',
     )
 
+    flip_image_arg = DeclareLaunchArgument(
+        'flip_image',
+        default_value='true',
+        description='Rotate image 180° (GPU-accelerated) immediately after argus, before all '
+                    'downstream processing. Default true for cam_down on new drone (camera '
+                    'physically mounted 180° rotated about Z).',
+    )
+
     setup = OpaqueFunction(function=generate_nodes)
 
     return LaunchDescription([
@@ -246,5 +300,6 @@ def generate_launch_description():
         framerate_arg,
         output_encoding_arg,
         compress_arg,
+        flip_image_arg,
         setup,
     ])

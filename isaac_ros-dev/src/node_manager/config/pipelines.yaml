@@ -4,6 +4,13 @@
 #   data: false -> kill the process
 #
 # Add any ros2 launch / ros2 run command here and it will get its own service automatically.
+#
+# Service call examples:
+#   ros2 service call /node_manager/down_cv_pipe  std_srvs/srv/SetBool "{data: true}"
+#   ros2 service call /node_manager/down_cv_pipe  std_srvs/srv/SetBool "{data: false}"
+#   ros2 service call /node_manager/front_cv_pipe std_srvs/srv/SetBool "{data: true}"
+#   ros2 service call /node_manager/front_cv_pipe std_srvs/srv/SetBool "{data: false}"
+#   ros2 service call /node_manager/stop_all      std_srvs/srv/Trigger
 
 pipelines:
 

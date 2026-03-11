@@ -90,9 +90,12 @@ class NodeManager(Node):
 
     ################################################################################################
     def _publish_alive(self, name, alive):
-        msg = Bool()
-        msg.data = alive
-        self.alive_pubs[name].publish(msg)
+        try:
+            msg = Bool()
+            msg.data = alive
+            self.alive_pubs[name].publish(msg)
+        except Exception:
+            pass
 
     ################################################################################################
     def _create_services(self):
@@ -323,6 +326,13 @@ def main(args=None):
 
     executor = MultiThreadedExecutor()
     executor.add_node(node)
+
+    # ros2 launch sends SIGTERM (not SIGINT) to child nodes on Ctrl+C.
+    # Python's default SIGTERM kills the process immediately, bypassing the finally block.
+    # Re-raise as KeyboardInterrupt so shutdown_all() always runs.
+    def _sigterm_handler(signum, frame):
+        raise KeyboardInterrupt()
+    signal.signal(signal.SIGTERM, _sigterm_handler)
 
     try:
         executor.spin()
