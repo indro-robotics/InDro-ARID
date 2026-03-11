@@ -599,16 +599,52 @@ setup_gige_ethernet() {
         sudo nmcli connection delete "$con_name" >/dev/null
     fi
 
+    # Temporarily add a link-local address so arv-tool's GVCP broadcast goes out.
+    # Aravis discovers cameras even on the wrong subnet (broadcast), we just need
+    # any IP on the interface so the kernel will send packets.
+    echo "  Bringing up interface temporarily to discover camera IP..."
+    sudo ip link set dev "$iface" up
+    sudo ip addr add 169.254.1.1/16 dev "$iface" 2>/dev/null || true
+    sleep 2
+
+    echo "  Running arv-tool-0.8 to discover GigE camera..."
+    local cam_ip
+    cam_ip=$(arv-tool-0.8 2>/dev/null | grep -oP '(?<=\()\d+\.\d+\.\d+\.\d+(?=\))' | head -1)
+    sudo ip addr del 169.254.1.1/16 dev "$iface" 2>/dev/null || true
+
+    local jetson_ip
+    if [[ -z "$cam_ip" ]]; then
+        warn "No GigE camera found — camera powered and plugged into ${iface}?"
+        warn "Falling back to LUCID factory default subnet (192.168.10.1/24)"
+        jetson_ip="192.168.10.1/24"
+        cam_ip="192.168.10.10"
+    else
+        ok "Camera discovered at ${cam_ip}"
+        local cam_prefix
+        cam_prefix=$(echo "$cam_ip" | cut -d. -f1-3)
+        jetson_ip="${cam_prefix}.1/24"
+    fi
+
+    # Static manual — DHCP blocks indefinitely on a direct link with no server.
+    # To SSH in from a laptop on this port: set laptop to any IP in the same /24.
     sudo nmcli connection add \
         type ethernet \
         con-name "$con_name" \
         ifname "$iface" \
-        ipv4.method link-local \
+        ipv4.method manual \
+        ipv4.addresses "$jetson_ip" \
         ipv6.method disabled \
         ethernet.mtu 9000 \
         connection.autoconnect yes
     sudo nmcli connection up "$con_name" >/dev/null
-    ok "NetworkManager connection '${con_name}' configured (link-local, MTU 9000)"
+    ok "NetworkManager connection '${con_name}' configured (${jetson_ip}, MTU 9000)"
+
+    sleep 1
+    if ping -c 1 -W 2 "$cam_ip" >/dev/null 2>&1; then
+        ok "Camera reachable at ${cam_ip}"
+    else
+        warn "Cannot ping ${cam_ip} — verify camera is powered and on ${iface}"
+    fi
 
     # Tune kernel receive buffers for GigE Vision (prevents frame drops at 4K)
     local sysctl_file="/etc/sysctl.d/60-gige-camera.conf"
