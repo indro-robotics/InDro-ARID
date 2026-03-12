@@ -200,7 +200,8 @@ setup_apt_packages() {
         pva-allow-2 \
         python3-colcon-clean \
         ros-humble-rosbridge-server \
-        ros-humble-camera-info-manager
+        ros-humble-camera-info-manager \
+        ros-humble-compressed-image-transport
 
     STEPS_RUN+=("apt")
     ok "APT packages installed"
@@ -445,6 +446,7 @@ setup_systemd() {
     sudo systemctl enable start_isaac_docker.service
     sudo systemctl enable jetson-clocks.service
     sudo systemctl enable rosbridge_websocket.service
+    sudo systemctl enable gst_camera_manager.service
     sudo systemctl daemon-reload
 
     STEPS_RUN+=("systemd")
@@ -619,7 +621,7 @@ setup_gige_ethernet() {
     echo ""
 
     local selection iface
-    read -r -p "  Interface number or name (or 'skip'): " selection
+    read -r -p "  Select interface No. (or type name, or 'skip'): " selection
 
     if [[ "$selection" == "skip" || -z "$selection" ]]; then
         skip "GigE ethernet setup skipped"

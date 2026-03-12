@@ -2,7 +2,7 @@
 
 GStreamer-based camera stack for the Cypher drone. Two packages:
 
-- **`gst_cam_node`** — C++ node that wraps any GStreamer pipeline and publishes `image_raw` + `camera_info`
+- **`gst_cam_node`** — C++ node that wraps any GStreamer pipeline and publishes `image_raw` + `camera_info` (+ `image_raw/compressed` when `compress:=true`)
 - **`gst_camera_manager`** — Python manager that launches/stops named pipelines via ROS2 services
 
 ---
@@ -44,7 +44,11 @@ ros2 service call /gst_camera_manager/status_all std_srvs/srv/Trigger "{}"
 
 ### Check frames arriving
 ```bash
+# Raw (always published)
 ros2 topic hz /scan_cam/image_raw
+
+# Compressed JPEG (published when compress: true in pipelines.yaml)
+ros2 topic hz /scan_cam/image_raw/compressed
 ```
 
 ---
@@ -56,6 +60,7 @@ Configured in `gst_camera_manager/config/pipelines.yaml` as `phoenix_4k`.
 **Prerequisites:**
 - Aravis built from source (`arv-tool-0.10` available) — run `setup.sh`
 - Ethernet interface configured for camera subnet — run `setup.sh`
+- `ros-humble-compressed-image-transport` installed — run `setup.sh`
 - `GST_PLUGIN_PATH=/usr/local/lib/aarch64-linux-gnu/gstreamer-1.0` (set by setup.sh in `.bashrc`, injected automatically by the manager node)
 
 **Verify camera detected:**
@@ -74,6 +79,7 @@ gst-launch-1.0 aravissrc \
 
 **Published topics:**
 - `/scan_cam/image_raw` (`sensor_msgs/Image`, mono8)
+- `/scan_cam/image_raw/compressed` (`sensor_msgs/CompressedImage`, JPEG) — Foxglove monitoring
 - `/scan_cam/camera_info` (`sensor_msgs/CameraInfo`)
 
 ---
@@ -97,6 +103,7 @@ pipelines:
     topic: "csi_down"
     frame_id: "csi_down_frame"
     encoding: "bgr8"
+    compress: true
 ```
 
 Then add a matching calibration YAML in `config/calibrations/csi_down.yaml`.
@@ -108,6 +115,7 @@ ros2 service call /gst_camera_manager/csi_down std_srvs/srv/SetBool "{data: true
 
 **Published topics:**
 - `/csi_down/image_raw`
+- `/csi_down/image_raw/compressed` (if `compress: true`)
 - `/csi_down/camera_info`
 
 ---
@@ -123,6 +131,7 @@ Each pipeline entry in `pipelines.yaml` requires:
 | `topic` | ROS topic prefix — publishes to `/<topic>/image_raw` |
 | `frame_id` | TF frame ID stamped on each image |
 | `encoding` | OpenCV encoding string: `mono8`, `bgr8`, `rgb8` |
+| `compress` | `true` to also publish `/<topic>/image_raw/compressed` (JPEG). Default: `true` |
 
 The pipeline is passed to OpenCV's `VideoCapture` with `CAP_GSTREAMER`. Any pipeline that ends with `appsink sync=false` and produces frames compatible with the specified encoding will work.
 

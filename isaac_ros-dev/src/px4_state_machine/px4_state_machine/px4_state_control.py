@@ -598,13 +598,13 @@ class DRONE_FSM(Node):
                 # Check if it is just on target for redunancy. Sometimes PX4 nav_state !switch.
                 if ((self.on_target_velocity and self.on_target) or 
                     self.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_LOITER):
+                    self.waypoint_track()
                     self.set_FSM_state("PRE_AMR_SEEK")
                 
 
             case "PRE_AMR_SEEK":
                 self.stop_pipeline('front_cv_pipe')
                 self.set_pipeline('down_cv_pipe')
-                self.waypoint_track()
                 self.set_FSM_state("START_AMR_SEEK")
 
 

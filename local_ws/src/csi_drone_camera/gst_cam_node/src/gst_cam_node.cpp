@@ -3,6 +3,7 @@
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <opencv2/opencv.hpp>
 #include <camera_info_manager/camera_info_manager.hpp>
+#include <image_transport/image_transport.hpp>
 #include <thread>
 #include <atomic>
 #include <cstring>
@@ -11,7 +12,7 @@
 /**
  * GstCamNode: A ROS 2 Node that wraps an arbitrary GStreamer pipeline.
  * The full pipeline string is passed via the gst_pipeline parameter.
- * Publishes image_raw under /<camera_topic>/.
+ * Publishes image_raw (and image_raw/compressed when compress:=true) under /<camera_topic>/.
  * Publishes camera_info synced to each frame only if a calibration file is provided.
  */
 class GstCamNode : public rclcpp::Node
@@ -25,16 +26,22 @@ public:
     this->declare_parameter<std::string>("frame_id", "camera_frame");
     this->declare_parameter<std::string>("camera_info_path", "");
     this->declare_parameter<std::string>("encoding", "bgr8");
+    this->declare_parameter<bool>("compress", true);
 
     std::string camera_topic     = this->get_parameter("camera_topic").as_string();
     std::string camera_info_path = this->get_parameter("camera_info_path").as_string();
     frame_id_ = this->get_parameter("frame_id").as_string();
     encoding_ = this->get_parameter("encoding").as_string();
+    bool compress = this->get_parameter("compress").as_bool();
 
     const rclcpp::QoS image_qos{rclcpp::QoS(3).reliable().durability_volatile()};
 
-    image_pub_ = this->create_publisher<sensor_msgs::msg::Image>(
-                  "/" + camera_topic + "/image_raw", image_qos);
+    if (compress) {
+      it_pub_ = image_transport::create_publisher(this, "/" + camera_topic + "/image_raw");
+    } else {
+      image_pub_  = this->create_publisher<sensor_msgs::msg::Image>(
+                    "/" + camera_topic + "/image_raw", image_qos);
+    }
 
     // Only set up camera_info if a calibration file was provided
     if (!camera_info_path.empty()) {
@@ -106,7 +113,11 @@ private:
       msg->step            = static_cast<uint32_t>(frame.step);
       msg->data.resize(msg->step * msg->height);
       std::memcpy(msg->data.data(), frame.data, msg->data.size());
-      image_pub_->publish(std::move(msg));
+      if (image_pub_) {
+        image_pub_->publish(std::move(msg));
+      } else {
+        it_pub_.publish(*msg);
+      }
 
       // Publish camera_info with the same timestamp — only if calibration was loaded
       if (has_calibration_) {
@@ -125,7 +136,10 @@ private:
   bool has_calibration_;
   std::string frame_id_;
   std::string encoding_;
+  // compress=false: raw publisher only
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_pub_;
+  // compress=true: image_transport publishes both raw + compressed (lazy — no cost when unsubscribed)
+  image_transport::Publisher it_pub_;
   rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_pub_;
   std::shared_ptr<camera_info_manager::CameraInfoManager> camera_info_manager_;
 };

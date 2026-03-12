@@ -151,6 +151,7 @@ class GstCameraManager(Node):
         topic     = info.get('topic', name)
         frame_id  = info.get('frame_id', name + '_frame')
         encoding  = info.get('encoding', 'bgr8')
+        compress  = 'true' if info.get('compress', True) else 'false'
         calib_url = 'file://' + str(self.calib_root / (calib + '.yaml'))
 
         # Escape inner double-quotes so the shell doesn't split the pipeline string
@@ -164,7 +165,8 @@ class GstCameraManager(Node):
             ' -p frame_id:="%s"'
             ' -p camera_info_path:="%s"'
             ' -p encoding:="%s"'
-        ) % (pipeline_escaped, topic, frame_id, calib_url, encoding)
+            ' -p compress:=%s'
+        ) % (pipeline_escaped, topic, frame_id, calib_url, encoding, compress)
 
     ################################################################################################
     def _open_log(self, name):

@@ -1,0 +1,18 @@
+[Unit]
+Description=GStreamer Camera Manager — ROS2 pipeline manager for GigE and CSI cameras
+Wants=network-online.target
+After=network-online.target
+After=systemd-user-sessions.service
+
+[Service]
+User=jetson
+Type=simple
+Environment="ROS_DOMAIN_ID=23"
+Environment="HOME=/home/jetson"
+Environment="GST_PLUGIN_PATH=/usr/local/lib/aarch64-linux-gnu/gstreamer-1.0"
+ExecStart=/bin/bash -c 'source /opt/ros/humble/setup.bash; source /home/jetson/workspaces/local_ws/install/setup.bash; ros2 launch gst_camera_manager gst_camera_manager.launch.py'
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

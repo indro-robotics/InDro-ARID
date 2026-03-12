@@ -7,6 +7,7 @@ find_package(rclcpp_components REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(camera_info_manager REQUIRED)
+find_package(image_transport REQUIRED)
 
 add_executable(gst_cam_node
   src/gst_cam_node.cpp
@@ -22,6 +23,7 @@ ament_target_dependencies(gst_cam_node
   sensor_msgs
   OpenCV
   camera_info_manager
+  image_transport
 )
 
 install(TARGETS gst_cam_node
