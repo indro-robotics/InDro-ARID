@@ -220,6 +220,16 @@ class DRONE_FSM(Node):
                                                      callback_group=self.passive_group)
 
 
+        ### SCAN CAMERA (gst_camera_manager / LUCID Phoenix) ######################################
+        self.scan_cam_client = self.create_client(SetBool, '/gst_camera_manager/phoenix_4k')
+
+        self.scan_cam_alive_sub = self.create_subscription(Bool,
+                                                           '/gst_camera_manager/phoenix_4k/alive',
+                                                           self._scan_cam_alive_cb,
+                                                           self.qos_transient,
+                                                           callback_group=self.passive_group)
+
+
         ### CAMERA ALIVE SUBSCRIPTIONS (node_manager) #############################################
         # TRANSIENT_LOCAL (latched) — we get current state immediately on subscribe
         # pipeline_active gates FSM transitions; only set True when the requested pipeline is alive
@@ -461,6 +471,7 @@ class DRONE_FSM(Node):
         self.active_pipeline = None              # pipeline name currently requested
         self.down_cv_alive  = False              # updated directly by subscription callback
         self.front_cv_alive = False              # updated directly by subscription callback
+        self.scan_cam_alive = False              # updated directly by subscription callback
 
         # VSLAM management #########################################################################
         self.vslam_status = 0
@@ -573,6 +584,7 @@ class DRONE_FSM(Node):
 
             case "START_CV_CAMERAS":
                 self.set_pipeline('down_cv_pipe')
+                self.start_scan_cam()
                 self.set_FSM_state("INITIALIZING")
 
 
@@ -619,9 +631,6 @@ class DRONE_FSM(Node):
 
             case "START_AMR_SEEK":
                 if (self.on_target and self.pipeline_active):
-                    
-                # This was changed... maybe not properly lat return
-                # if (self.on_target_velocity and self.pipeline_active):
 
                     # This needs to go to absolute heights, as we might get caught in a loop.
                     # Temp fix below.
@@ -897,6 +906,37 @@ class DRONE_FSM(Node):
     def _down_cv_alive_cb(self, msg):
         self.down_cv_alive = msg.data
 
+    def _scan_cam_alive_cb(self, msg):
+        self.scan_cam_alive = msg.data
+
+    def start_scan_cam(self):
+        async def _async_start():
+            async with self.camera_switch_lock:
+                if not self.scan_cam_client.service_is_ready():
+                    self.get_logger().info('start_scan_cam: gst_camera_manager not available, skipping')
+                    return
+                req = SetBool.Request()
+                req.data = True
+                try:
+                    await self.scan_cam_client.call_async(req)
+                except Exception as e:
+                    self.get_logger().info('start_scan_cam: %s' % str(e))
+        asyncio.run_coroutine_threadsafe(_async_start(), self.camera_loop)
+
+    def stop_scan_cam(self):
+        async def _async_stop():
+            async with self.camera_switch_lock:
+                if not self.scan_cam_client.service_is_ready():
+                    self.get_logger().info('stop_scan_cam: gst_camera_manager not available, skipping')
+                    return
+                req = SetBool.Request()
+                req.data = False
+                try:
+                    await self.scan_cam_client.call_async(req)
+                except Exception as e:
+                    self.get_logger().info('stop_scan_cam: %s' % str(e))
+        asyncio.run_coroutine_threadsafe(_async_stop(), self.camera_loop)
+
     @property
     def pipeline_active(self):
         if self.active_pipeline == 'down_cv_pipe':
@@ -1091,6 +1131,8 @@ class DRONE_FSM(Node):
 
         self.target_times.clear()
         self.target_visible = False
+
+        self.stop_scan_cam()
 
     ################################################################################################
     ### LOCAL TARGETING ############################################################################
