@@ -46,6 +46,9 @@ class vslam_reactor(Node):
         self.quat_delta_theta = np.radians(3.0)             # 3 degrees tolerance
         self.displacement_delta = 0.25                      # meters tolerance
 
+        self.quat_delta_theta = np.radians(5.0)             # 3 degrees tolerance
+        self.displacement_delta = 0.25                      # meters tolerance
+
         self.fmu_lockout = False
         self.R_FRD_TO_FLU = R.from_euler('x', np.pi)
 

@@ -322,8 +322,9 @@ class DRONE_FSM(Node):
         self.FSM_last_state_output_time = 0
         self.FSM_state_change_time_delta = 0
         self.FSM_state_output_interval = 750    # ms
-        
-                    
+        self.settling_time_ms = 2000            # ms
+        self.settling_timestamp_ms = None
+
         # Flight Assertion Flags ###################################################################
         self.assert_launch = False      # SET FROM SERVICE
         self.assert_cycle = False       # SET FROM SERVICE
@@ -553,7 +554,7 @@ class DRONE_FSM(Node):
 
 
             case "REBOOT_FMU":
-                #self.reset_fmu()
+                self.reset_fmu()
                 self.set_FSM_state("FMU_REBOOTING")
 
 
@@ -579,9 +580,17 @@ class DRONE_FSM(Node):
                 if (self.ekf2_ev_online and
                     #self.vslam_set and # do not need to monitor if vslam_reset() is called
                     self.pipeline_active):
+                    self.settling_timestamp_ms = self.time_ms()
+                    self.set_FSM_state("SETTLING")
+
+            case "SETTLING":
+                time_now_ms = self.time_ms()
+                if (self.settling_timestamp_ms is not None and
+                    (time_now_ms - self.settling_timestamp_ms) >= self.settling_time_ms):
+                    self.settling_timestamp_ms = None
                     self.set_FSM_state("ASSERT_TAKEOFF")
                     self.set_pre_launch()
-                    
+
 
             case "ASSERT_TAKEOFF":
                 self.takeoff_mode()
@@ -595,7 +604,7 @@ class DRONE_FSM(Node):
             
 
             case "LAUNCHING":
-                # Check if it is just on target for redunancy. Sometimes PX4 nav_state !switch.
+                # Check if it is just on target for redundancy. Sometimes PX4 nav_state !switch.
                 if ((self.on_target_velocity and self.on_target) or 
                     self.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_LOITER):
                     self.waypoint_track()
@@ -609,7 +618,10 @@ class DRONE_FSM(Node):
 
 
             case "START_AMR_SEEK":
-                if (self.on_target_velocity and self.pipeline_active):
+                if (self.on_target and self.pipeline_active):
+                    
+                # This was changed... maybe not properly lat return
+                # if (self.on_target_velocity and self.pipeline_active):
 
                     # This needs to go to absolute heights, as we might get caught in a loop.
                     # Temp fix below.
@@ -1047,7 +1059,7 @@ class DRONE_FSM(Node):
         self.target_vel_lim = 0. 
 
         self.loiter_height = 1.0
-        self.amr_tracking_height = 2.0          # m
+        self.amr_tracking_height = 1.5          # m
         self.shelf_tracking_distance = 1.0      # m
         
         self.cycle_height = 0.
