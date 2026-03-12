@@ -334,6 +334,7 @@ if [ -d /tmp/.X11-unix ]; then
 fi
 xhost +local: >/dev/null 2>&1 || true
 export ROS_DOMAIN_ID=23
+export GST_PLUGIN_PATH=/usr/local/lib/aarch64-linux-gnu/gstreamer-1.0\${GST_PLUGIN_PATH:+:\$GST_PLUGIN_PATH}
 export WORKSPACES=${WORKSPACES}
 export LOCAL_WS=${LOCAL_WS}
 export ISAAC_ROS_WS=${ISAAC_ROS_WS}
@@ -506,15 +507,17 @@ setup_ros_workspace() {
 }
 
 ###############################################################################
-# GSTREAMER + ARAVIS (GigE Vision camera support)
+# GSTREAMER + ARAVIS (GigE Vision camera support — built from source)
+# The apt package (aravis 0.8) does not support LUCID Phoenix cameras.
+# We build the latest aravis from source which includes aravis 0.10 tools
+# and a working aravissrc GStreamer plugin.
 ###############################################################################
 setup_aravis() {
-    step "GStreamer + Aravis (GigE Vision)"
+    step "GStreamer + Aravis (GigE Vision — source build)"
 
-    # Gate entire section on GStreamer being present
     if ! command -v gst-launch-1.0 >/dev/null 2>&1; then
         err "GStreamer not found — install it first: sudo apt install gstreamer1.0-tools"
-        err "Skipping Aravis setup: GigE camera will not work until GStreamer is installed."
+        err "Skipping Aravis: GigE camera will not work until GStreamer is installed."
         STEPS_SKIPPED+=("aravis")
         return
     fi
@@ -523,26 +526,63 @@ setup_aravis() {
     gst_ver=$(gst-launch-1.0 --version | head -1 | awk '{print $NF}')
     ok "GStreamer ${gst_ver} detected"
 
-    if gst-inspect-1.0 aravissrc >/dev/null 2>&1; then
-        skip "aravissrc plugin already available"
+    # Remove old apt aravis 0.8 — conflicts with source build and broken for LUCID
+    local old_pkgs=()
+    for pkg in libaravis-0.8-0 aravis-tools aravis-tools-cli libaravis-dev gstreamer1.0-aravis; do
+        dpkg -l "$pkg" 2>/dev/null | grep -q '^ii' && old_pkgs+=("$pkg")
+    done
+    if [[ ${#old_pkgs[@]} -gt 0 ]]; then
+        ok "Removing old apt aravis packages: ${old_pkgs[*]}"
+        sudo apt-get remove -y "${old_pkgs[@]}"
+        sudo apt-get autoremove -y
+    fi
+
+    # Already built from source?
+    if command -v arv-tool-0.10 >/dev/null 2>&1; then
+        skip "Aravis 0.10 already installed from source"
         STEPS_SKIPPED+=("aravis")
         return
     fi
 
+    ok "Installing Aravis build dependencies..."
     sudo apt-get install -y \
-        libaravis-0.8-0 \
-        aravis-tools \
-        aravis-tools-cli
+        libgstreamer1.0-dev \
+        gstreamer1.0-plugins-base \
+        gstreamer1.0-plugins-good \
+        gstreamer1.0-plugins-bad \
+        gstreamer1.0-plugins-ugly \
+        libgstreamer-plugins-base1.0-dev \
+        libglib2.0-dev \
+        libgirepository1.0-dev \
+        meson \
+        ninja-build \
+        pkg-config \
+        libpango1.0-dev \
+        libgtk-3-dev \
+        libudev-dev \
+        libgudev-1.0-dev \
+        libusb-1.0-0-dev \
+        gettext \
+        desktop-file-utils
 
-    if ! gst-inspect-1.0 aravissrc >/dev/null 2>&1; then
-        err "aravissrc plugin not found after install."
-        err "Package may not exist for this distro — aravis may need to be built from source."
-        STEPS_SKIPPED+=("aravis")
-        return
+    local aravis_dir="${HOME_DIR}/aravis"
+    if [[ ! -d "$aravis_dir" ]]; then
+        git clone https://github.com/AravisProject/aravis.git "$aravis_dir"
+    else
+        ok "Aravis source already cloned — pulling latest"
+        git -C "$aravis_dir" pull
     fi
+
+    (
+        cd "$aravis_dir"
+        meson setup build --prefix=/usr/local --wipe
+        ninja -C build
+        sudo ninja -C build install
+        sudo ldconfig
+    )
 
     STEPS_RUN+=("aravis")
-    ok "Aravis GStreamer plugin installed — discover cameras with: arv-tool-0.8"
+    ok "Aravis built and installed — discover cameras with: arv-tool-0.10"
 }
 
 ###############################################################################
@@ -560,29 +600,38 @@ setup_gige_ethernet() {
     echo ""
     echo "  Available network interfaces:"
     echo ""
+
+    declare -A iface_map   # idx -> name
     while IFS= read -r line; do
         local idx name state
         idx=$(echo "$line"  | awk '{print $1}' | tr -d ':')
         name=$(echo "$line" | awk -F': ' '{print $2}' | sed 's/@.*//')
         state=$(echo "$line" | grep -o 'state [A-Z]*' | awk '{print $2}')
-        # Skip loopback, docker, veth, bridge, usb-gadget, and can bus
         [[ "$name" == "lo" ]]      && continue
         [[ "$name" == docker* ]]   && continue
         [[ "$name" == veth* ]]     && continue
         [[ "$name" == l4tbr* ]]    && continue
         [[ "$name" == usb* ]]      && continue
         [[ "$name" == can* ]]      && continue
+        iface_map[$idx]="$name"
         printf "    %2s)  %-20s  [%s]\n" "$idx" "$name" "${state:-UNKNOWN}"
     done < <(ip link show | grep -E '^[0-9]+:')
     echo ""
 
-    local iface
-    read -r -p "  Interface connected to GigE camera (or 'skip'): " iface
+    local selection iface
+    read -r -p "  Interface number or name (or 'skip'): " selection
 
-    if [[ "$iface" == "skip" || -z "$iface" ]]; then
+    if [[ "$selection" == "skip" || -z "$selection" ]]; then
         skip "GigE ethernet setup skipped"
         STEPS_SKIPPED+=("gige_ethernet")
         return
+    fi
+
+    # Accept either the index number or the interface name directly
+    if [[ -v iface_map[$selection] ]]; then
+        iface="${iface_map[$selection]}"
+    else
+        iface="$selection"
     fi
 
     if ! ip link show "$iface" >/dev/null 2>&1; then
@@ -607,23 +656,22 @@ setup_gige_ethernet() {
     sudo ip addr add 169.254.1.1/16 dev "$iface" 2>/dev/null || true
     sleep 2
 
-    echo "  Running arv-tool-0.8 to discover GigE camera..."
+    echo "  Running arv-tool-0.10 to discover GigE camera..."
     local cam_ip
-    cam_ip=$(arv-tool-0.8 2>/dev/null | grep -oP '(?<=\()\d+\.\d+\.\d+\.\d+(?=\))' | head -1)
+    cam_ip=$(arv-tool-0.10 2>/dev/null | grep -oP '(?<=\()\d+\.\d+\.\d+\.\d+(?=\))' | head -1)
     sudo ip addr del 169.254.1.1/16 dev "$iface" 2>/dev/null || true
 
-    local jetson_ip
     if [[ -z "$cam_ip" ]]; then
-        warn "No GigE camera found — camera powered and plugged into ${iface}?"
-        warn "Falling back to LUCID factory default subnet (192.168.10.1/24)"
-        jetson_ip="192.168.10.1/24"
-        cam_ip="192.168.10.10"
-    else
-        ok "Camera discovered at ${cam_ip}"
-        local cam_prefix
-        cam_prefix=$(echo "$cam_ip" | cut -d. -f1-3)
-        jetson_ip="${cam_prefix}.1/24"
+        warn "No GigE camera found on ${iface} — is it powered and plugged in?"
+        warn "Skipping network configuration — re-run setup with camera connected."
+        STEPS_SKIPPED+=("gige_ethernet")
+        return
     fi
+
+    ok "Camera discovered at ${cam_ip}"
+    local cam_prefix
+    cam_prefix=$(echo "$cam_ip" | cut -d. -f1-3)
+    local jetson_ip="${cam_prefix}.1/24"
 
     # Static manual — DHCP blocks indefinitely on a direct link with no server.
     # To SSH in from a laptop on this port: set laptop to any IP in the same /24.

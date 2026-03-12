@@ -1169,7 +1169,7 @@ class DRONE_FSM(Node):
         }:
             return
         if isinstance(msg, ShelfTarget) and self.FSM_current_state not in {
-            "CYCLE_UP", "CYCLE_DOWN", "AMR_ALT_RETURN", "AMR_LAT_RETURN",
+            "CYCLE_UP", "CYCLE_DOWN",
         }:
             return
 

@@ -45,6 +45,13 @@ class GstCameraManager(Node):
         self.process_lock = Lock()
 
         self.launch_env = os.environ.copy()
+        # Aravis is built from source — ensure the GStreamer plugin is always found
+        # regardless of whether GST_PLUGIN_PATH is set in the calling shell.
+        aravis_gst = '/usr/local/lib/aarch64-linux-gnu/gstreamer-1.0'
+        existing = self.launch_env.get('GST_PLUGIN_PATH', '')
+        self.launch_env['GST_PLUGIN_PATH'] = (
+            aravis_gst + ':' + existing if existing else aravis_gst
+        )
 
         pkg_share = Path(get_package_share_directory('gst_camera_manager'))
         self.log_root   = pkg_share / 'logs'
@@ -146,6 +153,10 @@ class GstCameraManager(Node):
         encoding  = info.get('encoding', 'bgr8')
         calib_url = 'file://' + str(self.calib_root / (calib + '.yaml'))
 
+        # Escape inner double-quotes so the shell doesn't split the pipeline string
+        # when it contains features="..." (e.g. aravissrc features="PixelFormat=Mono8 ...")
+        pipeline_escaped = pipeline.replace('"', '\\"')
+
         return (
             'ros2 run gst_cam_node gst_cam_node --ros-args'
             ' -p gst_pipeline:="%s"'
@@ -153,7 +164,7 @@ class GstCameraManager(Node):
             ' -p frame_id:="%s"'
             ' -p camera_info_path:="%s"'
             ' -p encoding:="%s"'
-        ) % (pipeline, topic, frame_id, calib_url, encoding)
+        ) % (pipeline_escaped, topic, frame_id, calib_url, encoding)
 
     ################################################################################################
     def _open_log(self, name):
