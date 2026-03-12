@@ -655,9 +655,6 @@ class DRONE_FSM(Node):
                     elif (self.assert_cycle):
                         self.set_FSM_state("CYCLE_SETUP")
                         self.target_AMR_track.stamp()
-                else:
-                    # Visible but not yet locked — keep converging toward target
-                    self.waypoint_track(velocity=self.track_vel_lim)
             
 
             case "CYCLE_SETUP":
