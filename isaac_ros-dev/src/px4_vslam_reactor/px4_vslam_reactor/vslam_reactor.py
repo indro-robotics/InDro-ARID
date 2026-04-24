@@ -1,4 +1,6 @@
 #!/usr/bin/env python
+import os
+import yaml
 import rclpy
 import numpy as np
 import message_filters
@@ -20,34 +22,37 @@ from isaac_ros_visual_slam_interfaces.srv import SetSlamPose
 from px4_msgs.msg import VehicleLocalPosition, VehicleAttitude, VehicleOdometry
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from isaac_ros_visual_slam_interfaces.msg import VisualSlamStatus
+from ament_index_python.packages import get_package_share_directory
 
 
 class vslam_reactor(Node):
     def __init__(self): 
         super().__init__('vslam_reactor_node')
 
-        # REACTOR CONTROL PARAMETERS
+        # REACTOR CONTROL STATE
         self.init_flag = True
         self.vslam_status = 0
         self.vslam_busy = False
-        self.new_set_pose_call = False                    
+        self.new_set_pose_call = False
         self.ev_fusion_started = False                      # PX4 EV fusion
-        self.vslam_stabilization_time = 0.5                 # seconds
-        self.last_set_pose_time = self.get_clock().now()        
+        self.last_set_pose_time = self.get_clock().now()
 
         self.fmu_local_position = Vector3Stamped()
         self.last_vslam_odom_msg = Odometry()
-        self.lin_vel_gate = 15                              # m/s
-        self.VO_rate_lim = 0.20                             # s
-        self.VO_pos_delta_lim = 0.4                         # m
-        self.ang_vel_gate = np.pi*5                         # rad/s
-        self.sync_cache_sz = 300                            # keep it tight                                         
 
-        self.quat_delta_theta = np.radians(3.0)             # 3 degrees tolerance
-        self.displacement_delta = 0.25                      # meters tolerance
-
-        self.quat_delta_theta = np.radians(5.0)             # 3 degrees tolerance
-        self.displacement_delta = 0.25                      # meters tolerance
+        # TUNABLES — loaded from config/reactor_conf.yaml (installed to the
+        # package's share dir by setup.py). See that file for per-parameter
+        # descriptions. Hardcoded defaults below are used only as fallbacks
+        # if a key is missing from the YAML.
+        cfg = self._load_reactor_conf()
+        self.vslam_stabilization_time = cfg.get('vslam_stabilization_time', 0.5)
+        self.lin_vel_gate             = cfg.get('lin_vel_gate',             15.0)
+        self.ang_vel_gate             = cfg.get('ang_vel_gate',             float(np.pi * 5))
+        self.VO_rate_lim              = cfg.get('VO_rate_lim',              0.20)
+        self.VO_pos_delta_lim         = cfg.get('VO_pos_delta_lim',         0.4)
+        self.sync_cache_sz            = cfg.get('sync_cache_sz',            300)
+        self.quat_delta_theta         = cfg.get('quat_delta_theta',         float(np.radians(5.0)))
+        self.displacement_delta       = cfg.get('displacement_delta',       0.25)
 
         self.fmu_lockout = False
         self.R_FRD_TO_FLU = R.from_euler('x', np.pi)
@@ -150,6 +155,30 @@ class vslam_reactor(Node):
 
         ### CALLBACK REGISTRATIONS #################################################################
         self._slam_odom_sub.registerCallback(self.slam_odom_callback)
+
+
+    def _load_reactor_conf(self):
+        """Load config/reactor_conf.yaml from this package's share dir.
+        Returns the parameter dict, or {} if the file is missing/malformed
+        (the caller falls back to hardcoded defaults)."""
+        try:
+            cfg_path = os.path.join(
+                get_package_share_directory('px4_vslam_reactor'),
+                'config', 'reactor_conf.yaml')
+            with open(cfg_path, 'r') as f:
+                data = yaml.safe_load(f) or {}
+            params = data.get('vslam_reactor', {}).get('ros__parameters', {}) or {}
+            self.get_logger().info(
+                'Loaded reactor_conf.yaml (%d tunables)' % len(params))
+            return params
+        except FileNotFoundError:
+            self.get_logger().warn(
+                'reactor_conf.yaml not found — using built-in defaults')
+            return {}
+        except Exception as e:
+            self.get_logger().error(
+                'Failed to parse reactor_conf.yaml (%s) — using defaults' % e)
+            return {}
 
 
     def px4_odom_callback(self, msg):

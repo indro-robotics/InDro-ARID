@@ -254,7 +254,7 @@ setup_git() {
         -exec chmod +x {} \;
     ok "Script permissions set"
 
-    "${WORKSPACES}/scripts/update_isaac_submods.sh"
+    git -C "${REPO_ROOT}" submodule update --init --recursive
     ok "Submodules updated"
 
     STEPS_RUN+=("git")
@@ -269,21 +269,21 @@ setup_docker_patches() {
     cp -f "${ISAAC_ROS_WS}/docker_resources/patched_dockerfiles/.isaac_ros_common-config" \
         "${ISAAC_ROS_WS}/src/isaac_ros_common/scripts/"
 
-    cp -f "${ISAAC_ROS_WS}/docker_resources/dockerfiles/Dockerfile.cypher" \
+    cp -f "${ISAAC_ROS_WS}/docker_resources/dockerfiles/Dockerfile.arid" \
         "${ISAAC_ROS_WS}/src/isaac_ros_common/docker/"
 
     cp -f "${ISAAC_ROS_WS}/container_scripts/run_dev.sh" \
         "${ISAAC_ROS_WS}/src/isaac_ros_common/scripts/"
 
-    cp -f "${ISAAC_ROS_WS}/container_scripts/cypher_env.sh" \
+    cp -f "${ISAAC_ROS_WS}/container_scripts/arid_env.sh" \
         "${ISAAC_ROS_WS}/src/isaac_ros_common/docker/scripts/"
 
     # Protect patched files in isaac_ros_common submodule from git modification
     git -C "${ISAAC_ROS_WS}/src/isaac_ros_common" update-index --skip-worktree \
         scripts/.isaac_ros_common-config \
-        docker/Dockerfile.cypher \
+        docker/Dockerfile.arid \
         scripts/run_dev.sh \
-        docker/scripts/cypher_env.sh 2>/dev/null || true
+        docker/scripts/arid_env.sh 2>/dev/null || true
 
     STEPS_RUN+=("docker_patches")
     ok "Docker patches applied and protected"
@@ -447,6 +447,7 @@ setup_systemd() {
     sudo systemctl enable jetson-clocks.service
     sudo systemctl enable rosbridge_websocket.service
     sudo systemctl enable gst_camera_manager.service
+    sudo systemctl enable arid_description.service
     sudo systemctl daemon-reload
 
     STEPS_RUN+=("systemd")

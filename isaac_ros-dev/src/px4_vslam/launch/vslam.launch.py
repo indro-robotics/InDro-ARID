@@ -1,27 +1,18 @@
 import os
+
 import launch
-from launch.actions import LogInfo
-from launch_ros.actions import Node
-from launch.actions import DeclareLaunchArgument
-from launch_ros.descriptions import ComposableNode
-from launch.actions import IncludeLaunchDescription
+from launch.actions import (DeclareLaunchArgument, ExecuteProcess, LogInfo,
+                            RegisterEventHandler)
+from launch.event_handlers import OnProcessExit
 from launch.substitutions import LaunchConfiguration
-from launch_ros.parameter_descriptions import ParameterFile
 from launch_ros.actions import ComposableNodeContainer, Node
-from ament_index_python.packages import get_package_share_directory
-from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch_ros.descriptions import ComposableNode
+from launch_ros.parameter_descriptions import ParameterFile
 
 
 def generate_launch_description():
 
-    # Launch the URDF TF publisher
-    package_name = 'cypher_drone_description'
-    launch_file_name = 'cypher.launch.py'
-    package_share_path = get_package_share_directory(package_name)
-    launch_file_path = os.path.join(package_share_path, 'launch', launch_file_name)
-    cypher_URDF_TFs = IncludeLaunchDescription(PythonLaunchDescriptionSource(launch_file_path))
-
-    # Declare the config file parameter
+    # Config file (vslam tuning + realsense params) ------------------------------
     launch_dir = os.path.dirname(os.path.realpath(__file__))
     config = DeclareLaunchArgument(
         'camera_config_file',
@@ -29,7 +20,6 @@ def generate_launch_description():
         description='Path to config file'
     )
 
-    # Load parameters from the YAML file
     config_file = LaunchConfiguration('camera_config_file')
     param_file = ParameterFile(config_file, allow_substs=True)
 
@@ -39,7 +29,23 @@ def generate_launch_description():
     ld = env.get('LD_LIBRARY_PATH', '')
     env['LD_LIBRARY_PATH'] = f"/opt/ros/humble/lib:{ld}" if ld else "/opt/ros/humble/lib"
 
-    # Converts VIO solution to PX4 topic
+    # Wait for the host-side arid_description to be running ----------------------
+    # The host runs arid_description.service (robot_state_publisher) which latches
+    # /robot_description and /tf_static. VSLAM needs those TF frames. We block the
+    # rest of this launch until the latched /robot_description message is visible
+    # on the DDS graph — `ros2 topic echo --once` with matching TRANSIENT_LOCAL QoS
+    # exits immediately once the publisher is up.
+    wait_for_description = ExecuteProcess(
+        cmd=['ros2', 'topic', 'echo',
+             '/robot_description', 'std_msgs/msg/String',
+             '--once',
+             '--qos-durability', 'transient_local',
+             '--qos-reliability', 'reliable'],
+        output='log',   # URDF content is huge; don't spam the console
+        name='wait_for_robot_description',
+    )
+
+    # Converts VIO solution to PX4 topic -----------------------------------------
     vio_transform_node = Node(
         name='vio_transform',
         namespace='vio_transform',
@@ -108,11 +114,18 @@ def generate_launch_description():
             )
         ]
     )
-    
+
     return launch.LaunchDescription([
-        cypher_URDF_TFs,
         config,
-        vslam_container,
-        vslam_reactor_node,
-        vio_transform_node,
+        LogInfo(msg='[vslam] Waiting for /robot_description from host-side arid_description...'),
+        wait_for_description,
+        RegisterEventHandler(OnProcessExit(
+            target_action=wait_for_description,
+            on_exit=[
+                LogInfo(msg='[vslam] /robot_description detected — starting VSLAM stack'),
+                vslam_container,
+                vslam_reactor_node,
+                vio_transform_node,
+            ],
+        )),
     ])

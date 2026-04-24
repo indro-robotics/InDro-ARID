@@ -1,0 +1,14 @@
+{
+    "recommendations": [
+        "ms-iot.vscode-ros",
+        "ms-vscode.cpptools-extension-pack",
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "zachflower.uncrustify",
+        "streetsidesoftware.code-spell-checker",
+        "redhat.vscode-xml",
+        "redhat.vscode-yaml",
+        "ms-azuretools.vscode-docker",
+        "ms-vscode-remote.remote-containers"
+    ]
+}

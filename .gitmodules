@@ -1,19 +1,7 @@
-[submodule "local_ws/src/reset_ark_usb"]
-	path = local_ws/src/reset_ark_usb
-	url = https://github.com/indro-robotics/reset_ark_usb.git
-	branch = main
-[submodule "local_ws/src/uwb_drone"]
-	path = local_ws/src/uwb_drone
-	url = https://github.com/indro-robotics/uwb_drone.git
-	branch = websocket-server
 [submodule "local_ws/src/px4_msgs"]
 	path = local_ws/src/px4_msgs
 	url = https://github.com/PX4/px4_msgs.git
 	branch = release/1.15
-[submodule "local_ws/auxiliary/apriltag-imgs"]
-	path = local_ws/auxiliary/apriltag-imgs
-	url = https://github.com/AprilRobotics/apriltag-imgs.git
-	branch = master
 [submodule "local_ws/auxiliary/PX4-Autopilot"]
 	path = local_ws/auxiliary/PX4-Autopilot
 	url = https://github.com/indro-robotics/PX4-Autopilot.git
@@ -30,10 +18,6 @@
 	path = isaac_ros-dev/src/isaac_ros_nitros
 	url = https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_nitros.git
 	branch = release-3.2
-[submodule "isaac_ros-dev/src/foxglove-sdk"]
-	path = isaac_ros-dev/src/foxglove-sdk
-	url = https://github.com/foxglove/foxglove-sdk.git
-	branch = main
 [submodule "isaac_ros-dev/src/realsense-ros"]
 	path = isaac_ros-dev/src/realsense-ros
 	url = https://github.com/IntelRealSense/realsense-ros.git
@@ -46,19 +30,10 @@
 	path = isaac_ros-dev/src/px4_msgs
 	url = https://github.com/PX4/px4_msgs.git
 	branch = release/1.15
-[submodule "isaac_ros-dev/src/isaac_ros_apriltag"]
-	path = isaac_ros-dev/src/isaac_ros_apriltag
-	url = https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_apriltag.git
-	branch = release-3.2
 [submodule "isaac_ros-dev/src/isaac_ros_image_pipeline"]
 	path = isaac_ros-dev/src/isaac_ros_image_pipeline
 	url = https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_image_pipeline.git
 	branch = release-3.2
-[submodule "isaac_ros-dev/src/isaac_ros_argus_camera"]
-	path = isaac_ros-dev/src/isaac_ros_argus_camera
-	url = https://github.com/indro-robotics/isaac_ros_argus_camera.git
-	branch = release-3.2
-[submodule "isaac_ros-dev/src/apriltag_cypher"]
-	path = isaac_ros-dev/src/apriltag_cypher
-	url = https://github.com/indro-robotics/apriltag_cypher.git
-	branch = cypher_v3
+[submodule "local_ws/src/foxglove-sdk"]
+	path = local_ws/src/foxglove-sdk
+	url = https://github.com/foxglove/foxglove-sdk.git

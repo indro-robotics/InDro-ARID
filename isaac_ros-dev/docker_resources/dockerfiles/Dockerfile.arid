@@ -1,0 +1,31 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+# Install dependencies
+RUN apt-get update && apt-get install -y \
+    nano \
+    v4l-utils \
+    libwebsocketpp-dev \
+    libgstreamer1.0-dev \
+    python3-colcon-clean \
+    python3-posix-ipc \
+    gir1.2-gstreamer-1.0 \
+    libgstreamer-plugins-base1.0-dev \
+    ros-humble-camera-ros \
+    ros-humble-magic-enum \
+    ros-humble-librealsense2 \
+    ros-humble-foxglove-msgs \
+    ros-humble-apriltag-msgs \
+    ros-humble-tf-transformations \
+    ros-humble-isaac-ros-image-proc \
+    ros-humble-isaac-ros-h264-decoder \
+    ros-humble-ament-cmake-clang-format \
+    ros-humble-apriltag-msgs \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN pip3 install --ignore-installed transforms3d
+
+# Core ARID env & aliases
+COPY scripts/arid_env.sh /etc/profile.d/arid_env.sh
+RUN chmod 644 /etc/profile.d/arid_env.sh \
+ && echo 'source /etc/profile.d/arid_env.sh' >> /etc/bash.bashrc

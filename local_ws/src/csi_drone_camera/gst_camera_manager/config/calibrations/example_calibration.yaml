@@ -1,0 +1,28 @@
+# Placeholder calibration for LUCID Phoenix PHXET124S-MC — full sensor 4096x3000
+# Replace with real values from ros2 run camera_calibration cameracalibrator
+image_width: 4096
+image_height: 3000
+camera_name: phoenix_4k
+camera_matrix:
+  rows: 3
+  cols: 3
+  data: [4096.0, 0.0, 2048.0,
+            0.0, 4096.0, 1500.0,
+            0.0,    0.0,    1.0]
+distortion_model: plumb_bob
+distortion_coefficients:
+  rows: 1
+  cols: 5
+  data: [0.0, 0.0, 0.0, 0.0, 0.0]
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data: [1.0, 0.0, 0.0,
+         0.0, 1.0, 0.0,
+         0.0, 0.0, 1.0]
+projection_matrix:
+  rows: 3
+  cols: 4
+  data: [4096.0, 0.0, 2048.0, 0.0,
+            0.0, 4096.0, 1500.0, 0.0,
+            0.0,    0.0,    1.0, 0.0]

@@ -1,5 +1,0 @@
-# Shelf.msg
-float64 target_yaw
-float64 local_angle_stamp
-geometry_msgs/Vector3 target_position
-geometry_msgs/Vector3 local_position_stamp

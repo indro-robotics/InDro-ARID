@@ -1,7 +1,0 @@
-# Cycle.srv
-float64 scan_velocity
-float64 shelf_height
-float64 shelf_distance
-float64 amr_orientation
----
-bool success

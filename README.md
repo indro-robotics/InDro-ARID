@@ -24,7 +24,7 @@ All output is logged to `log/setup_log_<timestamp>.log`.
 | **repos** | Adds ROS, Nvidia Jetson, and Docker APT repos; regenerates NVIDIA CDI config | both |
 | **apt** | Installs ROS packages, libusb, camera-info-manager, compressed-image-transport, etc. | both |
 | **px4_deps** | Runs PX4 `ubuntu.sh` dependency installer (interactive prompt) | fresh only |
-| **git** | Sets git credential cache; fixes script permissions; runs `update_isaac_submods.sh` | both |
+| **git** | Sets git credential cache; fixes script permissions; initializes and updates submodules | both |
 | **docker_patches** | Copies patched Dockerfiles and scripts into the `isaac_ros_common` submodule; marks them skip-worktree so git ignores local changes | both |
 | **skip_worktree** | Finds all `config/`, `cfg/`, and `camera_calibrations/` dirs under `src/` and marks their tracked files skip-worktree (protects calibrations from being overwritten by git) | both |
 | **bashrc** | Rewrites the `# BEGIN CYPHER SETUP … # END CYPHER SETUP` block: sets `ROS_DOMAIN_ID=23`, exports workspace paths, sources `local_ws/install/setup.bash`, adds aliases (`run_isaac`, `build_isaac`, `colcon_local`, `reset_usb`, etc.) | both |

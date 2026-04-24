@@ -1,4 +1,0 @@
-# Launch.srv
-float64 loiter_altitude
----
-bool success

@@ -10,7 +10,8 @@ setup(
     packages=find_packages(exclude=['test']),
     data_files=[
         ('share/' + package_name, ['package.xml']),
-        (os.path.join('share', package_name), glob('resource/*'))
+        (os.path.join('share', package_name), glob('resource/*')),
+        (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,

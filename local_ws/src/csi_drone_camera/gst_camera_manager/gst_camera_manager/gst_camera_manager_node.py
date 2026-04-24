@@ -15,13 +15,17 @@ from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from ament_index_python.packages import get_package_share_directory
 from std_msgs.msg import Bool
 from std_srvs.srv import SetBool, Trigger
+from sensor_msgs.msg import CameraInfo
 from rclpy.qos import (QoSProfile,
                        QoSReliabilityPolicy,
                        QoSHistoryPolicy,
-                       QoSDurabilityPolicy)
+                       QoSDurabilityPolicy,
+                       qos_profile_sensor_data)
 
 
 MAX_LOG_FILES = 20
+DEFAULT_ALIVE_THRESHOLD = 5.0   # seconds, used when a pipeline omits alive_threshold
+WATCHDOG_PERIOD = 0.5           # seconds, how often to check liveness
 
 ALIVE_QOS = QoSProfile(
     reliability=QoSReliabilityPolicy.RELIABLE,
@@ -30,6 +34,25 @@ ALIVE_QOS = QoSProfile(
     depth=1
 )
 
+# QoS to use on camera_info subscription when the pipeline is configured with `reliable: true`.
+# Matches gst_cam_node's reliable-volatile publisher in that mode.
+CAMERA_INFO_QOS_RELIABLE = QoSProfile(
+    reliability=QoSReliabilityPolicy.RELIABLE,
+    durability=QoSDurabilityPolicy.VOLATILE,
+    history=QoSHistoryPolicy.KEEP_LAST,
+    depth=5
+)
+
+
+def _parse_reliable(raw):
+    """Normalize the YAML `reliable` field. Accepts bool, str ('true'/'false'/''),
+    or missing. Anything except truthy-true maps to False."""
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        return raw.strip().lower() == 'true'
+    return False
+
 
 ####################################################################################################
 # GST CAMERA MANAGER ###############################################################################
@@ -37,12 +60,17 @@ class GstCameraManager(Node):
     def __init__(self):
         super().__init__('gst_camera_manager')
 
-        self.pipelines    = {}   # name -> dict (gst_pipeline, calibration, topic, frame_id, encoding)
-        self.processes    = {}   # name -> Popen or None
-        self.log_files    = {}   # name -> open file handle or None
-        self.alive_pubs   = {}   # name -> Publisher<Bool>
-        self.srv_handles  = {}   # name -> service handles (keep alive)
-        self.process_lock = Lock()
+        self.pipelines         = {}   # name -> dict (gst_pipeline, calibration, topic, frame_id, encoding, alive_threshold, reliable)
+        self.processes         = {}   # name -> Popen or None
+        self.log_files         = {}   # name -> open file handle or None
+        self.alive_pubs        = {}   # name -> Publisher<Bool>
+        self.alive_state       = {}   # name -> bool (last published alive value; kept in sync with _publish_alive)
+        self.alive_thresholds  = {}   # name -> float seconds
+        self.reliable_flags    = {}   # name -> bool (parsed from YAML `reliable`)
+        self.last_frame_time   = {}   # name -> rclpy.time.Time (set on each camera_info callback)
+        self.info_subs         = {}   # name -> Subscription<CameraInfo>
+        self.srv_handles       = {}   # name -> service handles (keep alive)
+        self.process_lock      = Lock()
 
         self.launch_env = os.environ.copy()
         # Aravis is built from source — ensure the GStreamer plugin is always found
@@ -60,6 +88,7 @@ class GstCameraManager(Node):
         config_path = pkg_share / 'config' / 'pipelines.yaml'
         self._load_config(config_path)
         self._create_publishers()
+        self._create_info_subscriptions()
         self._create_services()
         self._create_watchdog()
 
@@ -74,8 +103,14 @@ class GstCameraManager(Node):
                 self.pipelines[name] = info
                 self.processes[name] = None
                 self.log_files[name] = None
-                self.get_logger().info('Registered pipeline: %s  (topic: /%s/image_raw)' % (
-                    name, info.get('topic', name)))
+                self.alive_state[name] = False
+                self.alive_thresholds[name] = float(info.get('alive_threshold', DEFAULT_ALIVE_THRESHOLD))
+                self.reliable_flags[name] = _parse_reliable(info.get('reliable'))
+                self.last_frame_time[name] = None
+                self.get_logger().info(
+                    'Registered pipeline: %s  (topic: /%s/image_raw, alive_threshold=%.2fs, qos=%s)' % (
+                        name, info.get('topic', name), self.alive_thresholds[name],
+                        'RELIABLE' if self.reliable_flags[name] else 'BEST_EFFORT'))
         except Exception as e:
             self.get_logger().error('Failed to load config: %s' % str(e))
 
@@ -94,8 +129,33 @@ class GstCameraManager(Node):
             msg = Bool()
             msg.data = alive
             self.alive_pubs[name].publish(msg)
+            self.alive_state[name] = alive
         except Exception:
             pass
+
+    ################################################################################################
+    def _create_info_subscriptions(self):
+        # Subscribe to each pipeline's camera_info topic. The subscription persists for the
+        # node's lifetime; it sits idle until the subprocess starts publishing and is the
+        # signal the watchdog uses to prove frames are flowing.
+        cbg = MutuallyExclusiveCallbackGroup()
+        for name in self.pipelines:
+            topic = self.pipelines[name].get('topic', name)
+            info_topic = '/%s/camera_info' % topic
+            qos = CAMERA_INFO_QOS_RELIABLE if self.reliable_flags[name] else qos_profile_sensor_data
+            sub = self.create_subscription(
+                CameraInfo,
+                info_topic,
+                lambda msg, n=name: self._on_camera_info(n, msg),
+                qos,
+                callback_group=cbg,
+            )
+            self.info_subs[name] = sub
+
+    ################################################################################################
+    def _on_camera_info(self, name, _msg):
+        # Single-key dict write — atomic under the GIL, no lock needed.
+        self.last_frame_time[name] = self.get_clock().now()
 
     ################################################################################################
     def _create_services(self):
@@ -130,18 +190,40 @@ class GstCameraManager(Node):
     ################################################################################################
     def _create_watchdog(self):
         cbg = MutuallyExclusiveCallbackGroup()
-        self.watchdog_timer = self.create_timer(3.0, self._watchdog_tick, callback_group=cbg)
+        self.watchdog_timer = self.create_timer(WATCHDOG_PERIOD, self._watchdog_tick, callback_group=cbg)
 
     ################################################################################################
     def _watchdog_tick(self):
+        now = self.get_clock().now()
         with self.process_lock:
-            for name, proc in self.processes.items():
-                if proc is not None and proc.poll() is not None:
+            for name, proc in list(self.processes.items()):
+                if proc is None:
+                    continue
+
+                # 1. Process-death check: subprocess exited → not alive, cleanup, log.
+                if proc.poll() is not None:
                     exit_code = proc.returncode
                     self.processes[name] = None
                     self._close_log(name)
                     self._publish_alive(name, False)
                     self.get_logger().warn('Pipeline crashed: %s (exit=%d)' % (name, exit_code))
+                    continue
+
+                # 2. Frame-flow check: no camera_info message within alive_threshold → stalled.
+                threshold = self.alive_thresholds.get(name, DEFAULT_ALIVE_THRESHOLD)
+                last = self.last_frame_time.get(name)
+                if last is None:
+                    continue  # not yet set — grace period is initialized at enable time
+                elapsed = (now - last).nanoseconds / 1e9
+                currently_alive = elapsed <= threshold
+                if currently_alive != self.alive_state.get(name, False):
+                    self._publish_alive(name, currently_alive)
+                    if currently_alive:
+                        self.get_logger().info('Pipeline %s: frames resumed' % name)
+                    else:
+                        self.get_logger().warn(
+                            'Pipeline %s: stalled — %.2fs since last frame (threshold %.2fs)' % (
+                                name, elapsed, threshold))
 
     ################################################################################################
     def _build_command(self, name):
@@ -150,8 +232,9 @@ class GstCameraManager(Node):
         calib     = info.get('calibration', name)
         topic     = info.get('topic', name)
         frame_id  = info.get('frame_id', name + '_frame')
-        encoding  = info.get('encoding', 'bgr8')
+        encoding  = info.get('encoding', '')
         compress  = 'true' if info.get('compress', True) else 'false'
+        reliable  = 'true' if self.reliable_flags.get(name, False) else 'false'
         calib_url = 'file://' + str(self.calib_root / (calib + '.yaml'))
 
         # Escape inner double-quotes so the shell doesn't split the pipeline string
@@ -166,7 +249,8 @@ class GstCameraManager(Node):
             ' -p camera_info_path:="%s"'
             ' -p encoding:="%s"'
             ' -p compress:=%s'
-        ) % (pipeline_escaped, topic, frame_id, calib_url, encoding, compress)
+            ' -p reliable:=%s'
+        ) % (pipeline_escaped, topic, frame_id, calib_url, encoding, compress, reliable)
 
     ################################################################################################
     def _open_log(self, name):
@@ -263,6 +347,9 @@ class GstCameraManager(Node):
                     preexec_fn=os.setsid
                 )
                 self.processes[name] = proc
+                # Seed the frame timestamp so the first alive_threshold seconds after launch
+                # act as a grace period (watchdog won't mark as stalled during startup).
+                self.last_frame_time[name] = self.get_clock().now()
                 self._publish_alive(name, True)
                 msg = '%s started (pid=%d)' % (name, proc.pid)
                 self.get_logger().info('Started %s' % name)
@@ -278,6 +365,7 @@ class GstCameraManager(Node):
             proc = self.processes[name]
             if proc is None or proc.poll() is not None:
                 self.processes[name] = None
+                self.last_frame_time[name] = None
                 self._close_log(name)
                 self._publish_alive(name, False)
                 return True, '%s already stopped' % name
@@ -285,6 +373,7 @@ class GstCameraManager(Node):
                 os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
                 proc.wait(timeout=5.0)
                 self.processes[name] = None
+                self.last_frame_time[name] = None
                 self._close_log(name)
                 self._publish_alive(name, False)
                 return True, '%s stopped' % name
@@ -294,6 +383,7 @@ class GstCameraManager(Node):
                 except Exception:
                     pass
                 self.processes[name] = None
+                self.last_frame_time[name] = None
                 self._close_log(name)
                 self._publish_alive(name, False)
                 return True, '%s force-killed' % name

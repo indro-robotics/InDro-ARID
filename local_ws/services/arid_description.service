@@ -1,0 +1,17 @@
+[Unit]
+Description=ARID Robot Description — robot_state_publisher for the ARID drone xacro
+Wants=network-online.target
+After=network-online.target
+After=systemd-user-sessions.service
+
+[Service]
+User=jetson
+Type=simple
+Environment="ROS_DOMAIN_ID=23"
+Environment="HOME=/home/jetson"
+ExecStart=/bin/bash -c 'source /opt/ros/humble/setup.bash; source /home/jetson/workspaces/local_ws/install/setup.bash; ros2 launch arid_description display.launch.py'
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

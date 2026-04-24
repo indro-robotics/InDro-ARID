@@ -1,6 +1,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
+#include <sensor_msgs/image_encodings.hpp>
 #include <opencv2/opencv.hpp>
 #include <camera_info_manager/camera_info_manager.hpp>
 #include <image_transport/image_transport.hpp>
@@ -13,7 +14,9 @@
  * GstCamNode: A ROS 2 Node that wraps an arbitrary GStreamer pipeline.
  * The full pipeline string is passed via the gst_pipeline parameter.
  * Publishes image_raw (and image_raw/compressed when compress:=true) under /<camera_topic>/.
- * Publishes camera_info synced to each frame only if a calibration file is provided.
+ * Publishes camera_info synced to each frame — from the calibration file if provided,
+ * otherwise a default built from the first frame's dimensions with zero distortion,
+ * identity rectification, and fx=fy=width principal-point-centered intrinsics.
  */
 class GstCamNode : public rclcpp::Node
 {
@@ -25,41 +28,59 @@ public:
     this->declare_parameter<std::string>("camera_topic", "cam_down");
     this->declare_parameter<std::string>("frame_id", "camera_frame");
     this->declare_parameter<std::string>("camera_info_path", "");
-    this->declare_parameter<std::string>("encoding", "bgr8");
+    this->declare_parameter<std::string>("encoding", "");
     this->declare_parameter<bool>("compress", true);
+    this->declare_parameter<bool>("reliable", false);
 
     std::string camera_topic     = this->get_parameter("camera_topic").as_string();
     std::string camera_info_path = this->get_parameter("camera_info_path").as_string();
     frame_id_ = this->get_parameter("frame_id").as_string();
     encoding_ = this->get_parameter("encoding").as_string();
     bool compress = this->get_parameter("compress").as_bool();
+    bool reliable = this->get_parameter("reliable").as_bool();
 
-    const rclcpp::QoS image_qos{rclcpp::QoS(3).reliable().durability_volatile()};
+    // Default QoS is sensor_data (BEST_EFFORT, VOLATILE, KEEP_LAST, depth 5) — the ROS 2
+    // convention for image streams. `reliable:=true` opts into RELIABLE for use cases that
+    // cannot tolerate frame drops (low-rate scanners, metadata-critical pipelines).
+    rclcpp::QoS image_qos = rclcpp::QoS(rclcpp::KeepLast(5)).durability_volatile();
+    if (reliable) {
+      image_qos.reliable();
+    } else {
+      image_qos.best_effort();
+    }
+    rmw_qos_profile_t image_qos_profile = image_qos.get_rmw_qos_profile();
 
     if (compress) {
-      it_pub_ = image_transport::create_publisher(this, "/" + camera_topic + "/image_raw");
+      it_pub_ = image_transport::create_publisher(this, "/" + camera_topic + "/image_raw",
+                                                  image_qos_profile);
     } else {
       image_pub_  = this->create_publisher<sensor_msgs::msg::Image>(
                     "/" + camera_topic + "/image_raw", image_qos);
     }
 
-    // Only set up camera_info if a calibration file was provided
+    // camera_info is always published — use the loaded calibration if provided,
+    // otherwise a default filled from the first frame's dimensions (zero distortion,
+    // identity rectification, fx=fy=width for the intrinsic/projection matrices).
+    camera_info_pub_ = this->create_publisher<sensor_msgs::msg::CameraInfo>(
+                        "/" + camera_topic + "/camera_info", image_qos);
+
+    RCLCPP_INFO(this->get_logger(), "QoS: %s", reliable ? "RELIABLE" : "BEST_EFFORT (sensor_data)");
+
     if (!camera_info_path.empty()) {
       camera_info_manager_ = std::make_shared<camera_info_manager::CameraInfoManager>(
                                this, camera_topic);
       if (camera_info_manager_->validateURL(camera_info_path) &&
           camera_info_manager_->loadCameraInfo(camera_info_path))
       {
-        camera_info_pub_ = this->create_publisher<sensor_msgs::msg::CameraInfo>(
-                            "/" + camera_topic + "/camera_info", image_qos);
         has_calibration_ = true;
         RCLCPP_INFO(this->get_logger(), "Loaded calibration: %s", camera_info_path.c_str());
       } else {
-        RCLCPP_WARN(this->get_logger(), "Invalid calibration path: %s — camera_info disabled",
+        RCLCPP_WARN(this->get_logger(),
+                    "Invalid calibration path: %s — publishing default camera_info",
                     camera_info_path.c_str());
       }
     } else {
-      RCLCPP_INFO(this->get_logger(), "No calibration specified — publishing image_raw only");
+      RCLCPP_INFO(this->get_logger(), "No calibration specified — publishing default camera_info");
     }
 
     gst_thread_ = std::thread(&GstCamNode::start_gst_pipeline, this);
@@ -101,6 +122,21 @@ private:
 
       auto now = this->now();
 
+      // Resolve encoding on first frame: user override if provided, else auto-detect from cv::Mat::type().
+      if (!encoding_resolved_) {
+        active_encoding_ = encoding_.empty() ? detect_encoding(frame) : encoding_;
+        if (active_encoding_.empty()) {
+          RCLCPP_WARN(this->get_logger(),
+            "Could not map cv::Mat type %d to a ROS encoding — publishing with empty encoding. "
+            "Set `encoding:` in the pipeline config to override.", frame.type());
+        } else {
+          RCLCPP_INFO(this->get_logger(), "Image encoding: %s (%s)",
+                      active_encoding_.c_str(),
+                      encoding_.empty() ? "auto-detected" : "override");
+        }
+        encoding_resolved_ = true;
+      }
+
       // Fill image message directly from cv::Mat — one copy into msg->data,
       // then move ownership to the publisher (no further copy).
       auto msg = std::make_unique<sensor_msgs::msg::Image>();
@@ -108,7 +144,7 @@ private:
       msg->header.frame_id = frame_id_;
       msg->height          = static_cast<uint32_t>(frame.rows);
       msg->width           = static_cast<uint32_t>(frame.cols);
-      msg->encoding        = encoding_;
+      msg->encoding        = active_encoding_;
       msg->is_bigendian    = false;
       msg->step            = static_cast<uint32_t>(frame.step);
       msg->data.resize(msg->step * msg->height);
@@ -119,23 +155,79 @@ private:
         it_pub_.publish(*msg);
       }
 
-      // Publish camera_info with the same timestamp — only if calibration was loaded
+      // Publish camera_info with the same timestamp. Source: calibration if loaded,
+      // else a lazily-built default cached on the first frame's dimensions.
+      sensor_msgs::msg::CameraInfo cam_info;
       if (has_calibration_) {
-        auto cam_info = camera_info_manager_->getCameraInfo();
-        cam_info.header.stamp    = now;
-        cam_info.header.frame_id = frame_id_;
-        camera_info_pub_->publish(cam_info);
+        cam_info = camera_info_manager_->getCameraInfo();
+      } else {
+        if (!default_info_ready_) {
+          default_info_ = make_default_camera_info(frame.cols, frame.rows);
+          default_info_ready_ = true;
+        }
+        cam_info = default_info_;
       }
+      cam_info.header.stamp    = now;
+      cam_info.header.frame_id = frame_id_;
+      camera_info_pub_->publish(cam_info);
     }
 
     cap.release();
   }
 
+  // Build a placeholder CameraInfo when no calibration file was provided: real image
+  // dimensions, zero distortion, identity rectification, fx = fy = width with the
+  // principal point at the image centre (matches the phoenix_4k placeholder convention).
+  static sensor_msgs::msg::CameraInfo make_default_camera_info(int width, int height)
+  {
+    sensor_msgs::msg::CameraInfo info;
+    info.width  = static_cast<uint32_t>(width);
+    info.height = static_cast<uint32_t>(height);
+    info.distortion_model = "plumb_bob";
+    info.d = {0.0, 0.0, 0.0, 0.0, 0.0};
+
+    const double fx = static_cast<double>(width);
+    const double fy = static_cast<double>(width);
+    const double cx = width  / 2.0;
+    const double cy = height / 2.0;
+
+    info.k = {fx,  0.0, cx,
+              0.0, fy,  cy,
+              0.0, 0.0, 1.0};
+    info.r = {1.0, 0.0, 0.0,
+              0.0, 1.0, 0.0,
+              0.0, 0.0, 1.0};
+    info.p = {fx,  0.0, cx,  0.0,
+              0.0, fy,  cy,  0.0,
+              0.0, 0.0, 1.0, 0.0};
+    return info;
+  }
+
+  // Map OpenCV Mat types to their unambiguous ROS encoding equivalents.
+  // Anything without a clean mapping returns "" — the caller should warn and leave
+  // msg->encoding empty so subscribers surface the problem rather than silently mislabeling.
+  static std::string detect_encoding(const cv::Mat & frame)
+  {
+    switch (frame.type()) {
+      case CV_8UC1:  return sensor_msgs::image_encodings::MONO8;
+      case CV_8UC3:  return sensor_msgs::image_encodings::BGR8;
+      case CV_8UC4:  return sensor_msgs::image_encodings::BGRA8;
+      case CV_16UC1: return sensor_msgs::image_encodings::MONO16;
+      case CV_16UC3: return sensor_msgs::image_encodings::BGR16;
+      case CV_16UC4: return sensor_msgs::image_encodings::BGRA16;
+      default:       return "";
+    }
+  }
+
   std::thread gst_thread_;
   std::atomic<bool> running_;
   bool has_calibration_;
+  bool encoding_resolved_{false};
+  bool default_info_ready_{false};
   std::string frame_id_;
-  std::string encoding_;
+  std::string encoding_;         // user-provided override (empty = auto-detect)
+  std::string active_encoding_;  // resolved at first frame, written to every message
+  sensor_msgs::msg::CameraInfo default_info_;  // built lazily on first frame when no calib
   // compress=false: raw publisher only
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_pub_;
   // compress=true: image_transport publishes both raw + compressed (lazy — no cost when unsubscribed)

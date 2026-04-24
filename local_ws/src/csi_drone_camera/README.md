@@ -1,9 +1,9 @@
 # csi_drone_camera
 
-GStreamer-based camera stack for the Cypher drone. Two packages:
+Generic GStreamer-based camera stack. Two packages:
 
-- **`gst_cam_node`** — C++ node that wraps any GStreamer pipeline and publishes `image_raw` + `camera_info` (+ `image_raw/compressed` when `compress:=true`)
-- **`gst_camera_manager`** — Python manager that launches/stops named pipelines via ROS2 services
+- **`gst_cam_node`** — C++ node that wraps an arbitrary GStreamer pipeline and publishes `image_raw` (+ `image_raw/compressed` when `compress: true`) and `camera_info`. The pipeline is opaque to the node — anything that produces frames into an `appsink` works (CSI via `nvarguscamerasrc`, V4L2, RTSP, file source, test pattern, etc.).
+- **`gst_camera_manager`** — Python supervisor that loads a YAML of named pipelines and exposes ROS2 services to start/stop each one as a managed subprocess, with a watchdog on liveness.
 
 ---
 
@@ -21,121 +21,204 @@ source install/setup.bash
 ros2 launch gst_camera_manager gst_camera_manager.launch.py
 ```
 
-### Start a pipeline
+At startup the manager reads `gst_camera_manager/config/pipelines.yaml` and creates a set of services per pipeline. No frames flow until you explicitly start one.
+
+### Start / stop a pipeline (example: `cam_front`)
 ```bash
-ros2 service call /gst_camera_manager/phoenix_4k std_srvs/srv/SetBool "{data: true}"
+ros2 service call /gst_camera_manager/cam_front std_srvs/srv/SetBool "{data: true}"   # start
+ros2 service call /gst_camera_manager/cam_front std_srvs/srv/SetBool "{data: false}"  # stop
 ```
 
-### Stop a pipeline
+### Status
 ```bash
-ros2 service call /gst_camera_manager/phoenix_4k std_srvs/srv/SetBool "{data: false}"
+ros2 service call /gst_camera_manager/cam_front/status std_srvs/srv/Trigger "{}"
+ros2 service call /gst_camera_manager/status_all       std_srvs/srv/Trigger "{}"
+ros2 service call /gst_camera_manager/stop_all         std_srvs/srv/Trigger "{}"
 ```
 
-### Stop all pipelines
+### Verify frames
 ```bash
-ros2 service call /gst_camera_manager/stop_all std_srvs/srv/Trigger "{}"
+ros2 topic hz /cam_front/image_raw
+ros2 topic hz /cam_front/image_raw/compressed   # only when compress: true
+ros2 topic echo /cam_front/camera_info --once
 ```
 
-### Check pipeline status
-```bash
-ros2 service call /gst_camera_manager/phoenix_4k/status std_srvs/srv/Trigger "{}"
-ros2 service call /gst_camera_manager/status_all std_srvs/srv/Trigger "{}"
-```
+### Liveness (latched)
+Each pipeline publishes `/gst_camera_manager/<name>/alive` (`std_msgs/Bool`, TRANSIENT_LOCAL). The watchdog runs at 2 Hz and flips alive to `false` in either of these cases:
 
-### Check frames arriving
-```bash
-# Raw (always published)
-ros2 topic hz /scan_cam/image_raw
+1. **Process died** — the subprocess exited. Logs "Pipeline crashed" with the exit code.
+2. **Stalled** — the subprocess is still running but no `camera_info` message has arrived within the pipeline's configured `alive_threshold` seconds. Logs "Pipeline stalled" with the observed gap.
 
-# Compressed JPEG (published when compress: true in pipelines.yaml)
-ros2 topic hz /scan_cam/image_raw/compressed
-```
+Once frames resume, alive flips back to `true` automatically (logs "frames resumed"). The timer starts when the subprocess is launched, so the first `alive_threshold` seconds after start act as a startup grace period.
 
 ---
 
-## LUCID Phoenix PHX124S-M (GigE Vision, 4096×3000 Mono8 @ 5fps)
+## Configuration: `pipelines.yaml`
 
-Configured in `gst_camera_manager/config/pipelines.yaml` as `phoenix_4k`.
+Header comments in [`config/pipelines.yaml`](gst_camera_manager/config/pipelines.yaml) document every field. Summary:
 
-**Prerequisites:**
-- Aravis built from source (`arv-tool-0.10` available) — run `setup.sh`
-- Ethernet interface configured for camera subnet — run `setup.sh`
-- `ros-humble-compressed-image-transport` installed — run `setup.sh`
-- `GST_PLUGIN_PATH=/usr/local/lib/aarch64-linux-gnu/gstreamer-1.0` (set by setup.sh in `.bashrc`, injected automatically by the manager node)
+| Field | Behavior |
+|---|---|
+| `gst_pipeline` | Full GStreamer pipeline string ending in `appsink`. |
+| `calibration` | Basename (no extension) of a file in `config/calibrations/`. Missing file or omitted field → default `camera_info` is generated from the first frame (zero distortion, `fx = fy = width`, principal point at image centre). |
+| `topic` | Root of the published topics: `/<topic>/image_raw`, `/<topic>/image_raw/compressed`, `/<topic>/camera_info`. |
+| `frame_id` | TF frame stamped onto every `Image` and `CameraInfo`. |
+| `encoding` | Override for `sensor_msgs/Image.encoding`. Leave `""` to auto-detect from the `cv::Mat::type()` returned by OpenCV (see table below). Set explicitly (e.g. `"rgb8"`, `"bayer_rggb8"`) to override. |
+| `compress` | `true` → publishes raw + JPEG compressed via `image_transport` (lazy — compressed encoder only runs when a subscriber exists). `false` → raw only. |
+| `alive_threshold` | Seconds (float) without a `camera_info` message before the pipeline is marked not-alive. Starts ticking when the subprocess launches. Omitted → defaults to `5.0`. |
+| `reliable` | QoS selector for `image_raw` + `camera_info`. Omitted / `""` / `false` → **sensor_data QoS** (BEST_EFFORT, VOLATILE, depth 5) — the ROS 2 convention for image streams; drops frames on lossy links rather than stalling the publisher. `true` → RELIABLE (use for low-rate or frame-critical streams where loss is unacceptable). |
 
-**Verify camera detected:**
-```bash
-arv-tool-0.10
-# → Lucid Vision Labs-PHX124S-M-XXXXXXX (192.168.10.10)
+### Encoding auto-detect
+
+`gst_cam_node` maps these `cv::Mat` types directly to unambiguous ROS encodings:
+
+| cv::Mat type | ROS encoding |
+|---|---|
+| `CV_8UC1` | `mono8` |
+| `CV_8UC3` | `bgr8` |
+| `CV_8UC4` | `bgra8` |
+| `CV_16UC1` | `mono16` |
+| `CV_16UC3` | `bgr16` |
+| `CV_16UC4` | `bgra16` |
+| anything else | `""` (warns and publishes unlabeled — set `encoding:` in YAML to override) |
+
+Resolution happens once on the first frame and is cached. The log line tells you which path was taken:
+```
+[INFO] Image encoding: mono8 (auto-detected)
+[INFO] Image encoding: bgr8 (override)
 ```
 
-**Test pipeline directly:**
-```bash
-gst-launch-1.0 aravissrc \
-  features="AcquisitionMode=Continuous PixelFormat=Mono8 AcquisitionFrameRateEnable=true AcquisitionFrameRate=5.0" \
-  ! video/x-raw,format=GRAY8,width=4096,height=3000,framerate=5/1 \
-  ! fakesink sync=false
-```
+### Calibration
 
-**Published topics:**
-- `/scan_cam/image_raw` (`sensor_msgs/Image`, mono8)
-- `/scan_cam/image_raw/compressed` (`sensor_msgs/CompressedImage`, JPEG) — Foxglove monitoring
-- `/scan_cam/camera_info` (`sensor_msgs/CameraInfo`)
+Calibration YAMLs in `config/calibrations/` use the standard `camera_calibration_parsers` format produced by `ros2 run camera_calibration cameracalibrator`. If `camera_info_path` is empty or the file is missing, the node still publishes a sensible default `CameraInfo`:
+
+- `width`, `height` from the first frame
+- `distortion_model: "plumb_bob"`, `d = [0, 0, 0, 0, 0]`
+- `fx = fy = width`, `cx = width/2`, `cy = height/2`
+- Identity rectification, intrinsic padded into projection matrix
+
+This keeps subscribers that expect synchronized `image_raw` + `camera_info` pairs functional even before calibration is done.
 
 ---
 
-## Adding a CSI Camera (Argus / IMX477)
+## Adding a new pipeline
 
-Add a new entry to `pipelines.yaml`:
+Append an entry to `pipelines.yaml`:
 
 ```yaml
-pipelines:
-  csi_down:
+  my_cam:
     gst_pipeline: >-
-      nvarguscamerasrc sensor-id=0 !
-      video/x-raw(memory:NVMM),width=1920,height=1080,framerate=30/1 !
-      nvvidconv !
-      video/x-raw,format=BGRx !
-      videoconvert !
-      video/x-raw,format=BGR !
-      appsink sync=false
-    calibration: "csi_down"
-    topic: "csi_down"
-    frame_id: "csi_down_frame"
-    encoding: "bgr8"
+      <any gstreamer pipeline ending in appsink>
+    calibration: "my_cam"          # optional — file in config/calibrations/
+    topic: "my_cam"
+    frame_id: "my_cam_frame"
+    encoding: ""                   # "" = auto-detect, or force e.g. "bgr8"
     compress: true
+    alive_threshold: 2.0           # seconds (float) without camera_info → not-alive
+    # reliable: true               # optional; default is BEST_EFFORT (sensor_data QoS)
 ```
 
-Then add a matching calibration YAML in `config/calibrations/csi_down.yaml`.
+Rebuild (`colcon build --packages-select gst_camera_manager`) or restart the manager to pick it up. The pipeline gets its own `/gst_camera_manager/my_cam` service automatically — no code changes needed.
 
-Start/stop it the same way:
-```bash
-ros2 service call /gst_camera_manager/csi_down std_srvs/srv/SetBool "{data: true}"
-```
+### Currently defined pipelines
 
-**Published topics:**
-- `/csi_down/image_raw`
-- `/csi_down/image_raw/compressed` (if `compress: true`)
-- `/csi_down/camera_info`
+- **`cam_front`** — CSI camera (sensor-id 0) via `nvarguscamerasrc` at 1920×1080 @ 15 fps, NV12 → GRAY8 via `nvvidconv`. Frame ID: `top_visual_link`.
+- **`cam_down`** — CSI camera (sensor-id 1) via `nvarguscamerasrc` at 1920×1080 @ 15 fps, NV12 → GRAY8 via `nvvidconv`. Frame ID: `bottom_visual_link`.
 
 ---
 
-## Adding a New Pipeline Generally
+## Example: CSI camera via `nvarguscamerasrc`
 
-Each pipeline entry in `pipelines.yaml` requires:
+The currently used sensor is a Sony IMX219. Typical mode table for IMX219 on Jetson (mode numbers and max framerates are defined by the sensor driver in the device-tree overlay — confirm against your specific overlay):
 
-| Field | Description |
+| Mode | Resolution | Max FPS |
+|---|---|---|
+| 0 | 3280 × 2464 | 21 |
+| 1 | 3280 × 1848 | 28 |
+| 2 | 1920 × 1080 | 30 |
+| 3 | 1640 × 1232 | 30 |
+| 4 | 1280 × 720  | 60 |
+
+All modes are 10-bit Bayer RGGB. `nvarguscamerasrc`'s ISP produces NV12, which `nvvidconv` converts to GRAY8 (mono) or BGRx (colour) downstream. Set `sensor-mode=N` on `nvarguscamerasrc` to pick a mode explicitly; otherwise it auto-selects based on the width/height/framerate in the capsfilter.
+
+Example pipeline string (mono, 1080p @ 30 fps):
+```
+nvarguscamerasrc sensor-id=0 wbmode=1 aelock=false ee-mode=2 tnr-mode=2
+  ! video/x-raw(memory:NVMM),width=1920,height=1080,framerate=30/1,format=NV12
+  ! nvvidconv flip-method=0 interpolation-method=1
+  ! video/x-raw,format=GRAY8
+  ! appsink sync=false
+```
+
+Other sensor families (IMX477, IMX219 variants, OV5693, custom modules) follow the same pattern — consult your board's device-tree overlay for the specific mode table.
+
+## Other example sources
+
+| Source | Pipeline skeleton |
 |---|---|
-| `gst_pipeline` | Full GStreamer pipeline string ending with `appsink sync=false` |
-| `calibration` | Filename (without `.yaml`) in `config/calibrations/` |
-| `topic` | ROS topic prefix — publishes to `/<topic>/image_raw` |
-| `frame_id` | TF frame ID stamped on each image |
-| `encoding` | OpenCV encoding string: `mono8`, `bgr8`, `rgb8` |
-| `compress` | `true` to also publish `/<topic>/image_raw/compressed` (JPEG). Default: `true` |
+| USB / V4L2 camera | `v4l2src device=/dev/video0 ! image/jpeg,width=1280,height=720 ! jpegdec ! videoconvert ! appsink` |
+| RTSP stream | `rtspsrc location=rtsp://host/stream latency=100 ! rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! appsink` |
+| Test pattern | `videotestsrc ! video/x-raw,format=BGR,width=640,height=480 ! appsink` |
 
-The pipeline is passed to OpenCV's `VideoCapture` with `CAP_GSTREAMER`. Any pipeline that ends with `appsink sync=false` and produces frames compatible with the specified encoding will work.
+---
 
-Logs are written to:
+## Auto-start on boot
+
+`gst_camera_manager.service` (installed by `setup.sh`) launches the manager node on boot under the `multi-user.target`. Pipelines remain off until explicitly started via SetBool; the service is just the supervisor.
+
+---
+
+## Logs
+
+Per-pipeline stdout/stderr goes to:
 ```
-~/workspaces/local_ws/install/gst_camera_manager/share/gst_camera_manager/logs/<pipeline_name>/
+~/workspaces/local_ws/install/gst_camera_manager/share/gst_camera_manager/logs/<pipeline_name>/<pipeline_name>_<timestamp>.log
 ```
+The manager keeps the last 20 log files per pipeline and rotates older ones.
+
+---
+
+## Troubleshooting
+
+### Pipeline starts but `ros2 topic hz /<topic>/image_raw` shows nothing
+
+1. **Test the GStreamer pipeline standalone** (bypasses ROS, proves the pipeline itself works):
+   ```bash
+   gst-launch-1.0 <your pipeline string, but replace `appsink` with `fakesink`>
+   ```
+   If this fails, the problem is in the pipeline / camera / drivers, not the ROS node.
+
+2. **Check the per-pipeline log** at the path above — the `gst_cam_node` subprocess writes every GStreamer error there.
+
+3. **Check the liveness topic:**
+   ```bash
+   ros2 topic echo /gst_camera_manager/<name>/alive --once
+   ```
+   - `data: false` → subprocess died or hasn't produced a frame within `alive_threshold`. Look at the log file.
+   - `data: true` but `hz` still zero → QoS mismatch on your subscriber (your consumer expects RELIABLE but the pipeline is BEST_EFFORT, or vice versa).
+
+4. **Encoding auto-detect log line** — on first frame you'll see:
+   ```
+   [INFO] Image encoding: mono8 (auto-detected)
+   ```
+   If this never appears, no frames are reaching the OpenCV read loop (GStreamer negotiation / hardware problem).
+
+### Pipeline crashes immediately on start
+
+Check the log file — almost always either:
+- GStreamer element missing (plugin not installed)
+- Camera busy / in use by another process (`sudo fuser /dev/video0` to see owners)
+- Permission issue on the camera device
+
+### "Pipeline stalled" warnings in the manager log
+
+Frames arrived but stopped. Could be:
+- Camera disconnected / driver wedged (restart the pipeline: `SetBool false` then `true`)
+- Exposure auto-adjusted to a very long value (check `exposure=` in the pipeline string)
+- GPU/ISP overloaded (other pipelines / models contending)
+
+Increase `alive_threshold` if the pipeline is legitimately slow (e.g. long-exposure scanner at <1 fps).
+
+### QoS mismatch errors in the ROS log
+
+If you see `Incompatible QoS` warnings: your subscriber is using a different reliability than the publisher. Either change your subscriber's QoS to match, or set `reliable: true` on the pipeline in `pipelines.yaml` to make the publisher RELIABLE.

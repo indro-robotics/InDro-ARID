@@ -8,16 +8,21 @@
   <license>Apache License 2.0</license>
 
   <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
   <depend>tf2_ros</depend>
   <depend>px4_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>px4_vslam</depend>
   <depend>sensor_msgs</depend>
-  <depend>px4_ros2_cpp</depend>
   <depend>geometry_msgs</depend>
   <depend>message_filters</depend>
   <depend>isaac_ros_visual_slam</depend>
-  <depend>cypher_drone_description</depend>
+  <depend>isaac_ros_visual_slam_interfaces</depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-scipy</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
 
   <export>
     <build_type>ament_python</build_type>
