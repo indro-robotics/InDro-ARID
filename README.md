@@ -18,7 +18,7 @@ End-to-end workspace for the **ARID** quadrotor: bootstrap script, robot descrip
 - **`--patch`** — re-run after a `git pull` to pick up config / service changes
 - **No flag** — auto-selects `--patch` if the sentinel `/etc/arid_first_setup_done` exists, otherwise prompts
 
-A legacy `/etc/cypher_first_setup_done` sentinel from the prior workspace is migrated automatically on first run. All output is logged to `log/setup_log_<timestamp>.log`.
+All output is logged to `log/setup_log_<timestamp>.log`.
 
 ### Steps (in order)
 

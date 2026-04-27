@@ -49,14 +49,6 @@ SUDOERS_FILE="/etc/sudoers.d/${USERNAME}_systemctl"
 SENTINEL="/etc/arid_first_setup_done"
 REPO_ROOT="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
 
-# One-shot legacy sentinel migration (Cypher → ARID).
-# Idempotent; safe to leave in indefinitely.
-LEGACY_SENTINEL="/etc/cypher_first_setup_done"
-if [[ -f "$LEGACY_SENTINEL" && ! -f "$SENTINEL" ]]; then
-    sudo mv "$LEGACY_SENTINEL" "$SENTINEL"
-    echo "Migrated legacy sentinel: $LEGACY_SENTINEL → $SENTINEL"
-fi
-
 ###############################################################################
 # LOGGING
 ###############################################################################
@@ -331,17 +323,17 @@ setup_skip_worktree() {
 
 ###############################################################################
 # .BASHRC
-# Always removes and rewrites the Cypher block so patch runs pick up
+# Always removes and rewrites the ARID block so patch runs pick up
 # any alias or export changes without leaving stale duplicates.
 ###############################################################################
 setup_bashrc() {
     step ".bashrc environment"
 
     # Remove existing block (idempotent)
-    sed -i '/# BEGIN CYPHER SETUP/,/# END CYPHER SETUP/d' "$BASHRC_FILE"
+    sed -i '/# BEGIN ARID SETUP/,/# END ARID SETUP/d' "$BASHRC_FILE"
 
     cat >> "$BASHRC_FILE" << EOF
-# BEGIN CYPHER SETUP
+# BEGIN ARID SETUP
 if [ -d /tmp/.X11-unix ]; then
     sock=\$(ls /tmp/.X11-unix/X* 2>/dev/null | head -n1)
     if [ -n "\$sock" ]; then export DISPLAY=":\${sock##*/X}"; fi
@@ -362,7 +354,7 @@ alias reset_usb='/bin/bash ${WORKSPACES}/scripts/usb_reset.sh'
 alias rosdep_local='rosdep install --from-paths ${LOCAL_WS}/src/ --ignore-src -y'
 alias colcon_local='cd ${LOCAL_WS} && colcon build --symlink-install --base-paths src && source ./install/setup.bash'
 alias clean_local='cd ${LOCAL_WS} && colcon clean workspace --base-select build install log'
-# END CYPHER SETUP
+# END ARID SETUP
 EOF
 
     STEPS_RUN+=("bashrc")
