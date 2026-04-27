@@ -30,7 +30,7 @@ A legacy `/etc/cypher_first_setup_done` sentinel from the prior workspace is mig
 | **px4_deps** | Runs PX4 `Tools/setup/ubuntu.sh` (interactive prompt) to install firmware build deps | fresh only |
 | **git** | Sets git credential cache; fixes script permissions; initializes and updates submodules | both |
 | **docker_patches** | Copies patched `Dockerfile.arid`, `arid_env.sh`, and `run_dev.sh` into the `isaac_ros_common` submodule; marks them skip-worktree so git ignores local changes | both |
-| **skip_worktree** | Auto-discovers `config/`, `cfg/`, and `camera_calibrations/` dirs across all packages; marks tracked files skip-worktree (protects calibrations from being overwritten by git) | both |
+| **skip_worktree** | Marks tracked files inside `csi_drone_camera/gst_camera_manager/config/` and `px4_vslam/config/` as skip-worktree, so local edits (camera serials, calibrations, pipeline tuning) don't appear in `git status` or get pushed by accident | both |
 | **bashrc** | Rewrites the host `.bashrc` block: `ROS_DOMAIN_ID=23`, workspace path exports, sources `local_ws/install/setup.bash`, adds aliases (`run_isaac`, `colcon_local`, `reset_usb`, etc.) | both |
 | **permissions** | Sudoers rule (uhubctl, gpioset, systemctl, `usb_reset.sh` — all without password); USB + GPIO udev rules; polkit rule for `reset_usb.service`; adds user to `dialout` + `gpio` groups | both |
 | **uhubctl** | Builds and installs `uhubctl` from source (skips if already installed) | both |

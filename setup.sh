@@ -297,18 +297,22 @@ setup_docker_patches() {
 }
 
 ###############################################################################
-# CALIBRATION & CONFIG FILE PROTECTION (skip-worktree)
-# Dynamically finds all config/ and cfg/ dirs under src/ so new packages
-# (e.g. arid_description) are covered automatically without editing this script.
+# CONFIG FILE PROTECTION (skip-worktree)
+# Marks tracked files inside per-deployment config directories as skip-worktree
+# so local edits (camera serials, calibrations, pipeline tuning) don't show up
+# as `git status` modifications and can't be accidentally pushed.
 ###############################################################################
 setup_skip_worktree() {
-    step "Protecting calibration & config files"
+    step "Protecting per-deployment config files"
+
+    # Repo-relative paths. Add any new per-deployment config dirs here.
+    local protected_dirs=(
+        "local_ws/src/csi_drone_camera/gst_camera_manager/config"
+        "isaac_ros-dev/src/px4_vslam/config"
+    )
 
     local protected=0
-
-    while IFS= read -r dir; do
-        local rel_dir
-        rel_dir=$(realpath --relative-to="$REPO_ROOT" "$dir")
+    for rel_dir in "${protected_dirs[@]}"; do
         local files
         files=$(git -C "$REPO_ROOT" ls-files "$rel_dir" 2>/dev/null || true)
         if [[ -n "$files" ]]; then
@@ -316,11 +320,13 @@ setup_skip_worktree() {
                 2>/dev/null || true
             ok "Protected: ${rel_dir}"
             (( protected++ )) || true
+        else
+            warn "No tracked files in ${rel_dir} — skipped"
         fi
-    done < <(find "${ISAAC_ROS_WS}/src" "${LOCAL_WS}" -type d \( -name "config" -o -name "cfg" -o -name "camera_calibrations" \) 2>/dev/null)
+    done
 
     STEPS_RUN+=("skip_worktree")
-    ok "${protected} config/calibration directories protected"
+    ok "${protected} config directories protected"
 }
 
 ###############################################################################
