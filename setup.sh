@@ -1,5 +1,5 @@
 #!/bin/bash
-# Cypher Drone Workspace Setup
+# ARID Drone Workspace Setup
 # Usage: ./setup.sh [--fresh | --patch]
 #   --fresh   First-time installation on a new system
 #   --patch   Re-run after a git pull (auto-selected if sentinel exists)
@@ -46,8 +46,16 @@ ISAAC_ROS_WS="${WORKSPACES}/isaac_ros-dev"
 PX4_DIR="${LOCAL_WS}/auxiliary/PX4-Autopilot"
 POLKIT_RULE_FILE="/etc/polkit-1/rules.d/10-reset-usb.rules"
 SUDOERS_FILE="/etc/sudoers.d/${USERNAME}_systemctl"
-SENTINEL="/etc/cypher_first_setup_done"
+SENTINEL="/etc/arid_first_setup_done"
 REPO_ROOT="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
+
+# One-shot legacy sentinel migration (Cypher → ARID).
+# Idempotent; safe to leave in indefinitely.
+LEGACY_SENTINEL="/etc/cypher_first_setup_done"
+if [[ -f "$LEGACY_SENTINEL" && ! -f "$SENTINEL" ]]; then
+    sudo mv "$LEGACY_SENTINEL" "$SENTINEL"
+    echo "Migrated legacy sentinel: $LEGACY_SENTINEL → $SENTINEL"
+fi
 
 ###############################################################################
 # LOGGING
@@ -199,7 +207,6 @@ setup_apt_packages() {
         libusb-1.0-0-dev pkgconf gpiod \
         pva-allow-2 \
         python3-colcon-clean \
-        ros-humble-rosbridge-server \
         ros-humble-camera-info-manager \
         ros-humble-compressed-image-transport
 
@@ -292,7 +299,7 @@ setup_docker_patches() {
 ###############################################################################
 # CALIBRATION & CONFIG FILE PROTECTION (skip-worktree)
 # Dynamically finds all config/ and cfg/ dirs under src/ so new packages
-# (e.g. cypher_argus) are covered automatically without editing this script.
+# (e.g. arid_description) are covered automatically without editing this script.
 ###############################################################################
 setup_skip_worktree() {
     step "Protecting calibration & config files"
@@ -442,10 +449,8 @@ setup_systemd() {
     sudo cp -f "${LOCAL_WS}/services/"*.service "/etc/systemd/system/"
 
     sudo systemctl enable usb_ros_reset.service
-    sudo systemctl enable uwb_ros_node.service
     sudo systemctl enable start_isaac_docker.service
     sudo systemctl enable jetson-clocks.service
-    sudo systemctl enable rosbridge_websocket.service
     sudo systemctl enable gst_camera_manager.service
     sudo systemctl enable arid_description.service
     sudo systemctl daemon-reload
@@ -482,7 +487,6 @@ ensure_pip_pkg() {
 setup_ros_workspace() {
     step "ROS2 local workspace"
 
-    ensure_pip_pkg "websockets==15.0.1" "websockets" "15.0.1"
     ensure_pip_pkg "pyudev==0.24.3"     "pyudev"     "0.24.3"
     ensure_pip_pkg "pyserial==3.5"      "pyserial"   "3.5"
     ensure_pip_pkg "empy<4"             "empy"       ""
@@ -507,213 +511,6 @@ setup_ros_workspace() {
 
     STEPS_RUN+=("ros_workspace")
     ok "ROS2 local workspace built"
-}
-
-###############################################################################
-# GSTREAMER + ARAVIS (GigE Vision camera support — built from source)
-# The apt package (aravis 0.8) does not support LUCID Phoenix cameras.
-# We build the latest aravis from source which includes aravis 0.10 tools
-# and a working aravissrc GStreamer plugin.
-###############################################################################
-setup_aravis() {
-    step "GStreamer + Aravis (GigE Vision — source build)"
-
-    if ! command -v gst-launch-1.0 >/dev/null 2>&1; then
-        err "GStreamer not found — install it first: sudo apt install gstreamer1.0-tools"
-        err "Skipping Aravis: GigE camera will not work until GStreamer is installed."
-        STEPS_SKIPPED+=("aravis")
-        return
-    fi
-
-    local gst_ver
-    gst_ver=$(gst-launch-1.0 --version | head -1 | awk '{print $NF}')
-    ok "GStreamer ${gst_ver} detected"
-
-    # Remove old apt aravis 0.8 — conflicts with source build and broken for LUCID
-    local old_pkgs=()
-    for pkg in libaravis-0.8-0 aravis-tools aravis-tools-cli libaravis-dev gstreamer1.0-aravis; do
-        dpkg -l "$pkg" 2>/dev/null | grep -q '^ii' && old_pkgs+=("$pkg")
-    done
-    if [[ ${#old_pkgs[@]} -gt 0 ]]; then
-        ok "Removing old apt aravis packages: ${old_pkgs[*]}"
-        sudo apt-get remove -y "${old_pkgs[@]}"
-        sudo apt-get autoremove -y
-    fi
-
-    # Already built from source?
-    if command -v arv-tool-0.10 >/dev/null 2>&1; then
-        skip "Aravis 0.10 already installed from source"
-        STEPS_SKIPPED+=("aravis")
-        return
-    fi
-
-    ok "Installing Aravis build dependencies..."
-    sudo apt-get install -y \
-        libgstreamer1.0-dev \
-        gstreamer1.0-plugins-base \
-        gstreamer1.0-plugins-good \
-        gstreamer1.0-plugins-bad \
-        gstreamer1.0-plugins-ugly \
-        libgstreamer-plugins-base1.0-dev \
-        libglib2.0-dev \
-        libgirepository1.0-dev \
-        meson \
-        ninja-build \
-        pkg-config \
-        libpango1.0-dev \
-        libgtk-3-dev \
-        libudev-dev \
-        libgudev-1.0-dev \
-        libusb-1.0-0-dev \
-        gettext \
-        desktop-file-utils
-
-    local aravis_dir="${HOME_DIR}/aravis"
-    if [[ ! -d "$aravis_dir" ]]; then
-        git clone https://github.com/AravisProject/aravis.git "$aravis_dir"
-    else
-        ok "Aravis source already cloned — pulling latest"
-        git -C "$aravis_dir" pull
-    fi
-
-    (
-        cd "$aravis_dir"
-        meson setup build --prefix=/usr/local --wipe
-        ninja -C build
-        sudo ninja -C build install
-        sudo ldconfig
-    )
-
-    STEPS_RUN+=("aravis")
-    ok "Aravis built and installed — discover cameras with: arv-tool-0.10"
-}
-
-###############################################################################
-# GIGE CAMERA ETHERNET INTERFACE
-# Configures a dedicated ethernet interface for GigE Vision cameras.
-# Uses link-local (169.254.x.x) for zero-config plug-and-play:
-#   - No static IP needed on camera or Jetson
-#   - Camera auto-negotiates link-local IP if DHCP unavailable
-#   - Aravis discovers via GVCP broadcast regardless of IP
-# MTU 9000 (jumbo frames) is critical for 4K bandwidth (~1 GB/s raw).
-###############################################################################
-setup_gige_ethernet() {
-    step "GigE camera ethernet interface"
-
-    echo ""
-    echo "  Available network interfaces:"
-    echo ""
-
-    declare -A iface_map   # idx -> name
-    while IFS= read -r line; do
-        local idx name state
-        idx=$(echo "$line"  | awk '{print $1}' | tr -d ':')
-        name=$(echo "$line" | awk -F': ' '{print $2}' | sed 's/@.*//')
-        state=$(echo "$line" | grep -o 'state [A-Z]*' | awk '{print $2}')
-        [[ "$name" == "lo" ]]      && continue
-        [[ "$name" == docker* ]]   && continue
-        [[ "$name" == veth* ]]     && continue
-        [[ "$name" == l4tbr* ]]    && continue
-        [[ "$name" == usb* ]]      && continue
-        [[ "$name" == can* ]]      && continue
-        iface_map[$idx]="$name"
-        printf "    %2s)  %-20s  [%s]\n" "$idx" "$name" "${state:-UNKNOWN}"
-    done < <(ip link show | grep -E '^[0-9]+:')
-    echo ""
-
-    local selection iface
-    read -r -p "  Select interface No. (or type name, or 'skip'): " selection
-
-    if [[ "$selection" == "skip" || -z "$selection" ]]; then
-        skip "GigE ethernet setup skipped"
-        STEPS_SKIPPED+=("gige_ethernet")
-        return
-    fi
-
-    # Accept either the index number or the interface name directly
-    if [[ -v iface_map[$selection] ]]; then
-        iface="${iface_map[$selection]}"
-    else
-        iface="$selection"
-    fi
-
-    if ! ip link show "$iface" >/dev/null 2>&1; then
-        warn "Interface '${iface}' not found — skipping"
-        STEPS_SKIPPED+=("gige_ethernet")
-        return
-    fi
-
-    # Configure interface via NetworkManager (nmcli) — Jetson does not ship netplan
-    local con_name="gige-camera-${iface}"
-
-    # Remove any existing connection for this interface to start clean
-    if sudo nmcli connection show "$con_name" >/dev/null 2>&1; then
-        sudo nmcli connection delete "$con_name" >/dev/null
-    fi
-
-    # Temporarily add a link-local address so arv-tool's GVCP broadcast goes out.
-    # Aravis discovers cameras even on the wrong subnet (broadcast), we just need
-    # any IP on the interface so the kernel will send packets.
-    echo "  Bringing up interface temporarily to discover camera IP..."
-    sudo ip link set dev "$iface" up
-    sudo ip addr add 169.254.1.1/16 dev "$iface" 2>/dev/null || true
-    sleep 2
-
-    echo "  Running arv-tool-0.10 to discover GigE camera..."
-    local cam_ip
-    cam_ip=$(arv-tool-0.10 2>/dev/null | grep -oP '(?<=\()\d+\.\d+\.\d+\.\d+(?=\))' | head -1)
-    sudo ip addr del 169.254.1.1/16 dev "$iface" 2>/dev/null || true
-
-    if [[ -z "$cam_ip" ]]; then
-        warn "No GigE camera found on ${iface} — is it powered and plugged in?"
-        warn "Skipping network configuration — re-run setup with camera connected."
-        STEPS_SKIPPED+=("gige_ethernet")
-        return
-    fi
-
-    ok "Camera discovered at ${cam_ip}"
-    local cam_prefix
-    cam_prefix=$(echo "$cam_ip" | cut -d. -f1-3)
-    local jetson_ip="${cam_prefix}.1/24"
-
-    # Static manual — DHCP blocks indefinitely on a direct link with no server.
-    # To SSH in from a laptop on this port: set laptop to any IP in the same /24.
-    sudo nmcli connection add \
-        type ethernet \
-        con-name "$con_name" \
-        ifname "$iface" \
-        ipv4.method manual \
-        ipv4.addresses "$jetson_ip" \
-        ipv6.method disabled \
-        ethernet.mtu 9000 \
-        connection.autoconnect yes
-    sudo nmcli connection up "$con_name" >/dev/null
-    ok "NetworkManager connection '${con_name}' configured (${jetson_ip}, MTU 9000)"
-
-    sleep 1
-    if ping -c 1 -W 2 "$cam_ip" >/dev/null 2>&1; then
-        ok "Camera reachable at ${cam_ip}"
-    else
-        warn "Cannot ping ${cam_ip} — verify camera is powered and on ${iface}"
-    fi
-
-    # Tune kernel receive buffers for GigE Vision (prevents frame drops at 4K)
-    local sysctl_file="/etc/sysctl.d/60-gige-camera.conf"
-    if [[ ! -f "$sysctl_file" ]]; then
-        sudo tee "$sysctl_file" > /dev/null << 'EOF'
-# GigE Vision camera receive buffer tuning
-net.core.rmem_max=26214400
-net.core.rmem_default=26214400
-EOF
-        sudo sysctl -p "$sysctl_file" >/dev/null
-        ok "Kernel receive buffers tuned for GigE Vision"
-    else
-        skip "GigE kernel buffer tuning already present"
-    fi
-    ok "After connecting camera, discover it with: arv-tool-0.8"
-    ok "Use the returned name (e.g. 'LUCID Vision Labs-PHXET124S-XXXXXX') in pipelines.yaml"
-
-    STEPS_RUN+=("gige_ethernet")
 }
 
 ###############################################################################
@@ -817,8 +614,6 @@ main() {
     setup_permissions
     setup_uhubctl
     setup_systemd
-    setup_aravis
-    setup_gige_ethernet
     setup_ros_workspace
     setup_docker
     write_sentinel
