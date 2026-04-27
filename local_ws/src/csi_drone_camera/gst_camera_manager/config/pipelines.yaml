@@ -1,22 +1,71 @@
+# GstCameraManager pipeline definitions.
+# Each entry spawns a gst_cam_node subprocess on demand and exposes a service at
+# /gst_camera_manager/<name> (std_srvs/SetBool; true=start, false=stop).
+#
+# Fields (per pipeline):
+#   gst_pipeline : Full GStreamer pipeline string, ending in `appsink`.
+#   calibration  : Basename (no extension) of a YAML in config/calibrations/. If the
+#                  file is missing or the field is omitted, camera_info is still
+#                  published using defaults built from the first frame (zero
+#                  distortion, fx=fy=width, principal point at image centre).
+#   topic        : ROS topic root. Publishes /<topic>/image_raw, /<topic>/image_raw/compressed
+#                  (when compress: true), and /<topic>/camera_info.
+#   frame_id     : TF frame stamped into every image + camera_info header.
+#   encoding     : Override for sensor_msgs/Image.encoding. Leave empty "" to let the
+#                  node auto-detect from cv::Mat::type() (maps CV_8UC1→mono8, CV_8UC3→bgr8,
+#                  CV_8UC4→bgra8, CV_16UC1→mono16, CV_16UC3→bgr16, CV_16UC4→bgra16).
+#                  Set explicitly (e.g. "rgb8", "bayer_rggb8") to override auto-detect.
+#   compress     : true → publishes both raw + compressed via image_transport (lazy, no
+#                  cost if nothing subscribes to compressed). false → raw only.
+#   alive_threshold : Seconds (float) without a camera_info message before the pipeline
+#                     is marked not-alive on /gst_camera_manager/<name>/alive. Process
+#                     death always forces alive=false regardless of this value. Timer
+#                     starts when the subprocess is launched (acts as a startup grace
+#                     period). Omitted → defaults to 5.0s.
+#   reliable     : QoS for image_raw + camera_info. Default (omitted / "" / false) is
+#                  sensor_data QoS (BEST_EFFORT, VOLATILE, depth 5) — standard for image
+#                  streams, drops frames over lossy links rather than stalling the
+#                  publisher. Set `reliable: true` for streams that cannot tolerate frame
+#                  drops (low-rate scanners, metadata-critical pipelines).
+
 pipelines:
-  phoenix_4k:
-    # Auto-discovers first GigE Vision camera. Add camera-name="..." to pin a specific device.
-    # Max sensor resolution: 4096x3000. GevSCPSPacketSize=8192 requires MTU 9000 on NIC.
-    
-    gst_pipeline: >-
-      aravissrc
-      exposure=10000
-      features="AcquisitionMode=Continuous
-                PixelFormat=Mono8
-                GainAuto=Continuous
-                AcquisitionFrameRateEnable=true
-                AcquisitionFrameRate=5.0
-                GevSCPSPacketSize=8192
-                GevSCPD=0"
-      ! video/x-raw,format=GRAY8,width=4096,height=3000,framerate=5/1
+
+  cam_front:
+    # Supported IMX219 Modes
+    # 3280x2464	21fps
+    # 3280x1848	28fps
+    # 1920x1080	30fps
+    # 1640x1232	30fps
+    # 1280x720	60fps
+    gst_pipeline:
+      nvarguscamerasrc sensor-id=0 wbmode=1 aelock=false ee-mode=2 tnr-mode=2
+      ! video/x-raw(memory:NVMM),width=1920,height=1080,framerate=15/1,format=NV12
+      ! nvvidconv flip-method=0 interpolation-method=1
+      ! video/x-raw,format=GRAY8
       ! appsink sync=false
-    calibration: "phoenix_4k"
-    topic: "scan_cam"
-    frame_id: "scan_cam_frame"
-    encoding: "mono8"
+    calibration: ""
+    topic: "cam_front"
+    frame_id: "top_visual_link "
+    encoding: ""
     compress: true
+    alive_threshold: 2.0
+
+  cam_down:
+    # Supported IMX219 Modes
+    # 3280x2464	21fps
+    # 3280x1848	28fps
+    # 1920x1080	30fps
+    # 1640x1232	30fps
+    # 1280x720	60fps
+    gst_pipeline:
+      nvarguscamerasrc sensor-id=1 wbmode=1 aelock=false ee-mode=2 tnr-mode=2
+      ! video/x-raw(memory:NVMM),width=1920,height=1080,framerate=15/1,format=NV12
+      ! nvvidconv flip-method=0 interpolation-method=1
+      ! video/x-raw,format=GRAY8
+      ! appsink sync=false
+    calibration: ""
+    topic: "cam_down"
+    frame_id: "bottom_visual_link "
+    encoding: ""
+    compress: true
+    alive_threshold: 2.0
