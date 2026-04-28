@@ -299,7 +299,7 @@ setup_skip_worktree() {
 
     # Repo-relative paths. Add any new per-deployment config dirs here.
     local protected_dirs=(
-        "local_ws/src/csi_drone_camera/gst_camera_manager/config"
+        "local_ws/src/ros_gst_cameras/gst_camera_manager/config"
         "isaac_ros-dev/src/px4_vslam/config"
     )
 

@@ -30,7 +30,7 @@ All output is logged to `log/setup_log_<timestamp>.log`.
 | **px4_deps** | Runs PX4 `Tools/setup/ubuntu.sh` (interactive prompt) to install firmware build deps | fresh only |
 | **git** | Sets git credential cache; fixes script permissions; initializes and updates submodules | both |
 | **docker_patches** | Copies patched `Dockerfile.arid`, `arid_env.sh`, and `run_dev.sh` into the `isaac_ros_common` submodule; marks them skip-worktree so git ignores local changes | both |
-| **skip_worktree** | Marks tracked files inside `csi_drone_camera/gst_camera_manager/config/` and `px4_vslam/config/` as skip-worktree, so local edits (camera serials, calibrations, pipeline tuning) don't appear in `git status` or get pushed by accident | both |
+| **skip_worktree** | Marks tracked files inside `ros_gst_cameras/gst_camera_manager/config/` and `px4_vslam/config/` as skip-worktree, so local edits (camera serials, calibrations, pipeline tuning) don't appear in `git status` or get pushed by accident | both |
 | **bashrc** | Rewrites the host `.bashrc` block: `ROS_DOMAIN_ID=23`, workspace path exports, sources `local_ws/install/setup.bash`, adds aliases (`run_isaac`, `colcon_local`, `reset_usb`, etc.) | both |
 | **permissions** | Sudoers rule (uhubctl, gpioset, systemctl, `usb_reset.sh` — all without password); USB + GPIO udev rules; polkit rule for `reset_usb.service`; adds user to `dialout` + `gpio` groups | both |
 | **uhubctl** | Builds and installs `uhubctl` from source (skips if already installed) | both |
@@ -63,7 +63,7 @@ Auto-started services after boot:
 
 ## Cameras (CSI)
 
-Two CSI camera pipelines defined in [`local_ws/src/csi_drone_camera/gst_camera_manager/config/pipelines.yaml`](local_ws/src/csi_drone_camera/gst_camera_manager/config/pipelines.yaml). Both use IMX219 sensors @ 1920×1080 mono via `nvarguscamerasrc` → `nvvidconv` → `appsink`.
+Two CSI camera pipelines defined in [`local_ws/src/ros_gst_cameras/gst_camera_manager/config/pipelines.yaml`](local_ws/src/ros_gst_cameras/gst_camera_manager/config/pipelines.yaml). Both use IMX219 sensors @ 1920×1080 mono via `nvarguscamerasrc` → `nvvidconv` → `appsink`.
 
 | Pipeline | Sensor ID | Frame ID | Topic root |
 |---|---|---|---|
@@ -86,7 +86,7 @@ ros2 service call /gst_camera_manager/status_all       std_srvs/srv/Trigger '{}'
 ros2 service call /gst_camera_manager/stop_all         std_srvs/srv/Trigger '{}'
 ```
 
-Each pipeline publishes `/<topic>/image_raw`, `/<topic>/image_raw/compressed`, and `/<topic>/camera_info`. Liveness is exposed on `/gst_camera_manager/<name>/alive` (latched `Bool`). For deeper details (encoding auto-detect, default camera_info, QoS, alive_threshold, troubleshooting): see [`csi_drone_camera/README.md`](local_ws/src/csi_drone_camera/README.md).
+Each pipeline publishes `/<topic>/image_raw`, `/<topic>/image_raw/compressed`, and `/<topic>/camera_info`. Liveness is exposed on `/gst_camera_manager/<name>/alive` (latched `Bool`). For deeper details (encoding auto-detect, default camera_info, QoS, alive_threshold, troubleshooting): see [`ros_gst_cameras/README.md`](local_ws/src/ros_gst_cameras/README.md).
 
 ---
 
@@ -219,7 +219,7 @@ clean_isaac      # Clean isaac_ros_dev build/install/log
 | Package | Purpose |
 |---|---|
 | [`local_ws/src/arid_description`](local_ws/src/arid_description/) | Xacro, meshes, RViz config; auto-launched on boot |
-| [`local_ws/src/csi_drone_camera`](local_ws/src/csi_drone_camera/) | GStreamer CSI camera stack (`gst_cam_node` + `gst_camera_manager`) |
+| [`local_ws/src/ros_gst_cameras`](local_ws/src/ros_gst_cameras/) | ROS 2 GStreamer-based camera stack (`gst_cam_node` + `gst_camera_manager`) |
 | [`local_ws/src/reset_ark_usb`](local_ws/src/reset_ark_usb/) | ROS 2 service wrapping the systemd USB-reset unit |
 | [`local_ws/src/ros-foxglove-bridge`](local_ws/src/ros-foxglove-bridge/) | Foxglove WebSocket bridge (vendored copy) |
 | [`local_ws/auxiliary/camera_calibration`](local_ws/auxiliary/camera_calibration/) | Camera-calibration launcher (NoMachine-friendly) |

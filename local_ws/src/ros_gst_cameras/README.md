@@ -1,6 +1,6 @@
-# csi_drone_camera
+# ros_gst_cameras
 
-Generic GStreamer-based camera stack. Two packages:
+ROS 2 GStreamer-based camera stack. Two packages:
 
 - **`gst_cam_node`** — C++ node that wraps an arbitrary GStreamer pipeline and publishes `image_raw` (+ `image_raw/compressed` when `compress: true`) and `camera_info`. The pipeline is opaque to the node — anything that produces frames into an `appsink` works (CSI via `nvarguscamerasrc`, V4L2, RTSP, file source, test pattern, etc.).
 - **`gst_camera_manager`** — Python supervisor that loads a YAML of named pipelines and exposes ROS2 services to start/stop each one as a managed subprocess, with a watchdog on liveness.
