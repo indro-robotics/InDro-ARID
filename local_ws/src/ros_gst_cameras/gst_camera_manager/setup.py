@@ -1,5 +1,4 @@
 from setuptools import setup
-import os
 from glob import glob
 
 package_name = 'gst_camera_manager'
@@ -17,7 +16,7 @@ setup(
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='Calvin',
+    maintainer='Calvin-InDro',
     maintainer_email='calvin.rubens@indrorobotics.com',
     description='YAML-driven GStreamer camera pipeline manager',
     license='MIT',

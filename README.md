@@ -46,6 +46,7 @@ Auto-started services after boot:
 
 | Service | What it does |
 |---|---|
+| **usbfs-memory.service** | One-shot: raises `usbcore.usbfs_memory_mb` to 1000 (default 16) so high-bandwidth USB cameras (RealSense multi-stream) don't hit "Out of frame resources!" / watchdog timeouts. Runs before the Docker/camera services |
 | **jetson-clocks.service** | Locks CPU/GPU clocks to maximum frequency (supplements nvpmodel) |
 | **start_isaac_docker.service** | Pulls and starts the Isaac ROS Docker container (`isaac_ros_dev-aarch64-container`) so it's ready before any ROS nodes launch |
 | **arid_description.service** | Launches `robot_state_publisher` for the ARID xacro — publishes `/robot_description` (latched) and `/tf_static`. The VSLAM stack waits for this before starting |

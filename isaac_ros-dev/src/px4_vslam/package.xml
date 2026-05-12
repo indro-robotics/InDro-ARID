@@ -3,9 +3,9 @@
 <package format="3">
   <name>px4_vslam</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
+  <description>PX4 / Isaac ROS VSLAM bridge: vio_transform feeds VIO odometry into PX4 over uXRCE-DDS; vslam.launch.py brings up the multi-camera Visual SLAM stack.</description>
   <maintainer email="calvin.rubens@indrorobotics.com">Calvin-InDro</maintainer>
-  <license>TODO: License declaration</license>
+  <license>Apache License 2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 

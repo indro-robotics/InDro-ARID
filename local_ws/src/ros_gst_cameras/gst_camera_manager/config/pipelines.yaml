@@ -45,7 +45,7 @@ pipelines:
       ! appsink sync=false
     calibration: ""
     topic: "cam_front"
-    frame_id: "top_visual_link "
+    frame_id: "top_visual_link"
     encoding: ""
     compress: true
     alive_threshold: 2.0
@@ -65,7 +65,7 @@ pipelines:
       ! appsink sync=false
     calibration: ""
     topic: "cam_down"
-    frame_id: "bottom_visual_link "
+    frame_id: "bottom_visual_link"
     encoding: ""
     compress: true
     alive_threshold: 2.0

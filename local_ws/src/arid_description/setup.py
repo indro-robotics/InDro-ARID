@@ -19,8 +19,8 @@ setup(
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='InDro Robotics',
-    maintainer_email='info@indrorobotics.com',
+    maintainer='Calvin-InDro',
+    maintainer_email='calvin.rubens@indrorobotics.com',
     description='ARID drone xacro description and meshes',
     license='Apache-2.0',
     entry_points={

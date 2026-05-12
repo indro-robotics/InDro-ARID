@@ -29,7 +29,7 @@ def generate_launch_description():
     ld = env.get('LD_LIBRARY_PATH', '')
     env['LD_LIBRARY_PATH'] = f"/opt/ros/humble/lib:{ld}" if ld else "/opt/ros/humble/lib"
 
-    # Wait for the host-side arid_description to be running ----------------------
+    # Wait for the host-side drone-description package (arid_description) ---------
     # The host runs arid_description.service (robot_state_publisher) which latches
     # /robot_description and /tf_static. VSLAM needs those TF frames. We block the
     # rest of this launch until the latched /robot_description message is visible

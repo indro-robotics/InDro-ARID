@@ -446,6 +446,7 @@ setup_systemd() {
     sudo cp -f "${ISAAC_ROS_WS}/services/"*.service "/etc/systemd/system/"
     sudo cp -f "${LOCAL_WS}/services/"*.service "/etc/systemd/system/"
 
+    sudo systemctl enable usbfs-memory.service
     sudo systemctl enable usb_ros_reset.service
     sudo systemctl enable start_isaac_docker.service
     sudo systemctl enable jetson-clocks.service

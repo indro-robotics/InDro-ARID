@@ -4,7 +4,7 @@
   <name>gst_camera_manager</name>
   <version>0.0.1</version>
   <description>YAML-driven GStreamer camera pipeline manager — node_manager analog for gst_cam_node pipelines.</description>
-  <maintainer email="calvin.rubens@indrorobotics.com">Calvin</maintainer>
+  <maintainer email="calvin.rubens@indrorobotics.com">Calvin-InDro</maintainer>
   <license>MIT</license>
 
   <exec_depend>rclpy</exec_depend>

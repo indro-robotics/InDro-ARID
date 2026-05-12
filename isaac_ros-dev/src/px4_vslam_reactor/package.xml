@@ -4,7 +4,7 @@
   <name>px4_vslam_reactor</name>
   <version>0.0.1</version>
   <description>ISAAC ROS VSLAM corrective ROS2 package</description>
-  <maintainer email="calvin.rubens@indrorobotics.com">Calvin Rubens</maintainer>
+  <maintainer email="calvin.rubens@indrorobotics.com">Calvin-InDro</maintainer>
   <license>Apache License 2.0</license>
 
   <depend>rclpy</depend>

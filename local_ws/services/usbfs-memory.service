@@ -1,0 +1,11 @@
+[Unit]
+Description=Raise usbfs buffer memory for high-bandwidth USB cameras (RealSense)
+Before=start_isaac_docker.service gst_camera_manager.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'echo 1000 > /sys/module/usbcore/parameters/usbfs_memory_mb'
+
+[Install]
+WantedBy=multi-user.target

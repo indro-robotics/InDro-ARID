@@ -4,7 +4,7 @@
   <name>arid_description</name>
   <version>0.0.1</version>
   <description>ARID drone xacro description and meshes</description>
-  <maintainer email="info@indrorobotics.com">InDro Robotics</maintainer>
+  <maintainer email="calvin.rubens@indrorobotics.com">Calvin-InDro</maintainer>
   <license>Apache-2.0</license>
 
   <exec_depend>robot_state_publisher</exec_depend>

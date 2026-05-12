@@ -14,7 +14,6 @@ find_package(geometry_msgs REQUIRED)
 find_package(px4_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
-find_package(px4_msgs REQUIRED)
 find_package(isaac_ros_visual_slam REQUIRED)
 find_package(isaac_ros_visual_slam_interfaces REQUIRED)
 
