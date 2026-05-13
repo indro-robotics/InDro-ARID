@@ -29,7 +29,7 @@ def generate_launch_description():
     ld = env.get('LD_LIBRARY_PATH', '')
     env['LD_LIBRARY_PATH'] = f"/opt/ros/humble/lib:{ld}" if ld else "/opt/ros/humble/lib"
 
-    # Wait for the host-side drone-description package (arid_description) ---------
+    # Wait for the host-side arid_description to be running ----------------------
     # The host runs arid_description.service (robot_state_publisher) which latches
     # /robot_description and /tf_static. VSLAM needs those TF frames. We block the
     # rest of this launch until the latched /robot_description message is visible
@@ -71,48 +71,28 @@ def generate_launch_description():
             ComposableNode(
                 package='realsense2_camera',
                 plugin='realsense2_camera::RealSenseNodeFactory',
-                name='left_realsense_link',
-                namespace='left_realsense',
-                parameters=[param_file],
-            ),
-            ComposableNode(
-                package='realsense2_camera',
-                plugin='realsense2_camera::RealSenseNodeFactory',
                 name='front_realsense_link',
                 namespace='front_realsense',
                 parameters=[param_file],
                 remappings=[
-                    ('color/image_raw',  'image_raw'),
-                    ('color/camera_info','camera_info'),
+                    ('color/image_raw',   'image_raw'),
+                    ('color/camera_info', 'camera_info'),
                 ],
-            ),
-            ComposableNode(
-                package='realsense2_camera',
-                plugin='realsense2_camera::RealSenseNodeFactory',
-                name='right_realsense_link',
-                namespace='right_realsense',
-                parameters=[param_file],
             ),
             ComposableNode(
                 package='isaac_ros_visual_slam',
                 plugin='nvidia::isaac_ros::visual_slam::VisualSlamNode',
                 name='visual_slam_node',
                 parameters=[param_file],
-                remappings=[('visual_slam/image_0', 'front_realsense/infra1/image_rect_raw'),
+                remappings=[
+                    ('visual_slam/image_0',       'front_realsense/infra1/image_rect_raw'),
                     ('visual_slam/camera_info_0', 'front_realsense/infra1/camera_info'),
-                    ('visual_slam/image_1', 'front_realsense/infra2/image_rect_raw'),
+                    ('visual_slam/image_1',       'front_realsense/infra2/image_rect_raw'),
                     ('visual_slam/camera_info_1', 'front_realsense/infra2/camera_info'),
-                    ('visual_slam/image_2', 'left_realsense/infra1/image_rect_raw'),
-                    ('visual_slam/camera_info_2', 'left_realsense/infra1/camera_info'),
-                    ('visual_slam/image_3', 'left_realsense/infra2/image_rect_raw'),
-                    ('visual_slam/camera_info_3', 'left_realsense/infra2/camera_info'),
-                    ('visual_slam/image_4', 'right_realsense/infra1/image_rect_raw'),
-                    ('visual_slam/camera_info_4', 'right_realsense/infra1/camera_info'),
-                    ('visual_slam/image_5', 'right_realsense/infra2/image_rect_raw'),
-                    ('visual_slam/camera_info_5', 'right_realsense/infra2/camera_info'),
-                    ('visual_slam/imu', 'vio_transform/imu')]
-            )
-        ]
+                    ('visual_slam/imu',           'vio_transform/imu'),
+                ],
+            ),
+        ],
     )
 
     return launch.LaunchDescription([

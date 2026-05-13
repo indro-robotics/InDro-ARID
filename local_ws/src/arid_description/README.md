@@ -6,7 +6,7 @@ Xacro description and meshes for the **ARID** quadrotor platform by InDro Roboti
 
 ## Contents
 
-- `urdf/arid.xacro` — full robot description: `base_link`, `autopilot`, 4 propellers, 3 RealSense cameras, 2 CV cameras, optical flow, rangefinder, and `base_footprint`. Uses xacro macros for the propeller and RealSense groups
+- `urdf/arid.xacro` — full robot description: `base_link`, `autopilot`, 4 propellers, 1 RealSense camera (front), 1 CV camera (`bottom_visual_link`, down-facing CSI), optical flow, rangefinder, and `base_footprint`. Uses xacro macros for the propeller and RealSense groups
 - `meshes/arid_model.stl` — visual mesh of the full airframe (collision is a `<box>` primitive defined inline in the xacro)
 - `launch/display.launch.py` — starts `robot_state_publisher` with optional `joint_state_publisher_gui` and RViz
 - `rviz/arid.rviz` — default RViz display config
@@ -44,14 +44,14 @@ ros2 launch arid_description display.launch.py
 |---|---|---|
 | `mesh_scale` | `0.0001` | Multiplier applied to the STL (mesh is natively mm, URDF uses meters). |
 | `propeller_span` | `0.0975` | Half the propeller-to-propeller distance along one axis (propellers sit at `±span, ±span`). |
-| `realsense_z` | `0.092042` | Z-offset of the three RealSense cameras from `base_link`. |
+| `realsense_z` | `0.092042` | Z-offset of the front RealSense camera from `base_link`. |
 
 **Macros:**
 
 - `propeller(name, x, y)` — instantiates a propeller link and its fixed joint. Used 4× for `front_left`, `front_right`, `rear_left`, `rear_right`.
-- `realsense(name, x, y, yaw)` — instantiates a RealSense camera link at `(x, y, realsense_z)` with the given yaw. Used 3× for `front`, `left`, `right`.
+- `realsense(name, x, y, yaw)` — instantiates a RealSense camera link at `(x, y, realsense_z)` with the given yaw. Used 1× for `front`.
 
-Unique links (autopilot, top/bottom visual cameras, flow, rangefinder) are inlined to preserve their specific joint names.
+Unique links (autopilot, bottom visual camera, flow, rangefinder) are inlined to preserve their specific joint names.
 
 ## Frames
 
@@ -63,13 +63,13 @@ base_footprint
     ├── autopilot
     ├── front_left_propeller_link   front_right_propeller_link
     ├── rear_left_propeller_link    rear_right_propeller_link
-    ├── front_realsense_link        left_realsense_link        right_realsense_link
+    ├── front_realsense_link
     ├── bottom_visual_link (down-facing CSI CV camera — optical-z along body -z)
     ├── flow_link
     └── rangefinder_link
 ```
 
-All joints are fixed. RealSense frames sit at the left IR lens per the `realsense-ros` convention.
+All joints are fixed. The RealSense frame sits at the left IR lens per the `realsense-ros` convention.
 
 ## Visualization in Foxglove
 

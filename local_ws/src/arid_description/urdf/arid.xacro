@@ -61,8 +61,6 @@
   <xacro:propeller name="rear_right"  x="${-propeller_span}" y="${-propeller_span}"/>
 
   <xacro:realsense name="front" x="0.09875"  y="0.0175"   yaw="0"/>
-  <xacro:realsense name="left"  x="-0.0175"  y="0.08875"  yaw="${pi/2}"/>
-  <xacro:realsense name="right" x="0.0175"   y="-0.08875" yaw="${-pi/2}"/>
 
   <link name="bottom_visual_link"/>
   <joint name="base_link_to_bottom_visual_joint" type="fixed">

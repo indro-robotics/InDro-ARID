@@ -91,7 +91,7 @@ Each pipeline publishes `/<topic>/image_raw`, `/<topic>/image_raw/compressed`, a
 
 ## Visual-Inertial SLAM (RealSense + Isaac ROS VSLAM)
 
-Three RealSense cameras (D43X / D45X compatible) feeding the Isaac ROS VSLAM node, plus a PX4 bridge. Camera serials, resolutions, frame IDs are configured in [`isaac_ros-dev/src/px4_vslam/config/vslam_config.yaml`](isaac_ros-dev/src/px4_vslam/config/vslam_config.yaml).
+One front-mounted RealSense camera (D43X-series) feeding the Isaac ROS VSLAM node, plus a PX4 bridge. Camera serial, resolution, and frame ID are configured in [`isaac_ros-dev/src/px4_vslam/config/vslam_config.yaml`](isaac_ros-dev/src/px4_vslam/config/vslam_config.yaml).
 
 ```bash
 # Inside the Isaac ROS container (use `start_isaac` then `isaac_bash`)
@@ -101,14 +101,14 @@ vslam
 ```
 
 The launch blocks until `/robot_description` is on the graph (i.e. `arid_description.service` is up). It then starts:
-- 3 × RealSense drivers (left, front, right)
-- Isaac ROS Visual SLAM node (6-camera stereo-multicam)
+- 1 × RealSense driver (`front_realsense`)
+- Isaac ROS Visual SLAM node (2-camera stereo on the front IR pair)
 - `vio_transform` — bridges VSLAM odometry into PX4 via uXRCE-DDS
 - `vslam_reactor_node` — supervises VSLAM, gates jumps, retries SetSlamPose on misalignment
 
 Tunables for the reactor live in [`px4_vslam_reactor/config/reactor_conf.yaml`](isaac_ros-dev/src/px4_vslam_reactor/config/reactor_conf.yaml). See [`px4_vslam/README.md`](isaac_ros-dev/src/px4_vslam/README.md) and [`px4_vslam_reactor/README.md`](isaac_ros-dev/src/px4_vslam_reactor/README.md) for full topic / service / config reference.
 
-**Before flying:** edit `vslam_config.yaml` to match your specific RealSense serial numbers and the actual mount frames in [`arid_description/urdf/arid.xacro`](local_ws/src/arid_description/urdf/arid.xacro).
+**Before flying:** edit `vslam_config.yaml` to match your specific RealSense serial number and the actual mount frame in [`arid_description/urdf/arid.xacro`](local_ws/src/arid_description/urdf/arid.xacro).
 
 ---
 
@@ -138,7 +138,7 @@ reboot
 
 ## Robot description (`arid_description`)
 
-Xacro description + meshes for ARID. Auto-launched on boot by `arid_description.service`, which runs `display.launch.py` with `robot_state_publisher`. Frames published include `base_link`, `autopilot`, four propellers, three RealSense links, the `bottom_visual_link` CV-camera frame, `flow_link`, and `rangefinder_link`.
+Xacro description + meshes for ARID. Auto-launched on boot by `arid_description.service`, which runs `display.launch.py` with `robot_state_publisher`. Frames published include `base_link`, `autopilot`, four propellers, the `front_realsense_link`, the `bottom_visual_link` CV-camera frame, `flow_link`, and `rangefinder_link`.
 
 For RViz / Foxglove visualization with this xacro, see [`arid_description/README.md`](local_ws/src/arid_description/README.md).
 
@@ -236,6 +236,6 @@ clean_isaac      # Clean isaac_ros_dev build/install/log
 | [`isaac_ros-dev/src/isaac_ros_nitros`](isaac_ros-dev/src/isaac_ros_nitros/) | NVIDIA's NITROS framework — zero-copy intra-process tensor / image transport that the VSLAM and image pipeline build on |
 | [`isaac_ros-dev/src/isaac_ros_image_pipeline`](isaac_ros-dev/src/isaac_ros_image_pipeline/) | Isaac ROS GPU image-processing nodes (`RectifyNode`, `ImageFormatConverterNode`, etc.) — used by VSLAM and consumable by other CV pipelines |
 | [`isaac_ros-dev/src/isaac_ros_visual_slam`](isaac_ros-dev/src/isaac_ros_visual_slam/) | NVIDIA's GPU-accelerated visual SLAM node + its message/service interfaces — the VSLAM backend launched by `px4_vslam` |
-| [`isaac_ros-dev/src/realsense-ros`](isaac_ros-dev/src/realsense-ros/) | Intel RealSense ROS 2 driver pinned at `4.51.1` — drives the three RealSense cameras feeding VSLAM |
+| [`isaac_ros-dev/src/realsense-ros`](isaac_ros-dev/src/realsense-ros/) | Intel RealSense ROS 2 driver pinned at `4.51.1` — drives the front RealSense camera feeding VSLAM |
 | [`isaac_ros-dev/src/px4-ros2-interface-lib`](isaac_ros-dev/src/px4-ros2-interface-lib/) | Auterion's `px4_ros2_cpp` library at `1.4.0` — high-level mode/control SDK for writing custom flight modes against PX4 |
 | [`isaac_ros-dev/src/px4_msgs`](isaac_ros-dev/src/px4_msgs/) | Same upstream PX4 messages, mirrored inside the Isaac ROS workspace so container-side packages can build against them |
