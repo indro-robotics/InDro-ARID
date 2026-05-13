@@ -68,7 +68,7 @@ One CSI camera pipeline defined in [`local_ws/src/ros_gst_cameras/gst_camera_man
 
 | Pipeline | Sensor ID | Frame ID | Topic root |
 |---|---|---|---|
-| `cam_down`  | `sensor-id=1` | `bottom_visual_link` | `/cam_down` |
+| `cam_down`  | `sensor-id=0` | `bottom_visual_link` | `/cam_down` |
 
 **Start / stop / status:**
 

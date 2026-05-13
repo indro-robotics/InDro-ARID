@@ -38,7 +38,7 @@ pipelines:
     # 1640x1232	30fps
     # 1280x720	60fps
     gst_pipeline:
-      nvarguscamerasrc sensor-id=1 wbmode=1 aelock=false ee-mode=2 tnr-mode=2
+      nvarguscamerasrc sensor-id=0 wbmode=1 aelock=false ee-mode=2 tnr-mode=2
       ! video/x-raw(memory:NVMM),width=1920,height=1080,framerate=15/1,format=NV12
       ! nvvidconv flip-method=0 interpolation-method=1
       ! video/x-raw,format=GRAY8

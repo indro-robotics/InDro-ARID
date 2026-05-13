@@ -152,7 +152,7 @@ Rebuild (`colcon build --packages-select gst_camera_manager`) or restart the man
 
 ### Currently defined pipelines
 
-- **`cam_down`** — CSI camera (sensor-id 1) via `nvarguscamerasrc` at 1920×1080 @ 15 fps, NV12 → GRAY8 via `nvvidconv`. Frame ID: `bottom_visual_link`.
+- **`cam_down`** — CSI camera (sensor-id 0) via `nvarguscamerasrc` at 1920×1080 @ 15 fps, NV12 → GRAY8 via `nvvidconv`. Frame ID: `bottom_visual_link`.
 
 ---
 
