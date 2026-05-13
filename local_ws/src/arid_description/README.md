@@ -64,7 +64,6 @@ base_footprint
     ├── front_left_propeller_link   front_right_propeller_link
     ├── rear_left_propeller_link    rear_right_propeller_link
     ├── front_realsense_link        left_realsense_link        right_realsense_link
-    ├── top_visual_link    (front-facing CSI CV camera — optical-z along body +x)
     ├── bottom_visual_link (down-facing CSI CV camera — optical-z along body -z)
     ├── flow_link
     └── rangefinder_link

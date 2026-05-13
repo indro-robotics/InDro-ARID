@@ -14,20 +14,19 @@ With no arguments, the script queries the ROS graph for every live `sensor_msgs/
 ./camera_calibrate.sh
 # [calib] Select an image topic to calibrate (or Ctrl-C to abort):
 # 1) /cam_down/image_raw
-# 2) /cam_front/image_raw
-# [calib] > 2
+# [calib] > 1
 ```
 
-`CAMERA_NS` is auto-derived from the selected topic (strips the trailing segment, e.g. `/cam_front/image_raw` → `/cam_front`).
+`CAMERA_NS` is auto-derived from the selected topic (strips the trailing segment, e.g. `/cam_down/image_raw` → `/cam_down`).
 
 **Scripted / non-interactive** — set `IMAGE_TOPIC` explicitly and the menu is skipped:
 
 ```bash
-SIZE=9x7 SQUARE=0.030 IMAGE_TOPIC=/cam_front/image_raw \
+SIZE=9x7 SQUARE=0.030 IMAGE_TOPIC=/cam_down/image_raw \
     ./camera_calibrate.sh
 ```
 
-Click **Save** in the GUI before closing — the script extracts `ost.yaml` and writes it next to itself as `<topic_slug>_calibration.yaml` (e.g. `cam_front_image_raw_calibration.yaml`). Re-calibrating the same topic overwrites the previous file.
+Click **Save** in the GUI before closing — the script extracts `ost.yaml` and writes it next to itself as `<topic_slug>_calibration.yaml` (e.g. `cam_down_image_raw_calibration.yaml`). Re-calibrating the same topic overwrites the previous file.
 
 ## Files
 

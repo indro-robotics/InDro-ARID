@@ -64,13 +64,6 @@
   <xacro:realsense name="left"  x="-0.0175"  y="0.08875"  yaw="${pi/2}"/>
   <xacro:realsense name="right" x="0.0175"   y="-0.08875" yaw="${-pi/2}"/>
 
-  <link name="top_visual_link"/>
-  <joint name="base_link_to_top_visual_joint" type="fixed">
-    <parent link="base_link"/>
-    <child  link="top_visual_link"/>
-    <origin xyz="0.077 0.0 0.129792" rpy="${-pi/2} 0 ${-pi/2}"/>
-  </joint>
-
   <link name="bottom_visual_link"/>
   <joint name="base_link_to_bottom_visual_joint" type="fixed">
     <parent link="base_link"/>

@@ -50,39 +50,37 @@ Auto-started services after boot:
 | **jetson-clocks.service** | Locks CPU/GPU clocks to maximum frequency (supplements nvpmodel) |
 | **start_isaac_docker.service** | Pulls and starts the Isaac ROS Docker container (`isaac_ros_dev-aarch64-container`) so it's ready before any ROS nodes launch |
 | **arid_description.service** | Launches `robot_state_publisher` for the ARID xacro — publishes `/robot_description` (latched) and `/tf_static`. The VSLAM stack waits for this before starting |
-| **gst_camera_manager.service** | Starts the GStreamer camera manager — pipelines for `cam_front` and `cam_down` are loaded but **idle**; activate via SetBool service calls (see [Cameras](#cameras-csi)) |
+| **gst_camera_manager.service** | Starts the GStreamer camera manager — the `cam_down` pipeline is loaded but **idle**; activate via a SetBool service call (see [Cameras](#cameras-csi)) |
 | **usb_ros_reset.service** | Hosts the `/reset_usb` ROS 2 service (Trigger) — performs a hardware USB reset on the ARK PAB carrier on demand |
 
 ### What to expect at login
 
 1. Docker container running — `docker ps` shows `isaac_ros_dev-aarch64-container`.
 2. ARID TF tree available — `ros2 topic echo /tf_static --once --qos-durability transient_local` returns immediately.
-3. Camera manager idle — the `cam_front` / `cam_down` services exist but no frames flowing yet.
+3. Camera manager idle — the `cam_down` service exists but no frames flowing yet.
 4. Local workspace already sourced in `.bashrc`; ROS 2 packages in `local_ws` are immediately available.
 
 ---
 
 ## Cameras (CSI)
 
-Two CSI camera pipelines defined in [`local_ws/src/ros_gst_cameras/gst_camera_manager/config/pipelines.yaml`](local_ws/src/ros_gst_cameras/gst_camera_manager/config/pipelines.yaml). Both use IMX219 sensors @ 1920×1080 mono via `nvarguscamerasrc` → `nvvidconv` → `appsink`.
+One CSI camera pipeline defined in [`local_ws/src/ros_gst_cameras/gst_camera_manager/config/pipelines.yaml`](local_ws/src/ros_gst_cameras/gst_camera_manager/config/pipelines.yaml). Uses an IMX219 sensor @ 1920×1080 mono via `nvarguscamerasrc` → `nvvidconv` → `appsink`.
 
 | Pipeline | Sensor ID | Frame ID | Topic root |
 |---|---|---|---|
-| `cam_front` | `sensor-id=0` | `top_visual_link` | `/cam_front` |
 | `cam_down`  | `sensor-id=1` | `bottom_visual_link` | `/cam_down` |
 
 **Start / stop / status:**
 
 ```bash
 # Start
-ros2 service call /gst_camera_manager/cam_front std_srvs/srv/SetBool '{data: true}'
-ros2 service call /gst_camera_manager/cam_down  std_srvs/srv/SetBool '{data: true}'
+ros2 service call /gst_camera_manager/cam_down std_srvs/srv/SetBool '{data: true}'
 
 # Stop
-ros2 service call /gst_camera_manager/cam_front std_srvs/srv/SetBool '{data: false}'
+ros2 service call /gst_camera_manager/cam_down std_srvs/srv/SetBool '{data: false}'
 
 # Status (per-pipeline + global)
-ros2 service call /gst_camera_manager/cam_front/status std_srvs/srv/Trigger '{}'
+ros2 service call /gst_camera_manager/cam_down/status  std_srvs/srv/Trigger '{}'
 ros2 service call /gst_camera_manager/status_all       std_srvs/srv/Trigger '{}'
 ros2 service call /gst_camera_manager/stop_all         std_srvs/srv/Trigger '{}'
 ```
@@ -140,7 +138,7 @@ reboot
 
 ## Robot description (`arid_description`)
 
-Xacro description + meshes for ARID. Auto-launched on boot by `arid_description.service`, which runs `display.launch.py` with `robot_state_publisher`. Frames published include `base_link`, `autopilot`, four propellers, three RealSense links, two CV-camera links (`top_visual_link` / `bottom_visual_link`), `flow_link`, and `rangefinder_link`.
+Xacro description + meshes for ARID. Auto-launched on boot by `arid_description.service`, which runs `display.launch.py` with `robot_state_publisher`. Frames published include `base_link`, `autopilot`, four propellers, three RealSense links, the `bottom_visual_link` CV-camera frame, `flow_link`, and `rangefinder_link`.
 
 For RViz / Foxglove visualization with this xacro, see [`arid_description/README.md`](local_ws/src/arid_description/README.md).
 

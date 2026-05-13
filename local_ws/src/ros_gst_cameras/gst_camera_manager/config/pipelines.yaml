@@ -30,26 +30,6 @@
 
 pipelines:
 
-  cam_front:
-    # Supported IMX219 Modes
-    # 3280x2464	21fps
-    # 3280x1848	28fps
-    # 1920x1080	30fps
-    # 1640x1232	30fps
-    # 1280x720	60fps
-    gst_pipeline:
-      nvarguscamerasrc sensor-id=0 wbmode=1 aelock=false ee-mode=2 tnr-mode=2
-      ! video/x-raw(memory:NVMM),width=1920,height=1080,framerate=15/1,format=NV12
-      ! nvvidconv flip-method=0 interpolation-method=1
-      ! video/x-raw,format=GRAY8
-      ! appsink sync=false
-    calibration: ""
-    topic: "cam_front"
-    frame_id: "top_visual_link"
-    encoding: ""
-    compress: true
-    alive_threshold: 2.0
-
   cam_down:
     # Supported IMX219 Modes
     # 3280x2464	21fps

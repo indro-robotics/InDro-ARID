@@ -32,46 +32,45 @@ At startup the manager reads `gst_camera_manager/config/pipelines.yaml` and crea
 | `/gst_camera_manager/status_all` | `std_srvs/Trigger` | Multi-line summary of every pipeline's state — one line per pipeline |
 | `/gst_camera_manager/stop_all` | `std_srvs/Trigger` | Kills every currently-running pipeline (no-op for stopped ones) |
 
-`<name>` matches the keys in `pipelines.yaml` — currently `cam_front` and `cam_down`.
+`<name>` matches the keys in `pipelines.yaml` — currently just `cam_down`.
 
 #### Examples
 
 **Start / stop a single pipeline:**
 ```bash
-ros2 service call /gst_camera_manager/cam_front std_srvs/srv/SetBool "{data: true}"   # start
-ros2 service call /gst_camera_manager/cam_front std_srvs/srv/SetBool "{data: false}"  # stop
+ros2 service call /gst_camera_manager/cam_down std_srvs/srv/SetBool "{data: true}"   # start
+ros2 service call /gst_camera_manager/cam_down std_srvs/srv/SetBool "{data: false}"  # stop
 ```
 
 **Query state of one pipeline:**
 ```bash
-ros2 service call /gst_camera_manager/cam_front/status std_srvs/srv/Trigger "{}"
+ros2 service call /gst_camera_manager/cam_down/status std_srvs/srv/Trigger "{}"
 # response:
-# success=True,  message='cam_front RUNNING (pid=12345)'
+# success=True,  message='cam_down RUNNING (pid=12345)'
 # or
-# success=False, message='cam_front STOPPED'
+# success=False, message='cam_down STOPPED'
 ```
 
 **See all pipelines at once:**
 ```bash
 ros2 service call /gst_camera_manager/status_all std_srvs/srv/Trigger "{}"
 # response message (multi-line):
-#   [RUNNING] cam_front  (pid=12345)
-#   [STOPPED] cam_down
+#   [RUNNING] cam_down  (pid=12345)
 ```
 Useful for a quick "what's running?" — also handy for ground-station UIs that want to render a panel of every camera's state without polling each `/<name>/status` individually.
 
 **Kill everything in one call:**
 ```bash
 ros2 service call /gst_camera_manager/stop_all std_srvs/srv/Trigger "{}"
-# response message: 'stopped: cam_front, cam_down'  (or 'nothing running')
+# response message: 'stopped: cam_down'  (or 'nothing running')
 ```
 Use when shutting down or before reconfiguring — equivalent to calling SetBool `false` on each running pipeline.
 
 ### Verify frames
 ```bash
-ros2 topic hz /cam_front/image_raw
-ros2 topic hz /cam_front/image_raw/compressed   # only when compress: true
-ros2 topic echo /cam_front/camera_info --once
+ros2 topic hz /cam_down/image_raw
+ros2 topic hz /cam_down/image_raw/compressed   # only when compress: true
+ros2 topic echo /cam_down/camera_info --once
 ```
 
 ### Liveness (latched)
@@ -153,7 +152,6 @@ Rebuild (`colcon build --packages-select gst_camera_manager`) or restart the man
 
 ### Currently defined pipelines
 
-- **`cam_front`** — CSI camera (sensor-id 0) via `nvarguscamerasrc` at 1920×1080 @ 15 fps, NV12 → GRAY8 via `nvvidconv`. Frame ID: `top_visual_link`.
 - **`cam_down`** — CSI camera (sensor-id 1) via `nvarguscamerasrc` at 1920×1080 @ 15 fps, NV12 → GRAY8 via `nvvidconv`. Frame ID: `bottom_visual_link`.
 
 ---

@@ -19,7 +19,7 @@
 #   ./camera_calibrate.sh
 #
 # NON-INTERACTIVE / SCRIPTED:
-#   SIZE=9x7 SQUARE=0.030 IMAGE_TOPIC=/cam_front/image_raw \
+#   SIZE=9x7 SQUARE=0.030 IMAGE_TOPIC=/cam_down/image_raw \
 #       ./camera_calibrate.sh
 
 set -e
@@ -77,7 +77,7 @@ if [ -z "${IMAGE_TOPIC:-}" ]; then
 fi
 
 # Derive CAMERA_NS from the topic by stripping the trailing segment
-# (e.g. /cam_front/image_raw → /cam_front). Override via env var if needed.
+# (e.g. /cam_down/image_raw → /cam_down). Override via env var if needed.
 CAMERA_NS="${CAMERA_NS:-$(dirname "$IMAGE_TOPIC")}"
 
 SIZE="${SIZE:-7x5}"
@@ -103,7 +103,7 @@ fi
 
 if [ -f /tmp/ost.yaml ]; then
     # Derive filename from the topic (strip leading /, replace / with _).
-    # e.g. /cam_front/image_raw  →  cam_front_image_raw_calibration.yaml
+    # e.g. /cam_down/image_raw  →  cam_down_image_raw_calibration.yaml
     TOPIC_SLUG=$(echo "$IMAGE_TOPIC" | sed 's|^/||; s|/|_|g')
     OUT="$SCRIPT_DIR/${TOPIC_SLUG}_calibration.yaml"
     cp /tmp/ost.yaml "$OUT"
