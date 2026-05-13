@@ -37,3 +37,11 @@
 [submodule "local_ws/src/foxglove-sdk"]
 	path = local_ws/src/foxglove-sdk
 	url = https://github.com/foxglove/foxglove-sdk.git
+[submodule "local_ws/src/rslidar_msg"]
+	path = local_ws/src/rslidar_msg
+	url = https://github.com/RoboSense-LiDAR/rslidar_msg.git
+	branch = master
+[submodule "local_ws/src/rslidar_sdk"]
+	path = local_ws/src/rslidar_sdk
+	url = https://github.com/RoboSense-LiDAR/rslidar_sdk.git
+	branch = main

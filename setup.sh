@@ -49,6 +49,13 @@ SUDOERS_FILE="/etc/sudoers.d/${USERNAME}_systemctl"
 SENTINEL="/etc/arid_first_setup_done"
 REPO_ROOT="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
 
+# RSAIRY LiDAR network
+RSLIDAR_NIC="enP8p1s0"
+RSLIDAR_HOST_IP="192.168.1.102"
+RSLIDAR_LIDAR_IP="192.168.1.200"
+RSLIDAR_DISPATCHER="/etc/NetworkManager/dispatcher.d/90-rslidar"
+RSLIDAR_SYSCTL="/etc/sysctl.d/99-rslidar.conf"
+
 ###############################################################################
 # LOGGING
 ###############################################################################
@@ -197,6 +204,7 @@ setup_apt_packages() {
         software-properties-common \
         ca-certificates curl gnupg \
         libusb-1.0-0-dev pkgconf gpiod \
+        iputils-arping \
         pva-allow-2 \
         python3-colcon-clean \
         ros-humble-camera-info-manager \
@@ -354,6 +362,10 @@ alias reset_usb='/bin/bash ${WORKSPACES}/scripts/usb_reset.sh'
 alias rosdep_local='rosdep install --from-paths ${LOCAL_WS}/src/ --ignore-src -y'
 alias colcon_local='cd ${LOCAL_WS} && colcon build --symlink-install --base-paths src && source ./install/setup.bash'
 alias clean_local='cd ${LOCAL_WS} && colcon clean workspace --base-select build install log'
+alias lidar_start='ros2 service call /rslidar_coordinator/enable std_srvs/srv/SetBool "{data: true}"'
+alias lidar_stop='ros2 service call /rslidar_coordinator/enable std_srvs/srv/SetBool "{data: false}"'
+alias lidar_status='ros2 service call /rslidar_coordinator/status std_srvs/srv/Trigger "{}"'
+alias lidar_restart='ros2 service call /rslidar_coordinator/restart std_srvs/srv/Trigger "{}"'
 # END ARID SETUP
 EOF
 
@@ -438,6 +450,94 @@ setup_uhubctl() {
 }
 
 ###############################################################################
+# RSAIRY LIDAR SYSCTL  (UDP receive buffer)
+###############################################################################
+setup_lidar_sysctl() {
+    step "RSAIRY LiDAR sysctl (UDP rmem)"
+
+    sudo tee "${RSLIDAR_SYSCTL}" > /dev/null << 'EOF'
+# Raise UDP receive-buffer ceilings so the RSAIRY firehose (~32 MB/s burst)
+# doesn't overflow the kernel queue during multi-packet arrivals.
+net.core.rmem_max=26214400
+net.core.rmem_default=26214400
+EOF
+    sudo sysctl --system >/dev/null
+
+    STEPS_RUN+=("lidar_sysctl")
+    ok "sysctl: net.core.rmem_max=net.core.rmem_default=25 MiB"
+}
+
+###############################################################################
+# RSAIRY LIDAR NETWORK  (NetworkManager + dispatcher)
+###############################################################################
+setup_lidar_network() {
+    step "RSAIRY LiDAR network (NetworkManager)"
+
+    # Idempotent: delete our own connections first
+    for con_name in rslidar dev; do
+        if nmcli -t -f NAME connection show 2>/dev/null | grep -qxF "$con_name"; then
+            nmcli connection delete "$con_name" >/dev/null
+        fi
+    done
+
+    # Sweep any leftover auto-created profile bound to our NIC (e.g. "Wired connection 1")
+    while IFS=: read -r name dev; do
+        [[ "$dev" == "${RSLIDAR_NIC}" ]] || continue
+        case "$name" in
+            rslidar|dev) ;;
+            *) nmcli connection delete "$name" >/dev/null 2>&1 || true ;;
+        esac
+    done < <(nmcli -t -f NAME,DEVICE connection show)
+
+    # Static profile — autoconnect-priority 10 (NM activates this first on link-up;
+    # static IPs activate instantly so the LiDAR path is sub-second).
+    nmcli connection add type ethernet con-name rslidar ifname "${RSLIDAR_NIC}" \
+        ipv4.method manual \
+        ipv4.addresses "${RSLIDAR_HOST_IP}/24" \
+        autoconnect yes \
+        connection.autoconnect-priority 10 >/dev/null
+
+    # DHCP fallback — used when the dispatcher confirms no LiDAR is present.
+    nmcli connection add type ethernet con-name dev ifname "${RSLIDAR_NIC}" \
+        ipv4.method auto \
+        ipv4.dhcp-timeout 8 \
+        autoconnect yes \
+        connection.autoconnect-priority 0 >/dev/null
+
+    # Dispatcher: ARP-probe the LiDAR after 'rslidar' activates; if no response
+    # within ~8 s, fall back to DHCP. Runs as root (dispatcher always does).
+    sudo tee "${RSLIDAR_DISPATCHER}" > /dev/null << EOL
+#!/bin/bash
+# Installed by setup.sh — switches 'rslidar' static -> 'dev' DHCP if no LiDAR responds.
+IFACE="\$1"
+ACTION="\$2"
+
+[[ "\$IFACE" != "${RSLIDAR_NIC}" ]] && exit 0
+[[ "\$ACTION" != "up" ]] && exit 0
+
+ACTIVE=\$(nmcli -t -f NAME connection show --active 2>/dev/null | grep -xE 'rslidar|dev' | head -1)
+[[ "\$ACTIVE" != "rslidar" ]] && exit 0
+
+# ~8 s of probing — gives the LiDAR time to boot before we give up.
+for _ in 1 2 3 4 5 6 7 8; do
+    if arping -c 1 -w 1 -I "\$IFACE" ${RSLIDAR_LIDAR_IP} >/dev/null 2>&1; then
+        logger -t rslidar-net "LiDAR detected at ${RSLIDAR_LIDAR_IP}; staying on static."
+        exit 0
+    fi
+done
+
+logger -t rslidar-net "LiDAR not detected after 8 s; switching to DHCP."
+nmcli connection down rslidar >/dev/null 2>&1 || true
+nmcli connection up dev >/dev/null 2>&1 || true
+EOL
+    sudo chmod 755 "${RSLIDAR_DISPATCHER}"
+    sudo chown root:root "${RSLIDAR_DISPATCHER}"
+
+    STEPS_RUN+=("lidar_network")
+    ok "NM: 'rslidar' (static ${RSLIDAR_HOST_IP}/24) + 'dev' (DHCP) + dispatcher installed"
+}
+
+###############################################################################
 # SYSTEMD SERVICES
 ###############################################################################
 setup_systemd() {
@@ -452,6 +552,7 @@ setup_systemd() {
     sudo systemctl enable jetson-clocks.service
     sudo systemctl enable gst_camera_manager.service
     sudo systemctl enable arid_description.service
+    sudo systemctl enable rslidar_coordinator.service
     sudo systemctl daemon-reload
 
     STEPS_RUN+=("systemd")
@@ -612,6 +713,8 @@ main() {
     setup_bashrc
     setup_permissions
     setup_uhubctl
+    setup_lidar_sysctl
+    setup_lidar_network
     setup_systemd
     setup_ros_workspace
     setup_docker

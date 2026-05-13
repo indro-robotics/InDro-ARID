@@ -6,7 +6,7 @@ Xacro description and meshes for the **ARID** quadrotor platform by InDro Roboti
 
 ## Contents
 
-- `urdf/arid.xacro` — full robot description: `base_link`, `autopilot`, 4 propellers, 1 RealSense camera (front), 1 CV camera (`bottom_visual_link`, down-facing CSI), optical flow, rangefinder, and `base_footprint`. Uses xacro macros for the propeller and RealSense groups
+- `xacro/arid.xacro` — full robot description: `base_link`, `autopilot`, 4 propellers, 1 RealSense camera (front), 1 RoboSense LiDAR (`rslidar_link`), 1 CV camera (`bottom_visual_link`, down-facing CSI), optical flow, rangefinder, and `base_footprint`. Uses xacro macros for the propeller and RealSense groups
 - `meshes/arid_model.stl` — visual mesh of the full airframe (collision is a `<box>` primitive defined inline in the xacro)
 - `launch/display.launch.py` — starts `robot_state_publisher` with optional `joint_state_publisher_gui` and RViz
 - `rviz/arid.rviz` — default RViz display config
@@ -36,7 +36,7 @@ ros2 launch arid_description display.launch.py
 
 ## Xacro structure
 
-[`urdf/arid.xacro`](urdf/arid.xacro) defines the robot with:
+[`xacro/arid.xacro`](xacro/arid.xacro) defines the robot with:
 
 **Properties** (tune these to rebuild the geometry at different scales / spans):
 
@@ -64,6 +64,7 @@ base_footprint
     ├── front_left_propeller_link   front_right_propeller_link
     ├── rear_left_propeller_link    rear_right_propeller_link
     ├── front_realsense_link
+    ├── rslidar_link (RoboSense RSAIRY mount frame)
     ├── bottom_visual_link (down-facing CSI CV camera — optical-z along body -z)
     ├── flow_link
     └── rangefinder_link

@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>rslidar_coordinator</name>
+  <version>0.0.1</version>
+  <description>Supervisor for the RoboSense RSAIRY LiDAR: spawns rslidar_sdk_node, exposes start/stop/restart/status services and a latched alive topic with a frame-flow watchdog.</description>
+  <maintainer email="calvin.rubens@indrorobotics.com">Calvin-InDro</maintainer>
+  <license>Apache-2.0</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>ros2launch</exec_depend>
+  <exec_depend>rslidar_sdk</exec_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

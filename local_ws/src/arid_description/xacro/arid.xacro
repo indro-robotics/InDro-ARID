@@ -62,6 +62,13 @@
 
   <xacro:realsense name="front" x="0.09875"  y="0.0175"   yaw="0"/>
 
+  <link name="rslidar_link"/>
+  <joint name="base_link_to_rslidar_joint" type="fixed">
+    <parent link="base_link"/>
+    <child  link="rslidar_link"/>
+    <origin xyz="0.062732 0 0.16457" rpy="0 0.485201 0"/>
+  </joint>
+
   <link name="bottom_visual_link"/>
   <joint name="base_link_to_bottom_visual_joint" type="fixed">
     <parent link="base_link"/>

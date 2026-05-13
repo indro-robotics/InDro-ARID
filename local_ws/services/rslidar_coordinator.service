@@ -1,0 +1,19 @@
+[Unit]
+Description=RSLiDAR Coordinator — supervisor for the RoboSense RSAIRY (idle at boot; SetBool to start)
+Wants=network-online.target
+After=network-online.target
+After=systemd-user-sessions.service
+
+[Service]
+User=jetson
+Type=simple
+Environment="ROS_DOMAIN_ID=23"
+Environment="HOME=/home/jetson"
+ExecStart=/bin/bash -c 'source /opt/ros/humble/setup.bash; source /home/jetson/workspaces/local_ws/install/setup.bash; ros2 launch rslidar_coordinator rslidar_coordinator.launch.py'
+Restart=on-failure
+RestartSec=5s
+KillMode=mixed
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target
