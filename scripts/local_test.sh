@@ -18,6 +18,28 @@ FAIL=0
 SKIP=0
 RESULTS=()
 
+# Flags for resources started by this test (cleaned up in section 6 + EXIT trap).
+# Each flag is cleared by the explicit cleanup once it confirms the resource is gone;
+# anything still set when the EXIT trap fires is therefore a leak from an aborted run.
+BRIDGE_LAUNCHED_BY_US=""
+BRIDGE_LAUNCH_PID=""
+CAM_DOWN_STARTED_BY_US=""
+RSLIDAR_STARTED_BY_US=""
+
+# Last-resort cleanup on any exit (Ctrl-C, set -e abort, normal end). Silent by design.
+_cleanup_on_exit() {
+    if [[ -n "${BRIDGE_LAUNCHED_BY_US}" && -n "${BRIDGE_LAUNCH_PID}" ]]; then
+        kill -TERM -"${BRIDGE_LAUNCH_PID}" 2>/dev/null || true
+    fi
+    if [[ -n "${CAM_DOWN_STARTED_BY_US}" ]]; then
+        bash -ic 'cam_down_stop' >/dev/null 2>&1 || true
+    fi
+    if [[ -n "${RSLIDAR_STARTED_BY_US}" ]]; then
+        bash -ic 'rslidar_stop' >/dev/null 2>&1 || true
+    fi
+}
+trap _cleanup_on_exit EXIT
+
 hdr()  { echo -e "\n${BLUE}${BOLD}================================================================================${NC}"; echo -e "${BLUE}${BOLD}$*${NC}"; echo -e "${BLUE}${BOLD}================================================================================${NC}"; }
 step() { echo -e "\n${BLUE}${BOLD}── $* ──${NC}"; }
 what() { echo -e "${CYAN}WHAT:${NC}    $*"; }
@@ -134,9 +156,11 @@ if [[ -n "${PORT_OUT}" ]]; then
     raw "${PORT_OUT}"
     pass "port 8765 already listening (bridge was running)"
 else
-    note "no bridge running — launching via the foxglove_bridge alias (nohup)"
-    nohup bash -ic 'foxglove_bridge' >/tmp/foxglove_bridge.log 2>&1 < /dev/null &
-    disown
+    note "no bridge running — launching via the foxglove_bridge alias (will be cleaned up in Section 6)"
+    # setsid puts the launch in its own process group so Section 6 can killpg the whole tree.
+    setsid bash -ic 'foxglove_bridge' >/tmp/foxglove_bridge.log 2>&1 < /dev/null &
+    BRIDGE_LAUNCH_PID=$!
+    BRIDGE_LAUNCHED_BY_US=1
     LAUNCHED=""
     for _ in 1 2 3 4 5; do
         sleep 1
@@ -177,6 +201,7 @@ what     "SetBool(true) on /gst_camera_manager/cam_down. The manager forks gst_c
 why      "The whole pipeline depends on this subprocess. If it doesn't spawn, nothing else matters."
 START_OUT=$(ialias 'cam_down_start')
 raw "${START_OUT}"
+CAM_DOWN_STARTED_BY_US=1   # cleared at 4i once explicit stop confirms STOPPED
 PID=$(echo "${START_OUT}" | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)
 if echo "${START_OUT}" | grep -q "success=True" && [[ -n "${PID}" ]]; then
     pass "subprocess spawned (pid=${PID})"
@@ -268,6 +293,7 @@ STATUS=$(ialias 'cam_down_status')
 raw "${STATUS}"
 if echo "${STATUS}" | grep -q 'STOPPED'; then
     pass "cam_down stopped cleanly"
+    CAM_DOWN_STARTED_BY_US=""   # explicit stop succeeded; EXIT trap no longer needed
 else
     fail "cam_down did not stop"
 fi
@@ -295,6 +321,7 @@ what     "SetBool(true) on /rslidar_coordinator/enable. Coordinator forks 'ros2 
 why      "If this fails, the SDK config is missing/wrong, or the rslidar_sdk package wasn't built."
 START_OUT=$(ialias 'rslidar_start')
 raw "${START_OUT}"
+RSLIDAR_STARTED_BY_US=1   # cleared at 5h once explicit stop confirms STOPPED
 PID=$(echo "${START_OUT}" | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)
 if echo "${START_OUT}" | grep -q "success=True" && [[ -n "${PID}" ]]; then
     pass "subprocess spawned (pid=${PID})"
@@ -382,12 +409,39 @@ STATUS=$(ialias 'rslidar_status')
 raw "${STATUS}"
 if echo "${STATUS}" | grep -q 'STOPPED'; then
     pass "rslidar stopped cleanly"
+    RSLIDAR_STARTED_BY_US=""   # explicit stop succeeded; EXIT trap no longer needed
 else
     fail "rslidar did not stop"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 hdr "Section 6 — Final cleanup"
+
+if [[ -n "${BRIDGE_LAUNCHED_BY_US}" ]]; then
+    step "Stop foxglove_bridge launched by this test"
+    what     "SIGTERM the bridge's process group (PGID ${BRIDGE_LAUNCH_PID}), fall back to SIGKILL, verify port 8765 freed."
+    why      "Section 3 launched the bridge in the background. A test that leaves a bridge bound to 8765 prevents the next 'foxglove_bridge' invocation from binding the port."
+    kill -TERM -"${BRIDGE_LAUNCH_PID}" 2>/dev/null || true
+    for _ in 1 2 3 4 5; do
+        sleep 1
+        ss -tlnp 2>/dev/null | grep -q ':8765 ' || break
+    done
+    if ss -tlnp 2>/dev/null | grep -q ':8765 '; then
+        note "still listening after 5 s — escalating to SIGKILL"
+        kill -KILL -"${BRIDGE_LAUNCH_PID}" 2>/dev/null || true
+        sleep 1
+    fi
+    if ss -tlnp 2>/dev/null | grep -q ':8765 '; then
+        fail "could not free port 8765 (foxglove_bridge still holding it)"
+    else
+        pass "bridge stopped, port 8765 free"
+        BRIDGE_LAUNCHED_BY_US=""   # tell the EXIT trap there's nothing left to do
+    fi
+else
+    step "foxglove_bridge"
+    note "bridge was already running before this test; leaving it alone."
+fi
+
 step "Both pipelines should be stopped, no leaked subprocesses"
 what     "After stop, no gst_cam_node or rslidar_sdk_node processes should remain."
 why      "Process leaks indicate a bug in the subprocess-termination logic of either manager (signal not propagated to child, missing killpg, etc.)."
