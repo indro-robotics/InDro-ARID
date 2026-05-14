@@ -1,8 +1,9 @@
 #!/bin/bash
 # ARID Drone Workspace Setup
-# Usage: ./setup.sh [--fresh | --patch]
-#   --fresh   First-time installation on a new system
-#   --patch   Re-run after a git pull (auto-selected if sentinel exists)
+# Usage: ./setup.sh [--help]
+# Every step is idempotent — runs only the install/config work the system
+# doesn't already have. Safe to re-run after a `git pull`, after a reboot,
+# or on a freshly-flashed Jetson.
 set -euo pipefail
 
 ###############################################################################
@@ -46,7 +47,6 @@ ISAAC_ROS_WS="${WORKSPACES}/isaac_ros-dev"
 PX4_DIR="${LOCAL_WS}/auxiliary/PX4-Autopilot"
 POLKIT_RULE_FILE="/etc/polkit-1/rules.d/10-reset-usb.rules"
 SUDOERS_FILE="/etc/sudoers.d/${USERNAME}_systemctl"
-SENTINEL="/etc/arid_first_setup_done"
 REPO_ROOT="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
 
 # RSAIRY LiDAR network
@@ -69,36 +69,17 @@ echo "Logging to ${LOG_FILE}"
 ###############################################################################
 # ARGUMENT PARSING
 ###############################################################################
-SETUP_MODE=""
-
 parse_args() {
     for arg in "$@"; do
         case "$arg" in
-            --fresh) SETUP_MODE="fresh" ;;
-            --patch) SETUP_MODE="patch" ;;
             --help|-h)
-                echo "Usage: $0 [--fresh | --patch]"
-                echo "  --fresh  First-time installation"
-                echo "  --patch  Re-run after a git pull"
+                echo "Usage: $0 [--help]"
+                echo "All steps auto-detect their current state and install/configure"
+                echo "only what's missing. Safe to re-run any time."
                 exit 0 ;;
             *) err "Unknown argument: $arg"; exit 1 ;;
         esac
     done
-
-    if [[ -z "$SETUP_MODE" ]]; then
-        if [[ -f "$SENTINEL" ]]; then
-            SETUP_MODE="patch"
-            echo "Sentinel found — running as patch."
-        else
-            echo "Select setup type:"
-            select SETUP_MODE in "fresh" "patch"; do
-                [[ -n "$SETUP_MODE" ]] && break
-                echo "Choose 1 or 2."
-            done
-        fi
-    fi
-
-    echo -e "Mode: ${BOLD}${SETUP_MODE}${NC}\n"
 }
 
 ###############################################################################
@@ -208,21 +189,18 @@ setup_apt_packages() {
         pva-allow-2 \
         python3-colcon-clean \
         ros-humble-camera-info-manager \
-        ros-humble-compressed-image-transport
+        ros-humble-compressed-image-transport \
+        ros-humble-foxglove-bridge \
+        ros-humble-foxglove-msgs
 
     STEPS_RUN+=("apt")
     ok "APT packages installed"
 }
 
 ###############################################################################
-# PX4 BUILD DEPENDENCIES  (fresh only)
+# PX4 BUILD DEPENDENCIES
 ###############################################################################
 setup_px4_deps() {
-    if [[ "$SETUP_MODE" != "fresh" ]]; then
-        skip "PX4 deps (patch mode — skipped)"
-        return
-    fi
-
     step "PX4 build dependencies"
 
     if [[ ! -d "${PX4_DIR}" ]]; then
@@ -231,9 +209,18 @@ setup_px4_deps() {
         return
     fi
 
+    # The ARM-none-eabi GCC is the canonical PX4 firmware toolchain — its
+    # presence is a reliable signal that PX4's Tools/setup/ubuntu.sh has
+    # already run on this system.
+    if command -v arm-none-eabi-gcc >/dev/null 2>&1; then
+        skip "PX4 toolchain already present (arm-none-eabi-gcc)"
+        STEPS_SKIPPED+=("px4_deps")
+        return
+    fi
+
     local install_px4
     while true; do
-        read -r -p "Install PX4 build dependencies? (y/n): " install_px4
+        read -r -p "PX4 toolchain not found. Install PX4 build dependencies? (y/n): " install_px4
         case "$install_px4" in [yYnN]) break ;; *) echo "Choose y or n." ;; esac
     done
 
@@ -242,7 +229,7 @@ setup_px4_deps() {
         STEPS_RUN+=("px4_deps")
         ok "PX4 dependencies installed"
     else
-        skip "PX4 dependencies"
+        skip "PX4 dependencies (user declined)"
         STEPS_SKIPPED+=("px4_deps")
     fi
 }
@@ -362,10 +349,16 @@ alias reset_usb='/bin/bash ${WORKSPACES}/scripts/usb_reset.sh'
 alias rosdep_local='rosdep install --from-paths ${LOCAL_WS}/src/ --ignore-src -y'
 alias colcon_local='cd ${LOCAL_WS} && colcon build --symlink-install --base-paths src && source ./install/setup.bash'
 alias clean_local='cd ${LOCAL_WS} && colcon clean workspace --base-select build install log'
-alias lidar_start='ros2 service call /rslidar_coordinator/enable std_srvs/srv/SetBool "{data: true}"'
-alias lidar_stop='ros2 service call /rslidar_coordinator/enable std_srvs/srv/SetBool "{data: false}"'
-alias lidar_status='ros2 service call /rslidar_coordinator/status std_srvs/srv/Trigger "{}"'
-alias lidar_restart='ros2 service call /rslidar_coordinator/restart std_srvs/srv/Trigger "{}"'
+alias foxglove_bridge='ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765'
+alias cam_down_start='ros2 service call /gst_camera_manager/cam_down std_srvs/srv/SetBool "{data: true}"'
+alias cam_down_stop='ros2 service call /gst_camera_manager/cam_down std_srvs/srv/SetBool "{data: false}"'
+alias cam_down_status='ros2 service call /gst_camera_manager/cam_down/status std_srvs/srv/Trigger "{}"'
+alias cam_down_alive='ros2 topic echo --once --qos-durability transient_local /gst_camera_manager/cam_down/alive'
+alias rslidar_start='ros2 service call /rslidar_coordinator/enable std_srvs/srv/SetBool "{data: true}"'
+alias rslidar_stop='ros2 service call /rslidar_coordinator/enable std_srvs/srv/SetBool "{data: false}"'
+alias rslidar_status='ros2 service call /rslidar_coordinator/status std_srvs/srv/Trigger "{}"'
+alias rslidar_alive='ros2 topic echo --once --qos-durability transient_local /rslidar_coordinator/alive'
+alias rslidar_restart='ros2 service call /rslidar_coordinator/restart std_srvs/srv/Trigger "{}"'
 # END ARID SETUP
 EOF
 
@@ -461,7 +454,10 @@ setup_lidar_sysctl() {
 net.core.rmem_max=26214400
 net.core.rmem_default=26214400
 EOF
-    sudo sysctl --system >/dev/null
+    # Load just our file. (`sysctl --system` would also re-apply every other
+    # drop-in on the system, which on Jetson causes harmless "Invalid argument"
+    # noise from kernel knobs Ubuntu defaults set that L4T doesn't expose.)
+    sudo sysctl -p "${RSLIDAR_SYSCTL}" >/dev/null
 
     STEPS_RUN+=("lidar_sysctl")
     ok "sysctl: net.core.rmem_max=net.core.rmem_default=25 MiB"
@@ -491,9 +487,17 @@ setup_lidar_network() {
 
     # Static profile — autoconnect-priority 10 (NM activates this first on link-up;
     # static IPs activate instantly so the LiDAR path is sub-second).
+    #
+    # NOTE: NetworkManager assigns the manual address with the IFA_F_NOPREFIXROUTE
+    # flag, which suppresses the kernel's auto-created connected-route. Without an
+    # explicit ipv4.routes entry, the kernel has no route to 192.168.1.0/24 via
+    # this NIC, so LiDAR-bound traffic silently falls out the default route (wifi)
+    # and ARP probes use the wrong source IP. Adding the route explicitly fixes
+    # both problems.
     nmcli connection add type ethernet con-name rslidar ifname "${RSLIDAR_NIC}" \
         ipv4.method manual \
         ipv4.addresses "${RSLIDAR_HOST_IP}/24" \
+        ipv4.routes "192.168.1.0/24 0.0.0.0" \
         autoconnect yes \
         connection.autoconnect-priority 10 >/dev/null
 
@@ -519,8 +523,11 @@ ACTIVE=\$(nmcli -t -f NAME connection show --active 2>/dev/null | grep -xE 'rsli
 [[ "\$ACTIVE" != "rslidar" ]] && exit 0
 
 # ~8 s of probing — gives the LiDAR time to boot before we give up.
+# -s pins the ARP source IP to our static address. Without it the kernel may
+# pick a different interface's IP as source (e.g. wifi) for L3 reasons, and
+# the LiDAR will silently drop ARP requests from a foreign-subnet source.
 for _ in 1 2 3 4 5 6 7 8; do
-    if arping -c 1 -w 1 -I "\$IFACE" ${RSLIDAR_LIDAR_IP} >/dev/null 2>&1; then
+    if arping -c 1 -w 1 -s ${RSLIDAR_HOST_IP} -I "\$IFACE" ${RSLIDAR_LIDAR_IP} >/dev/null 2>&1; then
         logger -t rslidar-net "LiDAR detected at ${RSLIDAR_LIDAR_IP}; staying on static."
         exit 0
     fi
@@ -562,6 +569,14 @@ setup_systemd() {
 ###############################################################################
 # PYTHON PACKAGES
 ###############################################################################
+# Detect whether pip supports --break-system-packages (added in pip 23.0.1).
+# Newer Ubuntu / PEP 668-enforced systems require the flag; older pips reject
+# it as "no such option". Probed once at script init.
+PIP_BREAK_FLAG=""
+if python3 -m pip install --help 2>/dev/null | grep -q -- '--break-system-packages'; then
+    PIP_BREAK_FLAG="--break-system-packages"
+fi
+
 ensure_pip_pkg() {
     local pkg="$1"
     local name="$2"
@@ -572,10 +587,10 @@ ensure_pip_pkg() {
 
     if [[ -z "$have" ]]; then
         ok "Installing ${pkg}..."
-        python3 -m pip install "$pkg" --no-deps --break-system-packages
+        python3 -m pip install "$pkg" --no-deps ${PIP_BREAK_FLAG}
     elif [[ -n "$want_version" && "$have" != "$want_version" ]]; then
         ok "Upgrading ${name} from ${have} to ${want_version}..."
-        python3 -m pip install "$pkg" --no-deps --break-system-packages
+        python3 -m pip install "$pkg" --no-deps ${PIP_BREAK_FLAG}
     else
         skip "${name}==${have} already satisfies ${pkg}"
     fi
@@ -614,23 +629,12 @@ setup_ros_workspace() {
 }
 
 ###############################################################################
-# DOCKER  (install only on fresh; ensure running on patch)
+# DOCKER  (each sub-step is state-detected and idempotent)
 ###############################################################################
 setup_docker() {
     step "Docker"
 
-    if [[ "$SETUP_MODE" == "patch" ]]; then
-        if command -v docker >/dev/null 2>&1; then
-            sudo systemctl --now enable docker
-            skip "Docker already installed (patch mode)"
-            STEPS_SKIPPED+=("docker_install")
-        else
-            warn "Docker not installed — re-run with --fresh"
-        fi
-        return
-    fi
-
-    # Fresh install
+    # 1) Docker engine binary
     if ! command -v docker >/dev/null 2>&1; then
         curl https://get.docker.com | sh -s -- --version 29.2.1
         ok "Docker engine installed"
@@ -638,23 +642,41 @@ setup_docker() {
         skip "Docker binary already present"
     fi
 
-    sudo systemctl --now enable docker
-    sudo nvidia-ctk runtime configure --runtime=docker
-    sudo systemctl restart docker
-    sudo usermod -aG docker "${USERNAME}"
-    sudo apt-get install -y docker-buildx-plugin
+    # 2) Docker service enabled + running
+    if ! systemctl is-enabled --quiet docker.service 2>/dev/null \
+       || ! systemctl is-active --quiet docker.service 2>/dev/null; then
+        sudo systemctl --now enable docker
+        ok "Docker service enabled + started"
+    else
+        skip "Docker service already enabled and active"
+    fi
+
+    # 3) NVIDIA container runtime registered + restart if newly configured
+    if ! docker info 2>/dev/null | grep -q 'nvidia'; then
+        sudo nvidia-ctk runtime configure --runtime=docker
+        sudo systemctl restart docker
+        ok "NVIDIA container runtime configured"
+    else
+        skip "NVIDIA container runtime already configured"
+    fi
+
+    # 4) User in docker group
+    if id -nG "${USERNAME}" 2>/dev/null | grep -qw docker; then
+        skip "${USERNAME} already in docker group"
+    else
+        sudo usermod -aG docker "${USERNAME}"
+        ok "${USERNAME} added to docker group (log out + back in to take effect)"
+    fi
+
+    # 5) docker-buildx-plugin
+    if dpkg -s docker-buildx-plugin >/dev/null 2>&1; then
+        skip "docker-buildx-plugin already installed"
+    else
+        sudo apt-get install -y docker-buildx-plugin
+        ok "docker-buildx-plugin installed"
+    fi
 
     STEPS_RUN+=("docker")
-    ok "Docker configured with NVIDIA runtime"
-}
-
-###############################################################################
-# SENTINEL
-###############################################################################
-write_sentinel() {
-    [[ "$SETUP_MODE" != "fresh" ]] && return
-    sudo touch "$SENTINEL"
-    ok "Sentinel written to ${SENTINEL} (future runs will default to patch)"
 }
 
 ###############################################################################
@@ -665,7 +687,6 @@ print_summary() {
     echo -e "${BOLD}======================================${NC}"
     echo -e "${BOLD}  Setup Complete${NC}"
     echo -e "${BOLD}======================================${NC}"
-    echo -e "  Mode:  ${BOLD}${SETUP_MODE}${NC}"
     echo -e "  Log:   ${LOG_FILE}"
 
     if [[ ${#STEPS_RUN[@]} -gt 0 ]]; then
@@ -718,7 +739,6 @@ main() {
     setup_systemd
     setup_ros_workspace
     setup_docker
-    write_sentinel
     print_summary
     prompt_reboot
 }

@@ -125,7 +125,10 @@ class RslidarCoordinator(Node):
             '--ros-args', '-p', f'config_path:={self.config_path}',
         ]
         try:
-            self.proc = subprocess.Popen(cmd)
+            # New session/process group so we can later signal the whole chain
+            # (ros2 wrapper + rslidar_sdk_node) via killpg, even if the wrapper
+            # doesn't forward SIGTERM to its child.
+            self.proc = subprocess.Popen(cmd, preexec_fn=os.setsid)
         except Exception as e:
             self.proc = None
             return False, f'spawn failed: {e}'
@@ -144,14 +147,21 @@ class RslidarCoordinator(Node):
 
         pid = self.proc.pid
         self.get_logger().info(f'Terminating {SDK_EXEC} (pid={pid})')
-        self.proc.terminate()
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
+        except ProcessLookupError:
+            # Process exited between poll() and killpg — treat as already stopped.
+            pass
         try:
             self.proc.wait(timeout=self.terminate_grace)
         except subprocess.TimeoutExpired:
             self.get_logger().warn(
                 f'SIGTERM grace ({self.terminate_grace:.1f}s) expired; sending SIGKILL'
             )
-            self.proc.kill()
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
             try:
                 self.proc.wait(timeout=2.0)
             except subprocess.TimeoutExpired:

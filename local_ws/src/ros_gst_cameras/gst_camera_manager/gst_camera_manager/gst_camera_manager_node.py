@@ -241,16 +241,19 @@ class GstCameraManager(Node):
         # when it contains features="..." (e.g. aravissrc features="PixelFormat=Mono8 ...")
         pipeline_escaped = pipeline.replace('"', '\\"')
 
-        return (
+        cmd = (
             'ros2 run gst_cam_node gst_cam_node --ros-args'
             ' -p gst_pipeline:="%s"'
             ' -p camera_topic:="%s"'
             ' -p frame_id:="%s"'
             ' -p camera_info_path:="%s"'
-            ' -p encoding:="%s"'
-            ' -p compress:=%s'
-            ' -p reliable:=%s'
-        ) % (pipeline_escaped, topic, frame_id, calib_url, encoding, compress, reliable)
+        ) % (pipeline_escaped, topic, frame_id, calib_url)
+        # Only emit `encoding` when set — empty quoted string collapses through
+        # the shell and ROS 2's arg parser rejects bare `-p encoding:=`.
+        if encoding:
+            cmd += ' -p encoding:="%s"' % encoding
+        cmd += ' -p compress:=%s -p reliable:=%s' % (compress, reliable)
+        return cmd
 
     ################################################################################################
     def _open_log(self, name):
