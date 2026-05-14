@@ -32,10 +32,12 @@ _cleanup_on_exit() {
         kill -TERM -"${BRIDGE_LAUNCH_PID}" 2>/dev/null || true
     fi
     if [[ -n "${CAM_DOWN_STARTED_BY_US}" ]]; then
-        bash -ic 'cam_down_stop' >/dev/null 2>&1 || true
+        ros2 service call /gst_camera_manager/cam_down std_srvs/srv/SetBool '{data: false}' \
+            >/dev/null 2>&1 || true
     fi
     if [[ -n "${RSLIDAR_STARTED_BY_US}" ]]; then
-        bash -ic 'rslidar_stop' >/dev/null 2>&1 || true
+        ros2 service call /rslidar_coordinator/enable std_srvs/srv/SetBool '{data: false}' \
+            >/dev/null 2>&1 || true
     fi
 }
 trap _cleanup_on_exit EXIT
@@ -60,8 +62,23 @@ fi
 export ROS_DOMAIN_ID=23
 
 # ───────────────── helpers ─────────────────
-# Interactive bash so ARID-block aliases expand.
-ialias() { bash -ic "$*" 2>&1 | grep -v 'job control'; }
+# `bash -ic` (interactive) is reserved for tests that genuinely need .bashrc to be
+# sourced — currently only Section 1 (alias-existence check). Service calls and
+# topic echoes go through ros2 directly so they don't enable job control on the
+# child. Interactive bash calls tcsetpgrp() to claim the terminal foreground and
+# does NOT restore it on exit, which leaves the parent script in a background
+# PG: its next write to the TTY raises SIGTTOU and stops the script. Direct
+# ros2 invocations avoid that path entirely.
+ialias() { bash -ic "$*" </dev/null 2>&1 | grep -v 'job control'; }
+
+# Direct ros2 wrappers (no interactive bash).
+_setbool()      { ros2 service call "$1" std_srvs/srv/SetBool "{data: $2}" 2>&1; }
+_trigger()      { ros2 service call "$1" std_srvs/srv/Trigger '{}' 2>&1; }
+_latched_bool() {
+    timeout 10 ros2 topic echo --once \
+        --qos-reliability reliable --qos-durability transient_local --qos-depth 1 \
+        "$1" 2>&1
+}
 
 # Count BEST_EFFORT messages over a wall-time window.
 count_msgs() {
@@ -184,10 +201,10 @@ hdr "Section 4 — cam_down lifecycle (CSI IMX219, sensor-id=0)"
 step "4a. Force initial STOPPED state"
 what     "Call cam_down_stop unconditionally so the test starts from a known state."
 why      "Lifecycle test is meaningless if we don't know what the starting state was."
-STOP_OUT=$(ialias 'cam_down_stop')
+STOP_OUT=$(_setbool /gst_camera_manager/cam_down false)
 raw "${STOP_OUT}"
 sleep 1
-STATUS=$(ialias 'cam_down_status')
+STATUS=$(_trigger /gst_camera_manager/cam_down/status)
 raw "${STATUS}"
 if echo "${STATUS}" | grep -q 'cam_down STOPPED'; then
     pass "cam_down is STOPPED (clean baseline)"
@@ -199,7 +216,7 @@ fi
 step "4b. cam_down_start should spawn the gst_cam_node subprocess"
 what     "SetBool(true) on /gst_camera_manager/cam_down. The manager forks gst_cam_node as a subprocess."
 why      "The whole pipeline depends on this subprocess. If it doesn't spawn, nothing else matters."
-START_OUT=$(ialias 'cam_down_start')
+START_OUT=$(_setbool /gst_camera_manager/cam_down true)
 raw "${START_OUT}"
 CAM_DOWN_STARTED_BY_US=1   # cleared at 4i once explicit stop confirms STOPPED
 PID=$(echo "${START_OUT}" | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)
@@ -218,7 +235,7 @@ sleep 4
 
 # 4d. status running
 step "4d. cam_down_status should report RUNNING"
-STATUS=$(ialias 'cam_down_status')
+STATUS=$(_trigger /gst_camera_manager/cam_down/status)
 raw "${STATUS}"
 if echo "${STATUS}" | grep -q 'RUNNING'; then
     pass "status reports RUNNING"
@@ -273,9 +290,7 @@ fi
 step "4h. /gst_camera_manager/cam_down/alive should be latched 'true'"
 what     "Read the latched Bool with QoS RELIABLE / TRANSIENT_LOCAL / depth 1. Up to 10 s for first-time discovery."
 why      "This is the manager's published verdict on whether frames are actually flowing. If status says RUNNING but alive says false, watchdog is seeing a stall."
-ALIVE_OUT=$(timeout 10 ros2 topic echo --once \
-    --qos-reliability reliable --qos-durability transient_local --qos-depth 1 \
-    /gst_camera_manager/cam_down/alive 2>&1)
+ALIVE_OUT=$(_latched_bool /gst_camera_manager/cam_down/alive)
 raw "${ALIVE_OUT}"
 ALIVE_VAL=$(echo "${ALIVE_OUT}" | grep -oE 'data: (true|false)' | head -1)
 case "${ALIVE_VAL}" in
@@ -286,10 +301,10 @@ esac
 
 # 4i. stop
 step "4i. cam_down_stop should terminate cleanly"
-STOP_OUT=$(ialias 'cam_down_stop')
+STOP_OUT=$(_setbool /gst_camera_manager/cam_down false)
 raw "${STOP_OUT}"
 sleep 1
-STATUS=$(ialias 'cam_down_status')
+STATUS=$(_trigger /gst_camera_manager/cam_down/status)
 raw "${STATUS}"
 if echo "${STATUS}" | grep -q 'STOPPED'; then
     pass "cam_down stopped cleanly"
@@ -305,9 +320,9 @@ note "      Software-side lifecycle is exercised regardless of hardware."
 
 # 5a. baseline stopped
 step "5a. Force initial STOPPED state"
-ialias 'rslidar_stop' >/dev/null
+_setbool /rslidar_coordinator/enable false >/dev/null
 sleep 1
-STATUS=$(ialias 'rslidar_status')
+STATUS=$(_trigger /rslidar_coordinator/status)
 raw "${STATUS}"
 if echo "${STATUS}" | grep -q 'STOPPED'; then
     pass "rslidar is STOPPED (clean baseline)"
@@ -319,7 +334,7 @@ fi
 step "5b. rslidar_start should spawn rslidar_sdk_node via the coordinator"
 what     "SetBool(true) on /rslidar_coordinator/enable. Coordinator forks 'ros2 run rslidar_sdk rslidar_sdk_node ...' with our config_path param."
 why      "If this fails, the SDK config is missing/wrong, or the rslidar_sdk package wasn't built."
-START_OUT=$(ialias 'rslidar_start')
+START_OUT=$(_setbool /rslidar_coordinator/enable true)
 raw "${START_OUT}"
 RSLIDAR_STARTED_BY_US=1   # cleared at 5h once explicit stop confirms STOPPED
 PID=$(echo "${START_OUT}" | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)
@@ -333,7 +348,7 @@ sleep 4
 
 # 5c. status
 step "5c. rslidar_status should report RUNNING"
-STATUS=$(ialias 'rslidar_status')
+STATUS=$(_trigger /rslidar_coordinator/status)
 raw "${STATUS}"
 if echo "${STATUS}" | grep -q 'RUNNING'; then
     pass "status reports RUNNING"
@@ -360,9 +375,7 @@ done
 step "5e. /rslidar_coordinator/alive (read latched Bool via rslidar_alive alias)"
 what     "Read latched /rslidar_coordinator/alive — same QoS as cam_down_alive (RELIABLE/TRANSIENT_LOCAL/depth 1)."
 why      "Mirrors the cam_down_alive check. With LiDAR off, watchdog will report 'data: false' after the 5s startup-grace window."
-ALIVE_OUT=$(timeout 10 ros2 topic echo --once \
-    --qos-reliability reliable --qos-durability transient_local --qos-depth 1 \
-    /rslidar_coordinator/alive 2>&1)
+ALIVE_OUT=$(_latched_bool /rslidar_coordinator/alive)
 raw "${ALIVE_OUT}"
 ALIVE_VAL=$(echo "${ALIVE_OUT}" | grep -oE 'data: (true|false)' | head -1)
 case "${ALIVE_VAL}" in
@@ -389,10 +402,10 @@ step "5g. rslidar_restart should produce a new PID"
 what     "Trigger /rslidar_coordinator/restart, then verify status reports a new pid different from before."
 why      "Restart is the 'kick' for when the SDK is wedged. If PID doesn't change, the restart didn't actually re-spawn."
 OLD_PID="${PID:-0}"
-RESTART_OUT=$(ialias 'rslidar_restart')
+RESTART_OUT=$(_trigger /rslidar_coordinator/restart)
 raw "${RESTART_OUT}"
 sleep 3
-STATUS=$(ialias 'rslidar_status')
+STATUS=$(_trigger /rslidar_coordinator/status)
 raw "${STATUS}"
 NEW_PID=$(echo "${STATUS}" | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)
 if echo "${STATUS}" | grep -q 'RUNNING' && [[ -n "${NEW_PID}" ]] && [[ "${NEW_PID}" != "${OLD_PID}" ]]; then
@@ -404,8 +417,8 @@ fi
 # 5h. stop
 step "5h. rslidar_stop should terminate cleanly (coordinator now waits for the whole process group)"
 note     "(With the process-group fix in place, rslidar_stop only returns once the SDK binary is genuinely gone — even if it was busy in MSOPTIMEOUT retries.)"
-ialias 'rslidar_stop' >/dev/null
-STATUS=$(ialias 'rslidar_status')
+_setbool /rslidar_coordinator/enable false >/dev/null
+STATUS=$(_trigger /rslidar_coordinator/status)
 raw "${STATUS}"
 if echo "${STATUS}" | grep -q 'STOPPED'; then
     pass "rslidar stopped cleanly"
