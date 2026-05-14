@@ -198,6 +198,15 @@ setup_apt_packages() {
 
 ###############################################################################
 # PX4 BUILD DEPENDENCIES
+# Split into two probes because the ARM GCC toolchain and the Python build
+# deps fail independently: the GCC binary survives package wipes that
+# remove kconfiglib/jinja2/etc., so the previous "GCC present ⇒ setup
+# complete" heuristic produced builds that failed at the kconfig stage.
+#
+#   - Python deps: always reconcile against Tools/setup/requirements.txt
+#     (idempotent, fast, no prompt).
+#   - ARM toolchain: only prompt for the full ubuntu.sh run if
+#     arm-none-eabi-gcc is missing (heavy install, downloads tarball).
 ###############################################################################
 setup_px4_deps() {
     step "PX4 build dependencies"
@@ -208,25 +217,39 @@ setup_px4_deps() {
         return
     fi
 
-    # arm-none-eabi-gcc presence indicates PX4 Tools/setup/ubuntu.sh has run.
+    # ── Python deps (idempotent) ──────────────────────────────────────────
+    local req="${PX4_DIR}/Tools/setup/requirements.txt"
+    if [[ -f "${req}" ]]; then
+        if python3 -c 'import kconfiglib' >/dev/null 2>&1; then
+            skip "PX4 Python deps already satisfied (kconfiglib importable)"
+        else
+            ok "Installing PX4 Python deps from ${req}..."
+            python3 -m pip install -r "${req}" ${PIP_BREAK_FLAG}
+            ok "PX4 Python deps installed"
+        fi
+    else
+        warn "${req} not found; cannot reconcile Python deps"
+    fi
+
+    # ── ARM toolchain (heavy; only on demand) ─────────────────────────────
     if command -v arm-none-eabi-gcc >/dev/null 2>&1; then
-        skip "PX4 toolchain already present (arm-none-eabi-gcc)"
-        STEPS_SKIPPED+=("px4_deps")
+        skip "ARM toolchain already present (arm-none-eabi-gcc)"
+        STEPS_RUN+=("px4_deps")
         return
     fi
 
     local install_px4
     while true; do
-        read -r -p "PX4 toolchain not found. Install PX4 build dependencies? (y/n): " install_px4
+        read -r -p "ARM toolchain (arm-none-eabi-gcc) not found. Run PX4 Tools/setup/ubuntu.sh? (y/n): " install_px4
         case "$install_px4" in [yYnN]) break ;; *) echo "Choose y or n." ;; esac
     done
 
     if [[ "$install_px4" =~ ^[yY]$ ]]; then
         (cd "${PX4_DIR}/Tools/setup" && bash ubuntu.sh)
         STEPS_RUN+=("px4_deps")
-        ok "PX4 dependencies installed"
+        ok "PX4 ARM toolchain + Tools/setup deps installed"
     else
-        skip "PX4 dependencies (user declined)"
+        warn "ARM toolchain install declined; PX4 firmware builds will fail until 'cd ${PX4_DIR}/Tools/setup && bash ubuntu.sh' is run"
         STEPS_SKIPPED+=("px4_deps")
     fi
 }
