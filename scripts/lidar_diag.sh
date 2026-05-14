@@ -173,7 +173,8 @@ ARP_OUT=$(arping -c 3 -w 3 -s "${HOST_IP}" -I "${NIC}" "${EXPECTED_LIDAR_IP}" 2>
 raw "${ARP_OUT}"
 
 if echo "${ARP_OUT}" | grep -qE 'Received [1-9]'; then
-    MAC=$(ip neigh show "${EXPECTED_LIDAR_IP}" dev "${NIC}" 2>/dev/null | awk '{print $5; exit}')
+    MAC=$(echo "${ARP_OUT}" | grep -oE '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}' | head -1)
+    [[ -z "${MAC}" ]] && MAC=$(ip neigh show "${EXPECTED_LIDAR_IP}" dev "${NIC}" 2>/dev/null | awk '{print $5; exit}')
     AVG_RTT=$(echo "${ARP_OUT}" | grep -oE '[0-9.]+ms' | head -1)
     ok "LiDAR responded at ${EXPECTED_LIDAR_IP}"
     note "MAC:         ${MAC:-?}"

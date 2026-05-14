@@ -152,7 +152,7 @@ Rebuild (`colcon build --packages-select gst_camera_manager`) or restart the man
 
 ### Currently defined pipelines
 
-- **`cam_down`**: CSI camera (sensor-id 0) via `nvarguscamerasrc` at 1920×1080 at 15 fps, NV12 to GRAY8 via `nvvidconv`. Frame ID: `bottom_visual_link`.
+- **`cam_down`**: CSI camera (sensor-id 0) via `nvarguscamerasrc` at 1920×1080 at 20 fps (delivered ~16 Hz), NV12 to GRAY8 via `nvvidconv`. The sensor is IR-sensitive; the pipeline drops to mono (GRAY8) so the stream is directly usable for IR-aware computer-vision tasks (feature tracking, motion detection, fiducial decoding) without per-channel filtering. Frame ID: `bottom_visual_link`.
 
 ---
 

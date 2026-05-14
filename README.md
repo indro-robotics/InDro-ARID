@@ -33,7 +33,7 @@ All output is logged to `log/setup_log_<timestamp>.log`.
 | **permissions** | Sudoers rule (uhubctl, gpioset, systemctl, `usb_reset.sh`, all without password). USB and GPIO udev rules. Polkit rule for `reset_usb.service`. Adds user to `dialout` and `gpio` groups. |
 | **uhubctl** | Builds and installs `uhubctl` from source. Skips if already installed. |
 | **lidar_sysctl** | Writes `/etc/sysctl.d/99-rslidar.conf` raising `net.core.rmem_max` and `rmem_default` to 25 MiB so the RSAIRY firehose doesn't overflow the kernel UDP queue. |
-| **lidar_network** | Creates two NetworkManager connections on `enP8p1s0`: `rslidar` (static `192.168.1.102/24`, priority 10, with explicit `ipv4.routes` for the connected subnet) and `dev` (DHCP, priority 0). Installs `/etc/NetworkManager/dispatcher.d/90-rslidar` which ARPs the LiDAR at `192.168.1.200` (with source IP pinned via `-s 192.168.1.102`) for up to 8 s on link-up. Falls back to DHCP if no response. |
+| **lidar_network** | Creates two NetworkManager connections on `enP8p1s0`: `rslidar` (static, priority 10, with explicit `ipv4.routes` for the connected subnet) and `dev` (DHCP, priority 0). Installs `/etc/NetworkManager/dispatcher.d/90-rslidar` which ARP-probes the LiDAR for up to 8 s on link-up and falls back to DHCP if no response. If a LiDAR is reachable, `config_lidar` then sniffs the wire and rewrites both the NM profile and the dispatcher to match the LiDAR's firmware-side IPs. See [LiDAR auto-setup](#auto-setup-config_lidar). |
 | **systemd** | Copies and enables all systemd services. See [Boot sequence](#boot-sequence) below. |
 | **ros_workspace** | Installs Python deps (pyudev, pyserial, empy). Runs `rosdep install`. Builds `local_ws` with colcon. |
 | **docker** | Each sub-step is independently checked: installs Docker engine if missing, enables the service if not running, configures the NVIDIA container runtime if not registered, adds the user to the `docker` group if not in it, installs `docker-buildx-plugin` if missing. |
@@ -66,7 +66,7 @@ Auto-started services after boot:
 
 ## Cameras (CSI)
 
-One CSI camera pipeline defined in [`local_ws/src/ros_gst_cameras/gst_camera_manager/config/pipelines.yaml`](local_ws/src/ros_gst_cameras/gst_camera_manager/config/pipelines.yaml). Uses an IMX219 sensor at 1920×1080 mono via `nvarguscamerasrc` → `nvvidconv` → `appsink`.
+One CSI camera pipeline defined in [`local_ws/src/ros_gst_cameras/gst_camera_manager/config/pipelines.yaml`](local_ws/src/ros_gst_cameras/gst_camera_manager/config/pipelines.yaml). Uses an IMX219 sensor at 1920×1080 at 20 fps (delivered ~16 Hz), converted to GRAY8 via `nvarguscamerasrc` → `nvvidconv` → `appsink`. The sensor is IR-sensitive, so the stream is published as mono for direct use in IR-aware computer-vision tasks (feature tracking, motion detection, fiducial decoding) without per-channel filtering.
 
 | Pipeline | Sensor ID | Frame ID | Topic root |
 |---|---|---|---|
@@ -101,17 +101,37 @@ The SDK reads its config from [`rslidar_coordinator/config/rslidar.yaml`](local_
 
 | Setting | Value |
 |---|---|
-| LiDAR IP | `192.168.1.200` (RoboSense factory default) |
-| Jetson IP on LiDAR subnet | `192.168.1.102/24` |
 | Jetson NIC | `enP8p1s0` |
+| LiDAR IP / Jetson IP | auto-detected by `config_lidar` (see below) |
+| Factory-default LiDAR IP | `192.168.1.200` (fallback only) |
 | MSOP (point-cloud) port | UDP `6699` |
 | DIFOP (device info) port | UDP `7788` |
+| IMU port (socket bound) | UDP `6688` |
 
-Setup.sh's `lidar_network` step configures NetworkManager with two profiles on `enP8p1s0`: `rslidar` (static, priority 10) and `dev` (DHCP, priority 0). On link-up, an NM dispatcher script probes the LiDAR via ARP for up to 8 s. If it responds, the static profile stays active. If not, the system falls back to DHCP. Plug into the LiDAR for a sub-second static. Plug into a router for an 8 s wait followed by DHCP. Auto-swaps on cable change.
+Setup.sh's `lidar_network` step configures NetworkManager with two profiles on `enP8p1s0`: `rslidar` (static, priority 10) and `dev` (DHCP, priority 0). On link-up, an NM dispatcher script ARP-probes the LiDAR for up to 8 s. If it responds, the static profile stays active. If not, the system falls back to DHCP. Plug into the LiDAR for a sub-second static. Plug into a router for an 8 s wait followed by DHCP. Auto-swaps on cable change.
 
-The `rslidar` profile includes an explicit `ipv4.routes "192.168.1.0/24 0.0.0.0"` entry. Without it, NetworkManager sets `noprefixroute` on the address and the kernel never gets a connected route for `192.168.1.0/24` via this NIC. The result is that traffic to the LiDAR silently falls out the wifi default route instead. The dispatcher's `arping` also passes `-s 192.168.1.102` so the request's source IP is always on the LiDAR subnet (belt and suspenders).
+The `rslidar` profile includes an explicit `ipv4.routes` entry. Without it, NetworkManager sets `noprefixroute` on the manual address and the kernel never installs a connected route for the LiDAR subnet, so traffic silently falls out the wifi default route instead. The dispatcher's `arping` also pins its source IP with `-s` for the same reason.
 
-If the LiDAR doesn't respond at the expected IP, run `lidar_diag` to figure out where it actually is.
+### Auto-setup (`config_lidar`)
+
+RoboSense LiDARs store their own IP and the host IP they unicast to in non-volatile firmware. Any prior RSView session may have moved them off the factory defaults. To handle that, `setup.sh` runs `scripts/config_lidar.sh` after creating the NM profiles, and the command is also exposed as the `config_lidar` alias for manual use.
+
+What it does:
+
+1. Sniffs `enP8p1s0` for 10 s with `tcpdump` (ARP + UDP on the LiDAR ports).
+2. Extracts the LiDAR's MAC, source IP, and the destination (host) IP it expects.
+3. Rewrites `ipv4.addresses` and `ipv4.routes` on the `rslidar` NM connection to match.
+4. Rewrites the dispatcher with the discovered IPs.
+5. Brings up `rslidar` and verifies the LiDAR answers ARP at the discovered IP.
+6. Persists the detected values to `.lidar/rslidar_detected.conf` (workspace-local, gitignored). `lidar_diag` reads this file.
+
+Run it manually any time a LiDAR is swapped, reconfigured via RSView, or moved between hosts:
+
+```bash
+config_lidar     # alias prepends sudo (tcpdump promisc + writing to /etc)
+```
+
+If the LiDAR is unreachable at setup time, the fallback static (`192.168.1.102/24` targeting `192.168.1.200`) stays in place. Re-run `config_lidar` once the LiDAR is plugged in and powered.
 
 ### Start, stop, status
 
@@ -224,7 +244,33 @@ Then connect Foxglove Studio to `ws://<jetson-ip>:8765`.
 
 ## Smoke test and diagnostics
 
-Two helper scripts live in [`scripts/`](scripts/) and are wired into the host bashrc as aliases.
+Two helper scripts live in [`scripts/`](scripts/) and are wired into the host bashrc as aliases. After `setup.sh` and a reboot, run both in order:
+
+```bash
+lidar_diag     # network + LiDAR reachability + coordinator/SDK runtime status
+local_test     # full host-stack lifecycle smoke test
+```
+
+Both are verbose, idempotent, and safe to run any time.
+
+### `lidar_diag`
+
+```bash
+lidar_diag         # read-only checks; steps 5 & 6 skipped without sudo
+sudo lidar_diag    # full diagnostic including passive tcpdump and arp-scan
+```
+
+Reads the auto-detected IPs from `.lidar/rslidar_detected.conf` (populated by `config_lidar`). Walks through:
+
+1. **Interface and link**: carrier up, link speed/duplex, MTU, host MAC, lifetime RX counters.
+2. **Active NM profile** on `enP8p1s0`: `rslidar` (static) vs `dev` (DHCP fallback).
+3. **IPv4 address and route**: confirms the detected host IP is assigned and a route to the LiDAR subnet exists via this NIC.
+4. **ARP probe at the detected LiDAR IP**: response time, replying MAC, match against the detected config.
+5. **Passive sniff** (needs sudo): `tcpdump` on UDP 6699/7788/6688 with packets-per-second estimate. Reveals where the LiDAR actually is if it has been reconfigured.
+6. **Active subnet scan** with `arp-scan` (needs sudo): last resort.
+7. **`rslidar_coordinator` and SDK runtime**: service active, SDK subprocess PID, bound UDP ports, `/rslidar_points` rate over 3 s, `/rslidar_coordinator/alive` value.
+
+Source: [`scripts/lidar_diag.sh`](scripts/lidar_diag.sh).
 
 ### `local_test`
 
@@ -232,36 +278,18 @@ Two helper scripts live in [`scripts/`](scripts/) and are wired into the host ba
 local_test
 ```
 
-Repeatable smoke test for the host stack. Verbose by design: at each step it prints what's being checked, the raw values it got, why the check matters, and what to do if something fails. Re-runnable any time. Leaves both pipelines stopped at the end. Destructive aliases (`reset_usb`, `clean_local`) are existence-checked only, not actually invoked.
+Smoke test for the host stack. Each step prints what is being checked, the raw value it got, why it matters, and what to do if it fails. Leaves both pipelines stopped at the end. Destructive aliases (`reset_usb`, `clean_local`) are existence-checked only, not invoked.
 
 Covers:
 
-- The three host systemd services are active (`arid_description`, `gst_camera_manager`, `rslidar_coordinator`)
-- All host-stack aliases the test cares about are defined and resolve to something runnable (the `cam_down_*`, `rslidar_*`, `foxglove_bridge`, `lidar_diag`, `local_test`, plus the four build/dep ones)
-- `foxglove_bridge` brings up the bridge on port 8765 (launches it if not already running)
-- Full `cam_down` lifecycle: stop → start → topics on the graph → `header.frame_id == bottom_visual_link` → publish rate over 5 s → `/alive` latched True → stop
-- Full `rslidar` lifecycle: stop → start → topics → `/alive` readable → cloud rate (SKIP if LiDAR is off, that's not a software failure) → restart produces a new PID → stop
-- No subprocess leaks left behind
+- The three host systemd services are active (`arid_description`, `gst_camera_manager`, `rslidar_coordinator`).
+- All managed bashrc aliases are defined and resolve to runnable targets.
+- `foxglove_bridge` is listening on TCP 8765 (launches it if not already running).
+- Full `cam_down` lifecycle: stop → start → topics → `header.frame_id == bottom_visual_link` → publish rate over 5 s → `/alive` latched true → stop.
+- Full `rslidar` lifecycle: stop → start → topics → `/alive` readable → cloud rate (SKIP if LiDAR is off) → restart produces a new PID → stop.
+- No subprocess leaks at the end.
 
 Source: [`scripts/local_test.sh`](scripts/local_test.sh).
-
-### `lidar_diag`
-
-```bash
-lidar_diag         # passes nothing to root; some steps skipped
-sudo lidar_diag    # full diagnostic including passive tcpdump and arp-scan
-```
-
-LiDAR network diagnostic. Walks through:
-
-1. **Link state on `enP8p1s0`**: is the carrier up, what speed and duplex were negotiated.
-2. **Active NM profile**: `rslidar` (good) vs `dev` (the dispatcher gave up and fell back).
-3. **IP and route via the NIC**: confirms `192.168.1.102/24` is assigned AND the kernel has a route to the LiDAR subnet via this interface (the `noprefixroute` gotcha).
-4. **ARP probe at the expected LiDAR IP**: does `192.168.1.200` answer.
-5. **Passive sniff for 5 s** (needs sudo): `tcpdump` for UDP 6699/7788. A powered LiDAR auto-broadcasts MSOP/DIFOP regardless of host config, so this reveals its actual source IP and the destination it's configured to send to, even if those differ from what is expected.
-6. **Subnet scan with `arp-scan`** (needs sudo): last resort if passive sniff caught nothing.
-
-Source: [`scripts/lidar_diag.sh`](scripts/lidar_diag.sh).
 
 ---
 
@@ -321,6 +349,7 @@ rslidar_restart  # Trigger /rslidar_coordinator/restart (one-shot kick)
 # Smoke test and diagnostics
 local_test       # Run the host-stack smoke test (scripts/local_test.sh)
 lidar_diag       # Run the LiDAR network diagnostic (scripts/lidar_diag.sh)
+config_lidar     # Auto-detect LiDAR IPs and rewrite NM profile (sudo)
 ```
 
 **Inside the container (set by `arid_env.sh`):**

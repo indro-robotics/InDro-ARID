@@ -231,7 +231,7 @@ fi
 # 4g. rate
 step "4g. /cam_down/image_raw rate over 5 s"
 what     "Count message separators ('---') from 'topic echo --no-arr' over a 5-second window."
-why      "Pipeline is configured for 15 fps; we accept >= 6 Hz (40 % of nominal) as pass. Below that there's something wrong upstream (Argus dropping, ISP backpressure, etc.)."
+why      "Pipeline is configured for 20 fps (delivered ~16 Hz). Accept >= 6 Hz (~40% of delivered) as pass. Below that there's something wrong upstream (Argus dropping, ISP backpressure, etc.)."
 COUNT=$(count_msgs /cam_down/image_raw 5)
 HZ=$(awk "BEGIN {printf \"%.1f\", $COUNT/5}")
 raw "messages: ${COUNT}    over: 5 s    rate: ${HZ} Hz"
