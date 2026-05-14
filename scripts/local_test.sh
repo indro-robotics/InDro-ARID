@@ -25,10 +25,10 @@ BRIDGE_LAUNCHED_BY_US=""
 CAM_DOWN_STARTED_BY_US=""
 RSLIDAR_STARTED_BY_US=""
 
-# Bridge cleanup is PID-tracking-free by design. `setsid bash &` returns the
-# setsid wrapper's PID via $!, but setsid forks the actual bash into a new
-# session and exits — so $! is stale within milliseconds. The robust answer
-# is to ignore PIDs and locate the listener by port at teardown time.
+# Bridge cleanup is PID-tracking-free. `setsid bash &` returns the setsid
+# wrapper's PID via $!, but setsid forks the actual bash into a new session
+# and exits, so $! becomes stale within milliseconds. Locate the listener by
+# port at teardown time instead.
 _kill_bridge_on_8765() {
     local holder parent
     for _ in 1 2 3 4 5; do
@@ -161,8 +161,8 @@ done
 # ─────────────────────────────────────────────────────────────────────────────
 hdr "Section 2 — Non-invasive checks for build/dep aliases"
 step "Verify each destructive-ish alias points at a real, runnable target"
-what     "reset_usb / rosdep_local / colcon_local / clean_local are not invoked here. We only check the things they would call/operate on actually exist."
-why      "These four aliases are slow or destructive (clean_local wipes build/install/log). A smoke test shouldn't trigger them, but we still want to know they're not broken."
+what     "reset_usb / rosdep_local / colcon_local / clean_local are not invoked here. Verify the underlying targets exist and are executable."
+why      "These four aliases are slow or destructive (clean_local wipes build/install/log). A smoke test should not trigger them, but reachability of the target must still be verified."
 
 if [[ -x /home/jetson/workspaces/scripts/usb_reset.sh ]]; then
     pass "reset_usb target /home/jetson/workspaces/scripts/usb_reset.sh exists + executable"
@@ -225,7 +225,7 @@ hdr "Section 4 — cam_down lifecycle (CSI IMX219, sensor-id=0)"
 # 4a. clean stopped state
 step "4a. Force initial STOPPED state"
 what     "Call cam_down_stop unconditionally so the test starts from a known state."
-why      "Lifecycle test is meaningless if we don't know what the starting state was."
+why      "Lifecycle test is meaningless without a known starting state."
 STOP_OUT=$(_setbool /gst_camera_manager/cam_down false)
 raw "${STOP_OUT}"
 sleep 1
@@ -357,7 +357,7 @@ fi
 
 # 5b. start
 step "5b. rslidar_start should spawn rslidar_sdk_node via the coordinator"
-what     "SetBool(true) on /rslidar_coordinator/enable. Coordinator forks 'ros2 run rslidar_sdk rslidar_sdk_node ...' with our config_path param."
+what     "SetBool(true) on /rslidar_coordinator/enable. Coordinator forks 'ros2 run rslidar_sdk rslidar_sdk_node ...' with the config_path param."
 why      "If this fails, the SDK config is missing/wrong, or the rslidar_sdk package wasn't built."
 START_OUT=$(_setbool /rslidar_coordinator/enable true)
 raw "${START_OUT}"
@@ -383,7 +383,7 @@ fi
 
 # 5d. topics
 step "5d. Required rslidar topics should exist on the graph"
-what     "/rslidar_points (PointCloud2 from SDK), /rslidar_coordinator/alive (our supervisor's health Bool)."
+what     "/rslidar_points (PointCloud2 from SDK), /rslidar_coordinator/alive (the coordinator's liveness Bool)."
 why      "Topic presence proves the SDK + coordinator publishers are up. Data flow is the next check."
 TOPICS=$(ros2 topic list 2>/dev/null)
 note     "rslidar-related topics in the graph:"
@@ -425,7 +425,7 @@ fi
 # 5g. restart
 step "5g. rslidar_restart should produce a new PID"
 what     "Trigger /rslidar_coordinator/restart, then verify status reports a new pid different from before."
-why      "Restart is the 'kick' for when the SDK is wedged. If PID doesn't change, the restart didn't actually re-spawn."
+why      "Restart is the recovery path when the SDK stalls. A stale PID means the respawn did not occur."
 OLD_PID="${PID:-0}"
 RESTART_OUT=$(_trigger /rslidar_coordinator/restart)
 raw "${RESTART_OUT}"

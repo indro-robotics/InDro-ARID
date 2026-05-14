@@ -137,7 +137,7 @@ note "profiles bound to ${NIC}: $(echo "${ALL_PROFILES}" | tr '\n' ' ' | sed 's/
 # ───── 3. IPv4 + route ─────
 step "3. IPv4 address + route via ${NIC}"
 what     "Is there an IP on ${NIC}, and does the kernel know to send ${SUBNET} traffic out it?"
-why      "Without a route, LiDAR-bound packets silently fall out the wifi default route instead."
+why      "Without a route, LiDAR-bound packets are silently sent via the wifi default gateway instead."
 
 IP_LINE=$(ip -4 -o addr show "${NIC}" 2>/dev/null | head -1)
 raw "${IP_LINE:-(no IPv4)}"

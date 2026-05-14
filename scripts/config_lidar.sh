@@ -146,7 +146,7 @@ note "Subnet:    ${SUBNET}"
 # ───────────────── 4. reconfigure NM 'rslidar' connection ─────────────────
 step "4. Reconfigure NetworkManager 'rslidar' connection in place"
 what     "Update ipv4.addresses + ipv4.routes on the existing connection profile."
-why      "The LiDAR ARPs for the host IP; without that IP assigned to ${NIC}, nothing on our side can resolve. ipv4.routes is also needed because NM uses noprefixroute on manual addresses."
+why      "The LiDAR ARPs for the host IP; without that address on ${NIC} the request cannot be resolved. ipv4.routes is also required because NetworkManager sets noprefixroute on manual addresses."
 
 if ! nmcli -t -f NAME connection show 2>/dev/null | grep -qxF "rslidar"; then
     warn "NM connection 'rslidar' does not exist yet — creating it"

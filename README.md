@@ -32,7 +32,7 @@ All output is logged to `log/setup_log_<timestamp>.log`.
 | **bashrc** | Rewrites the host `.bashrc` block: `ROS_DOMAIN_ID=23`, workspace path exports, sources `local_ws/install/setup.bash`. Adds aliases: `run_isaac`, `colcon_local`, `reset_usb`, `foxglove_bridge`, `cam_down_*`, `rslidar_*`, `lidar_diag`, `local_test`. |
 | **permissions** | Sudoers rule (uhubctl, gpioset, systemctl, `usb_reset.sh`, all without password). USB and GPIO udev rules. Polkit rule for `reset_usb.service`. Adds user to `dialout` and `gpio` groups. |
 | **uhubctl** | Builds and installs `uhubctl` from source. Skips if already installed. |
-| **lidar_sysctl** | Writes `/etc/sysctl.d/99-rslidar.conf` raising `net.core.rmem_max` and `rmem_default` to 25 MiB so the RSAIRY firehose doesn't overflow the kernel UDP queue. |
+| **lidar_sysctl** | Writes `/etc/sysctl.d/99-rslidar.conf` raising `net.core.rmem_max` and `rmem_default` to 25 MiB so the RSAIRY's bursty UDP traffic does not overflow the kernel receive queue. |
 | **lidar_network** | Creates two NetworkManager connections on `enP8p1s0`: `rslidar` (static, priority 10, with explicit `ipv4.routes` for the connected subnet) and `dev` (DHCP, priority 0). Installs `/etc/NetworkManager/dispatcher.d/90-rslidar` which ARP-probes the LiDAR for up to 8 s on link-up and falls back to DHCP if no response. If a LiDAR is reachable, `config_lidar` then sniffs the wire and rewrites both the NM profile and the dispatcher to match the LiDAR's firmware-side IPs. See [LiDAR auto-setup](#auto-setup-config_lidar). |
 | **systemd** | Copies and enables all systemd services. See [Boot sequence](#boot-sequence) below. |
 | **ros_workspace** | Installs Python deps (pyudev, pyserial, empy). Runs `rosdep install`. Builds `local_ws` with colcon. |
@@ -93,7 +93,7 @@ Each pipeline publishes `/<topic>/image_raw`, `/<topic>/image_raw/compressed`, a
 
 ## LiDAR (RoboSense RSAIRY)
 
-A RoboSense RSAIRY 3-D LiDAR is supervised by [`local_ws/src/rslidar_coordinator`](local_ws/src/rslidar_coordinator/). The coordinator spawns `rslidar_sdk_node` as a managed subprocess. The coordinator is up at boot via `rslidar_coordinator.service`. The LiDAR pipeline itself is **idle** until SetBool, matching the `gst_camera_manager` ergonomic.
+A RoboSense RSAIRY 3-D LiDAR is supervised by [`local_ws/src/rslidar_coordinator`](local_ws/src/rslidar_coordinator/). The coordinator spawns `rslidar_sdk_node` as a managed subprocess. The coordinator is up at boot via `rslidar_coordinator.service`. The LiDAR pipeline itself is **idle** until SetBool, matching the `gst_camera_manager` pattern.
 
 The SDK reads its config from [`rslidar_coordinator/config/rslidar.yaml`](local_ws/src/rslidar_coordinator/config/rslidar.yaml). The `rslidar_sdk` submodule is never patched. Cloud-only at the moment. IMU parsing is disabled because the SDK's IMU parser is gated by a compile-time flag that this workspace deliberately does not flip.
 
@@ -110,7 +110,7 @@ The SDK reads its config from [`rslidar_coordinator/config/rslidar.yaml`](local_
 
 Setup.sh's `lidar_network` step configures NetworkManager with two profiles on `enP8p1s0`: `rslidar` (static, priority 10) and `dev` (DHCP, priority 0). On link-up, an NM dispatcher script ARP-probes the LiDAR for up to 8 s. If it responds, the static profile stays active. If not, the system falls back to DHCP. Plug into the LiDAR for a sub-second static. Plug into a router for an 8 s wait followed by DHCP. Auto-swaps on cable change.
 
-The `rslidar` profile includes an explicit `ipv4.routes` entry. Without it, NetworkManager sets `noprefixroute` on the manual address and the kernel never installs a connected route for the LiDAR subnet, so traffic silently falls out the wifi default route instead. The dispatcher's `arping` also pins its source IP with `-s` for the same reason.
+The `rslidar` profile includes an explicit `ipv4.routes` entry. Without it, NetworkManager sets `noprefixroute` on the manual address and the kernel never installs a connected route for the LiDAR subnet, so traffic is silently routed via the wifi default gateway. The dispatcher's `arping` also pins its source IP with `-s` for the same reason.
 
 ### Auto-setup (`config_lidar`)
 
@@ -150,7 +150,7 @@ rslidar_status
 # Read latched liveness Bool
 rslidar_alive
 
-# One-shot kick (stop then start)
+# One-shot restart (stop then start)
 rslidar_restart
 ```
 
@@ -179,7 +179,7 @@ One front-mounted RealSense camera (D43X-series) feeding the Isaac ROS VSLAM nod
 ```bash
 # Inside the Isaac ROS container (use `start_isaac` then `isaac_bash`)
 ros2 launch px4_vslam vslam.launch.py
-# or just:
+# or via alias:
 vslam
 ```
 
@@ -234,7 +234,7 @@ For RViz and Foxglove visualization with this xacro, see [`arid_description/READ
 
 ```bash
 ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765
-# or (inside the container) just:
+# or (inside the container) via alias:
 foxglove_bridge
 ```
 
@@ -299,7 +299,7 @@ The ARK PAB carrier's USB hub can be hardware-reset on demand via the `/reset_us
 
 ```bash
 ros2 service call /reset_usb std_srvs/srv/Trigger '{}'
-# or just:
+# or via alias:
 reset_usb
 ```
 
@@ -344,7 +344,7 @@ rslidar_start    # SetBool(true)  on /rslidar_coordinator/enable
 rslidar_stop     # SetBool(false) on /rslidar_coordinator/enable
 rslidar_status   # Trigger /rslidar_coordinator/status
 rslidar_alive    # Read the latched /rslidar_coordinator/alive Bool (TRANSIENT_LOCAL)
-rslidar_restart  # Trigger /rslidar_coordinator/restart (one-shot kick)
+rslidar_restart  # Trigger /rslidar_coordinator/restart (stop + respawn)
 
 # Smoke test and diagnostics
 local_test       # Run the host-stack smoke test (scripts/local_test.sh)

@@ -15,7 +15,7 @@ lidar:
       min_distance: 0.2
       max_distance: 200
       use_lidar_clock: false               # host ROS time. true requires PTP sync; otherwise stamp is seconds-since-boot and TF lookups fail.
-      dense_points: false                  # NaN points preserved (matches prior config)
+      dense_points: true                   # strip NaN cells at the SDK. Flip to false if any consumer needs the organized 900x96 grid (PCL organized-cloud algos, range-image perception, sensor-health monitor).
       ts_first_point: false                # timestamp = end of scan (ROS convention; matches what fusion stacks expect)
 
       start_angle: 0

@@ -193,7 +193,7 @@ Other sensor families (IMX477, IMX219 variants, OV5693, custom modules) follow t
 
 ## Auto-start on boot
 
-`gst_camera_manager.service` (installed by `setup.sh`) launches the manager node on boot under the `multi-user.target`. Pipelines remain off until explicitly started via SetBool. The service is just the supervisor.
+`gst_camera_manager.service` (installed by `setup.sh`) launches the manager node on boot under the `multi-user.target`. Pipelines remain off until explicitly started via SetBool. The service runs only the supervisor; pipeline subprocesses are spawned on demand.
 
 ---
 

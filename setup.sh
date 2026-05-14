@@ -189,7 +189,8 @@ setup_apt_packages() {
         ros-humble-camera-info-manager \
         ros-humble-compressed-image-transport \
         ros-humble-foxglove-bridge \
-        ros-humble-foxglove-msgs
+        ros-humble-foxglove-msgs \
+        ros-humble-librealsense2
 
     STEPS_RUN+=("apt")
     ok "APT packages installed"
@@ -332,7 +333,7 @@ setup_bashrc() {
         -e '/^[[:space:]]*alias[[:space:]]\+\(reset_usb\|colcon_local\|clean_local\|rosdep_local\|foxglove_bridge\)=/d' \
         -e '/^[[:space:]]*alias[[:space:]]\+cam_down_\(start\|stop\|status\|alive\)=/d' \
         -e '/^[[:space:]]*alias[[:space:]]\+rslidar_\(start\|stop\|status\|alive\|restart\)=/d' \
-        -e '/^[[:space:]]*alias[[:space:]]\+\(lidar_diag\|local_test\|config_lidar\)=/d' \
+        -e '/^[[:space:]]*alias[[:space:]]\+\(lidar_diag\|local_test\|config_lidar\|config_realsense\)=/d' \
         "$BASHRC_FILE"
 
     cat >> "$BASHRC_FILE" << EOF
@@ -370,6 +371,7 @@ alias rslidar_restart='ros2 service call /rslidar_coordinator/restart std_srvs/s
 alias lidar_diag='/bin/bash ${WORKSPACES}/scripts/lidar_diag.sh'
 alias local_test='/bin/bash ${WORKSPACES}/scripts/local_test.sh'
 alias config_lidar='sudo /bin/bash ${WORKSPACES}/scripts/config_lidar.sh'
+alias config_realsense='/bin/bash ${WORKSPACES}/scripts/config_realsense.sh'
 # END ARID SETUP
 EOF
 
@@ -684,6 +686,28 @@ setup_docker() {
 }
 
 ###############################################################################
+# FRONT REALSENSE SERIAL  (best-effort; depends only on the camera being plugged in)
+###############################################################################
+setup_realsense() {
+    step "Front RealSense serial → vslam_config.yaml"
+
+    if ! lsusb -d 8086: 2>/dev/null | grep -qi realsense; then
+        warn "no RealSense on USB; skipping serial auto-detection"
+        warn "after plugging it in, run 'config_realsense' manually"
+        STEPS_SKIPPED+=("realsense")
+        return
+    fi
+
+    if bash "${WORKSPACES}/scripts/config_realsense.sh"; then
+        STEPS_RUN+=("realsense")
+        ok "config_realsense succeeded"
+    else
+        warn "config_realsense failed; run it manually once the issue is resolved"
+        STEPS_SKIPPED+=("realsense")
+    fi
+}
+
+###############################################################################
 # SUMMARY
 ###############################################################################
 print_summary() {
@@ -743,6 +767,7 @@ main() {
     setup_systemd
     setup_ros_workspace
     setup_docker
+    setup_realsense
     print_summary
     prompt_reboot
 }
