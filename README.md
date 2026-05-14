@@ -24,16 +24,16 @@ All output is logged to `log/setup_log_<timestamp>.log`.
 |---|---|
 | **power** | Sets nvpmodel to max power (mode 0); holds critical L4T / kernel packages from apt upgrades |
 | **repos** | Adds ROS, Nvidia Jetson, and Docker APT repos; regenerates NVIDIA CDI config |
-| **apt** | Installs ROS packages, libusb, camera-info-manager, compressed-image-transport, `iputils-arping`, etc. |
+| **apt** | Installs ROS packages, libusb, camera-info-manager, compressed-image-transport, `iputils-arping`, `ros-humble-foxglove-bridge`, `ros-humble-foxglove-msgs` |
 | **px4_deps** | Runs PX4 `Tools/setup/ubuntu.sh` (interactive prompt) to install firmware build deps. **Skipped automatically if `arm-none-eabi-gcc` is already on the system** (i.e. PX4's setup script has run here before) |
 | **git** | Sets git credential cache; fixes script permissions; initializes and updates submodules |
 | **docker_patches** | Copies patched `Dockerfile.arid`, `arid_env.sh`, and `run_dev.sh` into the `isaac_ros_common` submodule; marks them skip-worktree so git ignores local changes |
 | **skip_worktree** | Marks tracked files inside `ros_gst_cameras/gst_camera_manager/config/` and `px4_vslam/config/` as skip-worktree, so local edits (camera serials, calibrations, pipeline tuning) don't appear in `git status` or get pushed by accident |
-| **bashrc** | Rewrites the host `.bashrc` block: `ROS_DOMAIN_ID=23`, workspace path exports, sources `local_ws/install/setup.bash`, adds aliases (`run_isaac`, `colcon_local`, `reset_usb`, `foxglove_bridge`, `cam_down_start`/`stop`/`status`/`alive`, `rslidar_start`/`stop`/`status`/`alive`/`restart`, etc.) |
+| **bashrc** | Rewrites the host `.bashrc` block: `ROS_DOMAIN_ID=23`, workspace path exports, sources `local_ws/install/setup.bash`, adds aliases (`run_isaac`, `colcon_local`, `reset_usb`, `foxglove_bridge`, `cam_down_*`, `rslidar_*`, `lidar_diag`, `local_test`, etc.) |
 | **permissions** | Sudoers rule (uhubctl, gpioset, systemctl, `usb_reset.sh` — all without password); USB + GPIO udev rules; polkit rule for `reset_usb.service`; adds user to `dialout` + `gpio` groups |
 | **uhubctl** | Builds and installs `uhubctl` from source (skips if already installed) |
 | **lidar_sysctl** | Writes `/etc/sysctl.d/99-rslidar.conf` raising `net.core.rmem_max` / `rmem_default` to 25 MiB so the RSAIRY firehose doesn't overflow the kernel UDP queue |
-| **lidar_network** | Creates two NetworkManager connections on `enP8p1s0`: `rslidar` (static `192.168.1.102/24`, priority 10) and `dev` (DHCP, priority 0). Installs `/etc/NetworkManager/dispatcher.d/90-rslidar` — ARPs the LiDAR at `192.168.1.200` for up to 8 s on link-up; falls back to DHCP if no response |
+| **lidar_network** | Creates two NetworkManager connections on `enP8p1s0`: `rslidar` (static `192.168.1.102/24` + explicit `ipv4.routes 192.168.1.0/24` — NM otherwise sets `noprefixroute` and the connected route is missing, so traffic silently falls out wifi) and `dev` (DHCP, priority 0). Installs `/etc/NetworkManager/dispatcher.d/90-rslidar` — ARPs `192.168.1.200` with `-s 192.168.1.102` for up to 8 s on link-up; falls back to DHCP if no response |
 | **systemd** | Copies and enables all systemd services (see [Boot sequence](#boot-sequence) below) |
 | **ros_workspace** | Installs Python deps (pyudev, pyserial, empy); runs `rosdep install`; builds `local_ws` with colcon |
 | **docker** | Each sub-step is independently checked: installs Docker engine if missing, enables the service if not running, configures the NVIDIA container runtime if not registered, adds the user to the `docker` group if not present, installs `docker-buildx-plugin` if missing |
@@ -108,6 +108,10 @@ The SDK reads our config at [`rslidar_coordinator/config/rslidar.yaml`](local_ws
 | DIFOP (device info) port | UDP `7788` |
 
 Setup.sh's `lidar_network` step configures NetworkManager with two profiles on `enP8p1s0` — `rslidar` (static, priority 10) and `dev` (DHCP, priority 0). On link-up an NM dispatcher script probes the LiDAR via ARP for up to 8 s; if it responds, we stay on the static profile; if not, we fall back to DHCP. Result: plug into the LiDAR → ~1 s static. Plug into a router → ~8 s wait, then DHCP. Auto-swap on cable change.
+
+The `rslidar` profile includes an explicit `ipv4.routes "192.168.1.0/24 0.0.0.0"` entry. Without it, NetworkManager sets `noprefixroute` on the address and the kernel never gets a connected route for `192.168.1.0/24` via this NIC — so anything we'd send to the LiDAR silently falls out the wifi default route instead. The dispatcher's `arping` also passes `-s 192.168.1.102` so the request's source IP is always on the LiDAR subnet (defensive belt-and-suspenders).
+
+If the LiDAR doesn't respond at the expected IP, run `lidar_diag` to figure out where it actually is.
 
 ### Start / stop / status
 
@@ -217,6 +221,49 @@ Then connect Foxglove Studio to `ws://<jetson-ip>:8765`.
 
 ---
 
+## Smoke test + diagnostics
+
+Two helper scripts live in [`scripts/`](scripts/) and are wired into the host bashrc as aliases.
+
+### `local_test`
+
+```bash
+local_test
+```
+
+Repeatable smoke test for the host stack. Verbose by design — at each step it prints what's being checked, the raw values it got, why the check matters, and what to do if something fails. Re-runnable any time. Leaves both pipelines stopped at the end. Destructive aliases (`reset_usb`, `clean_local`) are existence-checked only, not actually invoked.
+
+Covers:
+
+- The three host systemd services are active (`arid_description`, `gst_camera_manager`, `rslidar_coordinator`)
+- All host-stack aliases the test cares about are defined and resolve to something runnable (the `cam_down_*`, `rslidar_*`, `foxglove_bridge`, `lidar_diag`, `local_test`, plus the four build/dep ones)
+- `foxglove_bridge` brings up the bridge on port 8765 (launches it if not already running)
+- Full `cam_down` lifecycle: stop → start → topics on the graph → `header.frame_id == bottom_visual_link` → publish rate over 5 s → `/alive` latched True → stop
+- Full `rslidar` lifecycle: stop → start → topics → `/alive` readable → cloud rate (SKIP if LiDAR is off — that's not a software failure) → restart produces a new PID → stop
+- No subprocess leaks left behind
+
+Source: [`scripts/local_test.sh`](scripts/local_test.sh).
+
+### `lidar_diag`
+
+```bash
+lidar_diag         # passes nothing to root; some steps skipped
+sudo lidar_diag    # full diagnostic including passive tcpdump + arp-scan
+```
+
+LiDAR network diagnostic. Walks through:
+
+1. **Link state on `enP8p1s0`** — is the carrier up, what speed/duplex was negotiated.
+2. **Active NM profile** — `rslidar` (good) vs `dev` (the dispatcher gave up and fell back).
+3. **IP + route via the NIC** — confirms `192.168.1.102/24` is assigned AND the kernel has a route to the LiDAR subnet via this interface (the `noprefixroute` gotcha).
+4. **ARP probe at the expected LiDAR IP** — does `192.168.1.200` answer.
+5. **Passive sniff for 5 s** (needs sudo) — `tcpdump` for UDP 6699/7788. A powered LiDAR auto-broadcasts MSOP/DIFOP regardless of host config, so this reveals its actual source IP and the destination it's configured to send to, even if those differ from what we expect.
+6. **Subnet scan with `arp-scan`** (needs sudo) — last resort if passive sniff caught nothing.
+
+Source: [`scripts/lidar_diag.sh`](scripts/lidar_diag.sh).
+
+---
+
 ## USB reset
 
 The ARK PAB carrier's USB hub can be hardware-reset on demand via the `/reset_usb` service:
@@ -269,6 +316,10 @@ rslidar_stop     # SetBool(false) on /rslidar_coordinator/enable
 rslidar_status   # Trigger /rslidar_coordinator/status
 rslidar_alive    # Read the latched /rslidar_coordinator/alive Bool (TRANSIENT_LOCAL)
 rslidar_restart  # Trigger /rslidar_coordinator/restart (one-shot kick)
+
+# Smoke test + diagnostics
+local_test       # Run the host-stack smoke test (scripts/local_test.sh)
+lidar_diag       # Run the LiDAR network diagnostic (scripts/lidar_diag.sh)
 ```
 
 **Inside the container (set by `arid_env.sh`):**

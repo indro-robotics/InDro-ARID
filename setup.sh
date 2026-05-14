@@ -359,6 +359,8 @@ alias rslidar_stop='ros2 service call /rslidar_coordinator/enable std_srvs/srv/S
 alias rslidar_status='ros2 service call /rslidar_coordinator/status std_srvs/srv/Trigger "{}"'
 alias rslidar_alive='ros2 topic echo --once --qos-durability transient_local /rslidar_coordinator/alive'
 alias rslidar_restart='ros2 service call /rslidar_coordinator/restart std_srvs/srv/Trigger "{}"'
+alias lidar_diag='/bin/bash ${WORKSPACES}/scripts/lidar_diag.sh'
+alias local_test='/bin/bash ${WORKSPACES}/scripts/local_test.sh'
 # END ARID SETUP
 EOF
 
