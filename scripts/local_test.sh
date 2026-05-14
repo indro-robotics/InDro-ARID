@@ -22,14 +22,37 @@ RESULTS=()
 # Each flag is cleared by the explicit cleanup once it confirms the resource is gone;
 # anything still set when the EXIT trap fires is therefore a leak from an aborted run.
 BRIDGE_LAUNCHED_BY_US=""
-BRIDGE_LAUNCH_PID=""
 CAM_DOWN_STARTED_BY_US=""
 RSLIDAR_STARTED_BY_US=""
 
+# Bridge cleanup is PID-tracking-free by design. `setsid bash &` returns the
+# setsid wrapper's PID via $!, but setsid forks the actual bash into a new
+# session and exits — so $! is stale within milliseconds. The robust answer
+# is to ignore PIDs and locate the listener by port at teardown time.
+_kill_bridge_on_8765() {
+    local holder parent
+    for _ in 1 2 3 4 5; do
+        holder=$(ss -tlnp 2>/dev/null | grep ':8765 ' | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)
+        [[ -z "$holder" ]] && return 0
+        parent=$(ps -o ppid= -p "$holder" 2>/dev/null | tr -d ' ')
+        [[ "$parent" == "1" ]] && parent=""   # never signal init
+        kill -TERM "$holder" ${parent:+$parent} 2>/dev/null || true
+        sleep 1
+    done
+    holder=$(ss -tlnp 2>/dev/null | grep ':8765 ' | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)
+    if [[ -n "$holder" ]]; then
+        parent=$(ps -o ppid= -p "$holder" 2>/dev/null | tr -d ' ')
+        [[ "$parent" == "1" ]] && parent=""
+        kill -KILL "$holder" ${parent:+$parent} 2>/dev/null || true
+        sleep 1
+    fi
+    ! ss -tlnp 2>/dev/null | grep -q ':8765 '
+}
+
 # Last-resort cleanup on any exit (Ctrl-C, set -e abort, normal end). Silent by design.
 _cleanup_on_exit() {
-    if [[ -n "${BRIDGE_LAUNCHED_BY_US}" && -n "${BRIDGE_LAUNCH_PID}" ]]; then
-        kill -TERM -"${BRIDGE_LAUNCH_PID}" 2>/dev/null || true
+    if [[ -n "${BRIDGE_LAUNCHED_BY_US}" ]]; then
+        _kill_bridge_on_8765 >/dev/null 2>&1 || true
     fi
     if [[ -n "${CAM_DOWN_STARTED_BY_US}" ]]; then
         ros2 service call /gst_camera_manager/cam_down std_srvs/srv/SetBool '{data: false}' \
@@ -175,8 +198,10 @@ if [[ -n "${PORT_OUT}" ]]; then
 else
     note "no bridge running — launching via the foxglove_bridge alias (will be cleaned up in Section 6)"
     # setsid puts the launch in its own process group so Section 6 can killpg the whole tree.
+    # Detach into its own session via setsid; PID tracking is intentionally not
+    # used here — $! would point at the setsid wrapper which exits immediately,
+    # so cleanup locates the bridge by port lookup instead.
     setsid bash -ic 'foxglove_bridge' >/tmp/foxglove_bridge.log 2>&1 < /dev/null &
-    BRIDGE_LAUNCH_PID=$!
     BRIDGE_LAUNCHED_BY_US=1
     LAUNCHED=""
     for _ in 1 2 3 4 5; do
@@ -432,23 +457,13 @@ hdr "Section 6 — Final cleanup"
 
 if [[ -n "${BRIDGE_LAUNCHED_BY_US}" ]]; then
     step "Stop foxglove_bridge launched by this test"
-    what     "SIGTERM the bridge's process group (PGID ${BRIDGE_LAUNCH_PID}), fall back to SIGKILL, verify port 8765 freed."
-    why      "Section 3 launched the bridge in the background. A test that leaves a bridge bound to 8765 prevents the next 'foxglove_bridge' invocation from binding the port."
-    kill -TERM -"${BRIDGE_LAUNCH_PID}" 2>/dev/null || true
-    for _ in 1 2 3 4 5; do
-        sleep 1
-        ss -tlnp 2>/dev/null | grep -q ':8765 ' || break
-    done
-    if ss -tlnp 2>/dev/null | grep -q ':8765 '; then
-        note "still listening after 5 s — escalating to SIGKILL"
-        kill -KILL -"${BRIDGE_LAUNCH_PID}" 2>/dev/null || true
-        sleep 1
-    fi
-    if ss -tlnp 2>/dev/null | grep -q ':8765 '; then
-        fail "could not free port 8765 (foxglove_bridge still holding it)"
-    else
+    what     "Look up whichever PID is bound to TCP 8765, SIGTERM it plus its parent (the ros2 launch wrapper), escalate to SIGKILL if the port doesn't free within 5 s."
+    why      "Section 3 launched the bridge in the background. A test that leaves a bridge bound to 8765 prevents the next 'foxglove_bridge' invocation from binding the port. PID tracking through setsid is unreliable, so cleanup queries the kernel directly."
+    if _kill_bridge_on_8765; then
         pass "bridge stopped, port 8765 free"
         BRIDGE_LAUNCHED_BY_US=""   # tell the EXIT trap there's nothing left to do
+    else
+        fail "could not free port 8765 (foxglove_bridge still holding it)"
     fi
 else
     step "foxglove_bridge"
