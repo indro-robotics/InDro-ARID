@@ -13,3 +13,6 @@ workspaces/log/
 # Ignore camera calibration venv and output (auto-recreated by camera_calibrate.sh)
 local_ws/auxiliary/camera_calibration/calib_env/
 local_ws/auxiliary/camera_calibration/*_calibration.yaml
+
+# Local machine state (auto-detected LiDAR config, etc. — written by scripts/config_lidar.sh)
+.lidar/

@@ -1,9 +1,6 @@
 #!/bin/bash
-# ARID Drone Workspace Setup
+# ARID drone workspace setup. Every step is idempotent. Safe to re-run.
 # Usage: ./setup.sh [--help]
-# Every step is idempotent — runs only the install/config work the system
-# doesn't already have. Safe to re-run after a `git pull`, after a reboot,
-# or on a freshly-flashed Jetson.
 set -euo pipefail
 
 ###############################################################################
@@ -49,7 +46,8 @@ POLKIT_RULE_FILE="/etc/polkit-1/rules.d/10-reset-usb.rules"
 SUDOERS_FILE="/etc/sudoers.d/${USERNAME}_systemctl"
 REPO_ROOT="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
 
-# RSAIRY LiDAR network
+# RSAIRY fallback values; scripts/config_lidar.sh overwrites these from a
+# live sniff if a LiDAR is reachable at setup time.
 RSLIDAR_NIC="enP8p1s0"
 RSLIDAR_HOST_IP="192.168.1.102"
 RSLIDAR_LIDAR_IP="192.168.1.200"
@@ -209,9 +207,7 @@ setup_px4_deps() {
         return
     fi
 
-    # The ARM-none-eabi GCC is the canonical PX4 firmware toolchain — its
-    # presence is a reliable signal that PX4's Tools/setup/ubuntu.sh has
-    # already run on this system.
+    # arm-none-eabi-gcc presence indicates PX4 Tools/setup/ubuntu.sh has run.
     if command -v arm-none-eabi-gcc >/dev/null 2>&1; then
         skip "PX4 toolchain already present (arm-none-eabi-gcc)"
         STEPS_SKIPPED+=("px4_deps")
@@ -272,7 +268,7 @@ setup_docker_patches() {
     cp -f "${ISAAC_ROS_WS}/container_scripts/arid_env.sh" \
         "${ISAAC_ROS_WS}/src/isaac_ros_common/docker/scripts/"
 
-    # Protect patched files in isaac_ros_common submodule from git modification
+    # skip-worktree hides patches from isaac_ros_common submodule git tracking.
     git -C "${ISAAC_ROS_WS}/src/isaac_ros_common" update-index --skip-worktree \
         scripts/.isaac_ros_common-config \
         docker/Dockerfile.arid \
@@ -285,14 +281,12 @@ setup_docker_patches() {
 
 ###############################################################################
 # CONFIG FILE PROTECTION (skip-worktree)
-# Marks tracked files inside per-deployment config directories as skip-worktree
-# so local edits (camera serials, calibrations, pipeline tuning) don't show up
-# as `git status` modifications and can't be accidentally pushed.
+# Per-deployment configs (camera serials, calibrations, etc.) get skip-worktree
+# so local edits don't show in git status and can't be pushed.
 ###############################################################################
 setup_skip_worktree() {
     step "Protecting per-deployment config files"
 
-    # Repo-relative paths. Add any new per-deployment config dirs here.
     local protected_dirs=(
         "local_ws/src/ros_gst_cameras/gst_camera_manager/config"
         "isaac_ros-dev/src/px4_vslam/config"
@@ -318,14 +312,28 @@ setup_skip_worktree() {
 
 ###############################################################################
 # .BASHRC
-# Always removes and rewrites the ARID block so patch runs pick up
-# any alias or export changes without leaving stale duplicates.
+# Rewrites the ARID block on every run so alias/export changes propagate
+# without leaving stale duplicates.
 ###############################################################################
 setup_bashrc() {
     step ".bashrc environment"
 
-    # Remove existing block (idempotent)
-    sed -i '/# BEGIN ARID SETUP/,/# END ARID SETUP/d' "$BASHRC_FILE"
+    # Strip the marker block AND any stray managed lines outside it (hand-edits).
+    # Patterns below must stay in sync with the heredoc.
+    sed -i \
+        -e '/# BEGIN ARID SETUP/,/# END ARID SETUP/d' \
+        -e '/^[[:space:]]*source[[:space:]].*local_ws\/install\/setup\.bash/d' \
+        -e '/^[[:space:]]*export[[:space:]]\+ROS_DOMAIN_ID=/d' \
+        -e '/^[[:space:]]*export[[:space:]]\+GST_PLUGIN_PATH=/d' \
+        -e '/^[[:space:]]*export[[:space:]]\+WORKSPACES=/d' \
+        -e '/^[[:space:]]*export[[:space:]]\+LOCAL_WS=/d' \
+        -e '/^[[:space:]]*export[[:space:]]\+ISAAC_ROS_WS=/d' \
+        -e '/^[[:space:]]*alias[[:space:]]\+\(run_isaac\|build_isaac\|start_isaac\|stop_isaac\|isaac_bash\)=/d' \
+        -e '/^[[:space:]]*alias[[:space:]]\+\(reset_usb\|colcon_local\|clean_local\|rosdep_local\|foxglove_bridge\)=/d' \
+        -e '/^[[:space:]]*alias[[:space:]]\+cam_down_\(start\|stop\|status\|alive\)=/d' \
+        -e '/^[[:space:]]*alias[[:space:]]\+rslidar_\(start\|stop\|status\|alive\|restart\)=/d' \
+        -e '/^[[:space:]]*alias[[:space:]]\+\(lidar_diag\|local_test\|config_lidar\)=/d' \
+        "$BASHRC_FILE"
 
     cat >> "$BASHRC_FILE" << EOF
 # BEGIN ARID SETUP
@@ -361,6 +369,7 @@ alias rslidar_alive='ros2 topic echo --once --qos-durability transient_local /rs
 alias rslidar_restart='ros2 service call /rslidar_coordinator/restart std_srvs/srv/Trigger "{}"'
 alias lidar_diag='/bin/bash ${WORKSPACES}/scripts/lidar_diag.sh'
 alias local_test='/bin/bash ${WORKSPACES}/scripts/local_test.sh'
+alias config_lidar='sudo /bin/bash ${WORKSPACES}/scripts/config_lidar.sh'
 # END ARID SETUP
 EOF
 
@@ -374,7 +383,6 @@ EOF
 setup_permissions() {
     step "Sudoers, udev, polkit, groups"
 
-    # Sudoers — always write (idempotent, fixed content)
     sudo tee "$SUDOERS_FILE" > /dev/null << EOF
 ${USERNAME} ALL=(ALL) NOPASSWD: /usr/sbin/uhubctl, /usr/bin/gpioset, /bin/systemctl start *, /bin/systemctl stop *, /bin/systemctl restart *, /bin/systemctl kill *, ${WORKSPACES}/scripts/usb_reset.sh
 EOF
@@ -451,14 +459,11 @@ setup_lidar_sysctl() {
     step "RSAIRY LiDAR sysctl (UDP rmem)"
 
     sudo tee "${RSLIDAR_SYSCTL}" > /dev/null << 'EOF'
-# Raise UDP receive-buffer ceilings so the RSAIRY firehose (~32 MB/s burst)
-# doesn't overflow the kernel queue during multi-packet arrivals.
+# UDP rmem ceiling for RSAIRY burst (~32 MB/s). Default ~200KB drops bursts.
 net.core.rmem_max=26214400
 net.core.rmem_default=26214400
 EOF
-    # Load just our file. (`sysctl --system` would also re-apply every other
-    # drop-in on the system, which on Jetson causes harmless "Invalid argument"
-    # noise from kernel knobs Ubuntu defaults set that L4T doesn't expose.)
+    # `-p file` not `--system`: avoids reapplying unrelated L4T-incompatible drop-ins.
     sudo sysctl -p "${RSLIDAR_SYSCTL}" >/dev/null
 
     STEPS_RUN+=("lidar_sysctl")
@@ -471,14 +476,13 @@ EOF
 setup_lidar_network() {
     step "RSAIRY LiDAR network (NetworkManager)"
 
-    # Idempotent: delete our own connections first
     for con_name in rslidar dev; do
         if nmcli -t -f NAME connection show 2>/dev/null | grep -qxF "$con_name"; then
             nmcli connection delete "$con_name" >/dev/null
         fi
     done
 
-    # Sweep any leftover auto-created profile bound to our NIC (e.g. "Wired connection 1")
+    # Sweep stray auto-profiles bound to the NIC (e.g. "Wired connection 1").
     while IFS=: read -r name dev; do
         [[ "$dev" == "${RSLIDAR_NIC}" ]] || continue
         case "$name" in
@@ -487,15 +491,10 @@ setup_lidar_network() {
         esac
     done < <(nmcli -t -f NAME,DEVICE connection show)
 
-    # Static profile — autoconnect-priority 10 (NM activates this first on link-up;
-    # static IPs activate instantly so the LiDAR path is sub-second).
-    #
-    # NOTE: NetworkManager assigns the manual address with the IFA_F_NOPREFIXROUTE
-    # flag, which suppresses the kernel's auto-created connected-route. Without an
-    # explicit ipv4.routes entry, the kernel has no route to 192.168.1.0/24 via
-    # this NIC, so LiDAR-bound traffic silently falls out the default route (wifi)
-    # and ARP probes use the wrong source IP. Adding the route explicitly fixes
-    # both problems.
+    # priority 10 ⇒ NM activates this before DHCP fallback on link-up.
+    # ipv4.routes is required: NM sets IFA_F_NOPREFIXROUTE on manual addresses,
+    # so the kernel's connected-route is suppressed and LiDAR traffic would
+    # otherwise route out wifi via the default gateway.
     nmcli connection add type ethernet con-name rslidar ifname "${RSLIDAR_NIC}" \
         ipv4.method manual \
         ipv4.addresses "${RSLIDAR_HOST_IP}/24" \
@@ -503,18 +502,17 @@ setup_lidar_network() {
         autoconnect yes \
         connection.autoconnect-priority 10 >/dev/null
 
-    # DHCP fallback — used when the dispatcher confirms no LiDAR is present.
+    # DHCP fallback for when the dispatcher decides no LiDAR is present.
     nmcli connection add type ethernet con-name dev ifname "${RSLIDAR_NIC}" \
         ipv4.method auto \
         ipv4.dhcp-timeout 8 \
         autoconnect yes \
         connection.autoconnect-priority 0 >/dev/null
 
-    # Dispatcher: ARP-probe the LiDAR after 'rslidar' activates; if no response
-    # within ~8 s, fall back to DHCP. Runs as root (dispatcher always does).
+    # Dispatcher: ARP-probe the LiDAR on rslidar-up; fall back to DHCP after 8s.
     sudo tee "${RSLIDAR_DISPATCHER}" > /dev/null << EOL
 #!/bin/bash
-# Installed by setup.sh — switches 'rslidar' static -> 'dev' DHCP if no LiDAR responds.
+# Installed by setup.sh. Switches 'rslidar' static -> 'dev' DHCP on no-response.
 IFACE="\$1"
 ACTION="\$2"
 
@@ -524,10 +522,7 @@ ACTION="\$2"
 ACTIVE=\$(nmcli -t -f NAME connection show --active 2>/dev/null | grep -xE 'rslidar|dev' | head -1)
 [[ "\$ACTIVE" != "rslidar" ]] && exit 0
 
-# ~8 s of probing — gives the LiDAR time to boot before we give up.
-# -s pins the ARP source IP to our static address. Without it the kernel may
-# pick a different interface's IP as source (e.g. wifi) for L3 reasons, and
-# the LiDAR will silently drop ARP requests from a foreign-subnet source.
+# 8s covers cold-boot LiDAR; -s pins ARP source IP (kernel otherwise picks wifi).
 for _ in 1 2 3 4 5 6 7 8; do
     if arping -c 1 -w 1 -s ${RSLIDAR_HOST_IP} -I "\$IFACE" ${RSLIDAR_LIDAR_IP} >/dev/null 2>&1; then
         logger -t rslidar-net "LiDAR detected at ${RSLIDAR_LIDAR_IP}; staying on static."
@@ -543,7 +538,21 @@ EOL
     sudo chown root:root "${RSLIDAR_DISPATCHER}"
 
     STEPS_RUN+=("lidar_network")
-    ok "NM: 'rslidar' (static ${RSLIDAR_HOST_IP}/24) + 'dev' (DHCP) + dispatcher installed"
+    ok "NM: 'rslidar' (static ${RSLIDAR_HOST_IP}/24) + 'dev' (DHCP) + dispatcher installed (fallback values)"
+
+    # Live sniff overwrites fallback values when a LiDAR is reachable.
+    if ip link show "${RSLIDAR_NIC}" 2>/dev/null | grep -qE 'LOWER_UP'; then
+        ok "carrier on ${RSLIDAR_NIC} is UP — running config_lidar to auto-detect actual LiDAR IPs..."
+        if sudo bash "${WORKSPACES}/scripts/config_lidar.sh"; then
+            ok "config_lidar succeeded — rslidar configured against discovered LiDAR"
+        else
+            warn "config_lidar didn't detect a LiDAR. Fallback values remain active."
+            warn "Once the LiDAR is plugged in and powered, run 'config_lidar' manually."
+        fi
+    else
+        warn "no carrier on ${RSLIDAR_NIC} — skipping auto-detect."
+        warn "After the LiDAR is plugged in and powered, run 'config_lidar' to auto-configure."
+    fi
 }
 
 ###############################################################################
@@ -571,9 +580,7 @@ setup_systemd() {
 ###############################################################################
 # PYTHON PACKAGES
 ###############################################################################
-# Detect whether pip supports --break-system-packages (added in pip 23.0.1).
-# Newer Ubuntu / PEP 668-enforced systems require the flag; older pips reject
-# it as "no such option". Probed once at script init.
+# --break-system-packages: required on PEP 668 systems, unknown to pip < 23.0.1.
 PIP_BREAK_FLAG=""
 if python3 -m pip install --help 2>/dev/null | grep -q -- '--break-system-packages'; then
     PIP_BREAK_FLAG="--break-system-packages"
@@ -636,7 +643,6 @@ setup_ros_workspace() {
 setup_docker() {
     step "Docker"
 
-    # 1) Docker engine binary
     if ! command -v docker >/dev/null 2>&1; then
         curl https://get.docker.com | sh -s -- --version 29.2.1
         ok "Docker engine installed"
@@ -644,7 +650,6 @@ setup_docker() {
         skip "Docker binary already present"
     fi
 
-    # 2) Docker service enabled + running
     if ! systemctl is-enabled --quiet docker.service 2>/dev/null \
        || ! systemctl is-active --quiet docker.service 2>/dev/null; then
         sudo systemctl --now enable docker
@@ -653,7 +658,6 @@ setup_docker() {
         skip "Docker service already enabled and active"
     fi
 
-    # 3) NVIDIA container runtime registered + restart if newly configured
     if ! docker info 2>/dev/null | grep -q 'nvidia'; then
         sudo nvidia-ctk runtime configure --runtime=docker
         sudo systemctl restart docker
@@ -662,7 +666,6 @@ setup_docker() {
         skip "NVIDIA container runtime already configured"
     fi
 
-    # 4) User in docker group
     if id -nG "${USERNAME}" 2>/dev/null | grep -qw docker; then
         skip "${USERNAME} already in docker group"
     else
@@ -670,7 +673,6 @@ setup_docker() {
         ok "${USERNAME} added to docker group (log out + back in to take effect)"
     fi
 
-    # 5) docker-buildx-plugin
     if dpkg -s docker-buildx-plugin >/dev/null 2>&1; then
         skip "docker-buildx-plugin already installed"
     else

@@ -1,10 +1,5 @@
-"""Supervisor for the RoboSense RSAIRY LiDAR.
-
-Manages an rslidar_sdk_node child process via SetBool/Trigger services and
-publishes a latched /alive Bool based on PointCloud2 frame flow.
-
-Idle at boot: the SDK subprocess does not spawn until /rslidar_coordinator/enable
-is called with data=true.
+"""Supervisor for rslidar_sdk_node. SetBool/Trigger services control spawn;
+latched /alive Bool tracks PointCloud2 frame flow. Idle until enable=true.
 """
 
 import os
@@ -45,7 +40,7 @@ class RslidarCoordinator(Node):
         self.config_path = os.path.join(share_dir, 'config', 'rslidar.yaml')
 
         self.proc: subprocess.Popen | None = None
-        self.proc_pgid: int | None = None  # captured at spawn (setsid → pgid == pid)
+        self.proc_pgid: int | None = None  # setsid → pgid == pid
         self.last_frame_time: float | None = None
         self.alive_state = False
 
@@ -126,40 +121,28 @@ class RslidarCoordinator(Node):
             '--ros-args', '-p', f'config_path:={self.config_path}',
         ]
         try:
-            # New session/process group so we can later signal the whole chain
-            # (ros2 wrapper + rslidar_sdk_node) via killpg, even if the wrapper
-            # doesn't forward SIGTERM to its child.
+            # setsid: new process group so SIGTERM reaches the SDK binary
+            # even after the ros2 wrapper exits and the pid is reaped.
             self.proc = subprocess.Popen(cmd, preexec_fn=os.setsid)
         except Exception as e:
             self.proc = None
             self.proc_pgid = None
             return False, f'spawn failed: {e}'
 
-        # setsid in the child makes pgid == child pid; cache so we can still
-        # signal the group after the immediate child (ros2 wrapper) exits.
         self.proc_pgid = self.proc.pid
-        # Startup grace: first alive_threshold seconds after spawn don't count as stalled.
+        # Startup grace: first alive_threshold seconds don't count as stalled.
         self.last_frame_time = time.monotonic()
         self.get_logger().info(f'Spawned {SDK_EXEC} (pid={self.proc.pid}, pgid={self.proc_pgid})')
         return True, f'started (pid={self.proc.pid})'
 
     def _wait_pgroup_empty(self, pgid: int, timeout: float) -> bool:
-        """Poll a process group until it contains no live processes.
+        """Block until killpg(pgid, 0) raises ProcessLookupError or timeout.
 
-        Returns True if the group drained within `timeout` seconds, False
-        otherwise. Uses signal 0 (existence check, no signal delivered) —
-        raises ProcessLookupError once no process in the group remains.
-
-        Note: zombie processes still count as group members for `killpg(0)`
-        purposes until their parent wait()s on them. The immediate child
-        (the `ros2 run` wrapper) becomes a zombie under THIS coordinator
-        when it exits, so we must poll `self.proc.poll()` inside the loop —
-        that's what reaps it. Without that, the group never appears empty
-        while the zombie wrapper lingers.
+        poll() inside the loop reaps the zombie ros2 wrapper; without it,
+        killpg(0) treats the zombie as a live group member forever.
         """
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            # Reap our direct child if it has terminated (non-blocking).
             if self.proc is not None:
                 self.proc.poll()
             try:
@@ -181,15 +164,12 @@ class RslidarCoordinator(Node):
         pgid = self.proc_pgid if self.proc_pgid is not None else pid
         self.get_logger().info(f'Terminating {SDK_EXEC} (pid={pid}, pgid={pgid})')
 
-        # 1) SIGTERM the whole process group (ros2 wrapper + forked binary).
         try:
             os.killpg(pgid, signal.SIGTERM)
         except ProcessLookupError:
-            pass  # group already empty — fall through to cleanup
+            pass
 
-        # 2) Wait for the WHOLE GROUP to drain, not just self.proc. The wrapper
-        #    exits quickly on SIGTERM, but rslidar_sdk_node may take a couple of
-        #    seconds to acknowledge if it's mid-loop in ERRCODE_MSOPTIMEOUT.
+        # Wait for the whole group; SDK binary may stall in ERRCODE_MSOPTIMEOUT.
         drained = self._wait_pgroup_empty(pgid, self.terminate_grace)
         if not drained:
             self.get_logger().warn(
@@ -211,12 +191,11 @@ class RslidarCoordinator(Node):
                 self._publish_alive(False)
                 return False, 'failed to terminate (group still alive)'
 
-        # 3) Reap the direct child to clean up its zombie entry (group is empty
-        #    by now, but the kernel still holds the exit status until wait()).
+        # Reap exit status; group is gone but kernel still holds it.
         try:
             self.proc.wait(timeout=1.0)
         except subprocess.TimeoutExpired:
-            pass  # group is gone; zombie will be reaped by init eventually
+            pass
 
         self.proc = None
         self.proc_pgid = None
@@ -257,8 +236,7 @@ def main(args=None):
     rclpy.init(args=args)
     node = RslidarCoordinator()
 
-    # Convert SIGTERM (from systemd stop) into KeyboardInterrupt so the finally
-    # block runs and we terminate the SDK subprocess cleanly.
+    # SIGTERM → KeyboardInterrupt so the finally block runs on systemd stop.
     signal.signal(signal.SIGTERM, _sigterm_handler)
 
     try:

@@ -1,17 +1,8 @@
 #!/bin/bash
-# local_test.sh — repeatable, verbose smoke test for the host-side local_ws stack.
-#
-# Verifies:
-#   - host systemd services are active
-#   - non-destructive bash aliases resolve to existing commands/targets
-#   - foxglove_bridge is reachable on port 8765
-#   - cam_down full lifecycle (stop→start→topics→frame_id→Hz→alive→stop)
-#   - rslidar full lifecycle (stop→start→topics→[cloud flow]→restart→stop)
-#
-# Verbose-by-design: each test prints WHAT it's checking, the RAW result it got,
-# WHY the check matters, and (when applicable) WHAT TO DO. Re-runnable. Leaves
-# both pipelines STOPPED at exit. Destructive aliases (reset_usb, clean_local)
-# are existence-checked only, NOT invoked.
+# Smoke test for host-side local_ws stack: systemd services, aliases,
+# foxglove_bridge socket, cam_down lifecycle, rslidar lifecycle.
+# Re-runnable. Leaves both pipelines STOPPED. Destructive aliases
+# (reset_usb, clean_local) are existence-checked only, never invoked.
 
 set -u
 
@@ -38,7 +29,7 @@ skip() { echo -e "${YELLOW}RESULT:  [SKIP]  $*${NC}"; SKIP=$((SKIP+1)); RESULTS+
 fix()  { echo -e "${CYAN}FIX:${NC}     $*"; }
 note() { echo -e "         $*"; }
 
-# Source ROS if not already (e.g. when invoked from a non-interactive shell)
+# Source ROS for non-interactive invocations.
 if [[ -z "${ROS_DISTRO:-}" ]]; then
     [[ -f /opt/ros/humble/setup.bash ]] && source /opt/ros/humble/setup.bash
     [[ -f /home/jetson/workspaces/local_ws/install/setup.bash ]] && \
@@ -47,10 +38,10 @@ fi
 export ROS_DOMAIN_ID=23
 
 # ───────────────── helpers ─────────────────
-# Invoke through interactive bash so the ARID-block aliases are expanded.
+# Interactive bash so ARID-block aliases expand.
 ialias() { bash -ic "$*" 2>&1 | grep -v 'job control'; }
 
-# Count messages on a topic over a fixed wall-time window (BEST_EFFORT QoS).
+# Count BEST_EFFORT messages over a wall-time window.
 count_msgs() {
     local topic="$1" win="$2"
     timeout "$win" ros2 topic echo --no-arr --qos-reliability best_effort "$topic" 2>/dev/null \
