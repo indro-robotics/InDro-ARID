@@ -1,5 +1,5 @@
 [Unit]
-Description=RSLiDAR Coordinator — supervisor for the RoboSense RSAIRY (idle at boot; SetBool to start)
+Description=RSLiDAR Coordinator - supervisor for the RoboSense RSAIRY (idle at boot; SetBool to start)
 Wants=network-online.target
 After=network-online.target
 After=systemd-user-sessions.service

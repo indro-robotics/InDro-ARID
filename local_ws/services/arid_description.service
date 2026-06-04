@@ -1,5 +1,5 @@
 [Unit]
-Description=ARID Robot Description — robot_state_publisher for the ARID drone xacro
+Description=ARID Robot Description - robot_state_publisher for the ARID drone xacro
 Wants=network-online.target
 After=network-online.target
 After=systemd-user-sessions.service

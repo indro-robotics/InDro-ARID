@@ -78,13 +78,6 @@ class GstCameraManager(Node):
         self.process_lock      = Lock()
 
         self.launch_env = os.environ.copy()
-        # Aravis is built from source; ensure the GStreamer plugin is always found
-        # regardless of whether GST_PLUGIN_PATH is set in the calling shell.
-        aravis_gst = '/usr/local/lib/aarch64-linux-gnu/gstreamer-1.0'
-        existing = self.launch_env.get('GST_PLUGIN_PATH', '')
-        self.launch_env['GST_PLUGIN_PATH'] = (
-            aravis_gst + ':' + existing if existing else aravis_gst
-        )
 
         pkg_share = Path(get_package_share_directory('gst_camera_manager'))
         self.log_root   = pkg_share / 'logs'
@@ -234,7 +227,7 @@ class GstCameraManager(Node):
         calib_url = 'file://' + str(self.calib_root / (calib + '.yaml'))
 
         # Escape inner double-quotes so the shell doesn't split the pipeline string
-        # when it contains features="..." (e.g. aravissrc features="PixelFormat=Mono8 ...")
+        # when it contains attribute strings like `format="GRAY8"` mid-pipeline.
         pipeline_escaped = pipeline.replace('"', '\\"')
 
         cmd = (

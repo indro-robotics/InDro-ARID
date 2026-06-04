@@ -8,10 +8,11 @@ End-to-end repository for provisioning, building, and operating a deployed ARID.
 - **Robot description** (`arid_description`). URDF / xacro and meshes for the airframe and sensor frames. `robot_state_publisher` (systemd-managed) publishes `/robot_description` (latched) and `/tf_static` on boot.
 - **CSI camera stack** (`ros_gst_cameras`). `gst_cam_node` (C++) wraps a GStreamer pipeline; `gst_camera_manager` (Python) supervises it, exposes `SetBool` start/stop services plus `status` / `status_all` / `stop_all` Triggers, and runs a frame-flow watchdog publishing a latched `Bool` per pipeline. Currently configured for the downward IMX219 (`cam_down`).
 - **RSAIRY LiDAR** (`rslidar_coordinator`). Supervisor for the RoboSense RSAIRY SDK. `SetBool` / `Trigger` services, latched `alive` Bool, process-group teardown that survives the SDK's `ERRCODE_MSOPTIMEOUT` retry loop, and a NetworkManager dispatcher that auto-configures the LiDAR Ethernet link with DHCP fallback.
-- **Visual SLAM** (`px4_vslam`, `px4_vslam_reactor`). NVIDIA Isaac cuVSLAM against the front Intel RealSense (D43X-series IR stereo), bridged into PX4 visual odometry via `vio_transform` (FLU → FRD). The reactor gates pose jumps and retries `SetSlamPose` on misalignment.
+- **Visual SLAM** (`px4_vslam`, `px4_vslam_reactor`, `vslam_supervisor`). NVIDIA Isaac cuVSLAM against the front Intel RealSense (D43X-series IR stereo), bridged into PX4 visual odometry via `vio_transform` (FLU to FRD). The reactor gates pose jumps and retries `SetSlamPose` on misalignment. The supervisor hosts a `SetBool` lifecycle service (`/vslam_supervisor/vslam_enable`) that spawns and stops the VSLAM launch as a managed subprocess with a landed-state safety gate. Toggle on or off from any terminal with the `initialize` / `deinitialize` aliases (mirrored on host and container).
 - **PX4 firmware**. InDro fork (`local_ws/auxiliary/PX4-Autopilot`, branch `PX4-InDro`) with the `4025_arid_quad_v1_1` airframe. Flashable prebuilt artifacts in `local_ws/auxiliary/PX4_prebuilt/` for FMU bring-up without a host build environment.
 - **USB recovery** (`reset_ark_usb`). ROS service hosting `/reset_usb` (Trigger). On call, the systemd one-shot power-cycles the ARK PAB USB hub via `uhubctl` + GPIO 85.
-- **Host diagnostics**. `lidar_diag` (LiDAR network walk-through), `local_test` (host-stack lifecycle smoke test), `config_lidar` (LiDAR IP auto-detect + NM profile rewrite), `config_realsense` (front RealSense serial auto-detect into `vslam_config.yaml`).
+- **Host diagnostics**. `lidar_diag` (LiDAR network walk-through), `local_test` (host-stack lifecycle smoke test), `config_lidar` (LiDAR IP auto-detect + NM profile rewrite), `config_realsense` (front RealSense serial auto-detect into `vslam_config.yaml`), `ver_cv_cams` (live `cam_down` feed in a cv2 window over NoMachine).
+- **Host helpers**. `wifi` (interactive NetworkManager Wi-Fi join, scan-and-select or hidden-SSID), `update_submods` (submodule sync + pin verification, used by `setup.sh` and as a developer tool with `--update`), `initialize` / `deinitialize` (toggle VSLAM via the supervisor; survive terminal disconnect because the supervisor runs as a host-managed systemd service that `docker exec`s into the container).
 - **Visualisation**. apt-installed Foxglove bridge on both host and container, configured to listen on TCP 8765.
 
 > **ROS_DOMAIN_ID = 23** (non-standard). The default ROS 2 domain is 0; ARID systems run on domain 23 to isolate from other ROS networks on the same LAN. This is exported by the host `.bashrc` and inside the Isaac container via `arid_env.sh`. Any tool that needs to see the graph (Foxglove, `ros2 topic list` from another machine) must be set to **`ROS_DOMAIN_ID=23`** as well, or it will see nothing.
@@ -21,32 +22,70 @@ End-to-end repository for provisioning, building, and operating a deployed ARID.
 ## setup.sh
 
 ```
-./setup.sh
+./setup.sh              # interactive menu (full setup or individual tools)
+./setup.sh --full       # questionnaire, then full setup unattended
+./setup.sh --resume     # post-reboot continuation (smoke test + camera verification)
+./setup.sh --help
 ```
 
 Every step is **idempotent** and detects its current state from the system: installed packages, existing config files, running services, group memberships. Safe to re-run any time, after a `git pull`, after a reboot, on a freshly-flashed Jetson. The script installs and configures only what is missing.
+
+With no arguments, an interactive single-keypress menu opens:
+
+| Option | Action |
+|---|---|
+| **1** | Full setup (questionnaire then the chain below) |
+| **2** | Smoke test (`local_test.sh`) |
+| **3** | RealSense serial assignment (`config_realsense.sh`) |
+| **4** | Camera feed check (`verify_cv_cams.sh`) |
+| **5** | LiDAR network diagnostic (`lidar_diag.sh`) |
+| **6** | LiDAR IP auto-detect (`config_lidar.sh`) |
+| **7** | Wi-Fi connect (`wifi.sh`) |
+| **8** | Camera calibration (auto flow, `camera_calibration_auto/camera_calibrate.sh`) |
+| **9** | Camera focus (Foxglove bridge + live `cam_down` feed) |
+| **b** | Build the Isaac container |
+| **c** | Colcon-build the in-container workspace and bring `vslam_supervisor.service` up. Refuses to run if the Isaac container is not currently running (`start_isaac` first, or `sudo systemctl start start_isaac_docker.service`). |
+| **u** | Uninstall — stop and remove every systemd unit installed by setup.sh, the rslidar NM profiles + dispatcher + sysctl drop-in, the sudoers / polkit / udev rules, the ARID block in `~/.bashrc`, every setup.sh sentinel, the docker patches inside `isaac_ros_common`, and the Isaac container + image. Strict explicit confirmation at the prompt. Never runs as part of the full chain. The repo clone, hostname, password, group memberships, apt-mark holds, ROS 2 Humble, JetPack, and the Docker engine itself are left in place. |
+| **q** | Quit |
+
+`--full` front-loads a questionnaire (hostname, password, Wi-Fi, NoMachine, PX4 toolchain, RealSense assignment, camera verification, Isaac build, reboot) and then runs every step without further prompts. `--resume` is invoked automatically by a hook in the host `.bashrc` on the next interactive shell after `setup.sh` armed `~/.arid_resume_setup` (i.e. after a reboot): it waits for boot-enabled units, runs camera verification, picks up a queued Isaac container build, and finishes with the smoke test.
 
 All output is logged to `log/setup_log_<timestamp>.log`.
 
 ### Steps (in order)
 
+Run in `--full` mode the steps execute in the order below. From the interactive menu, option **1) Full setup** triggers the same chain.
+
 | Step | What it does |
 |---|---|
+| **preflight** | Refuses to run as root. Checks `git`. Aborts if any submodule is uninitialized. |
+| **collect_answers** | Questionnaire (hostname, password, Wi-Fi, NoMachine, PX4 toolchain, RealSense assignment, camera feed verification, Isaac build, end-of-setup reboot). Records `PRE_*` answers so the remaining steps run without prompting. |
+| **first_boot** | One-time hostname / password set. Writes `~/.arid_provisioned` so re-runs skip it. |
 | **power** | Sets nvpmodel to max power (mode 0). Holds critical L4T and kernel packages from apt upgrades. |
+| **disable_updates** | Disables `unattended-upgrades.service` and the apt-daily timers so a deployed drone does not pull surprise package changes. |
+| **enable_clock_sync** | Enables `systemd-timesyncd.service` so PX4 timestamps remain monotonically correct after a power cycle. |
+| **ensure_wifi** | Calls `scripts/wifi.sh` to join the network captured in the questionnaire (or skips if declined). |
+| **nomachine** | Detects an existing NoMachine install; prints a manual-install hint when the arm64 `.deb` needs to be downloaded. |
 | **repos** | Adds ROS, NVIDIA Jetson, and Docker APT repos. Regenerates NVIDIA CDI config. |
-| **apt** | Installs ROS packages, libusb, camera-info-manager, compressed-image-transport, `iputils-arping`, `ros-humble-foxglove-bridge`, `ros-humble-foxglove-msgs`. |
-| **px4_deps** | Runs PX4 `Tools/setup/ubuntu.sh` (interactive prompt) to install firmware build deps. **Skipped automatically if `arm-none-eabi-gcc` is already on the system** (PX4's setup script has run here before). |
-| **git** | Sets git credential cache. Fixes script permissions. Initializes and updates submodules. |
+| **apt** | Installs ROS packages, libusb, camera-info-manager, compressed-image-transport, `iputils-arping`, `tcpdump`, `arp-scan`, `ros-humble-foxglove-bridge`, `ros-humble-foxglove-msgs`, `ros-humble-librealsense2`. |
+| **px4_deps** | Runs PX4 `Tools/setup/ubuntu.sh` to install firmware build deps. Skipped automatically if `arm-none-eabi-gcc` is already on the system. |
+| **git** | Sets git credential cache. Fixes script permissions. Runs `scripts/update_submods.sh` to sync every submodule to its pinned commit and verify the pins against the upstream tags / branches. |
 | **docker_patches** | Copies patched `Dockerfile.arid`, `arid_env.sh`, and `run_dev.sh` into the `isaac_ros_common` submodule. Marks them skip-worktree so git ignores local changes. |
-| **skip_worktree** | Marks tracked files inside `ros_gst_cameras/gst_camera_manager/config/` and `px4_vslam/config/` as skip-worktree, so local edits (camera serials, calibrations, pipeline tuning) don't appear in `git status` or get pushed by accident. |
-| **bashrc** | Rewrites the host `.bashrc` block: `ROS_DOMAIN_ID=23`, workspace path exports, sources `local_ws/install/setup.bash`. Adds aliases: `run_isaac`, `colcon_local`, `reset_usb`, `foxglove_bridge`, `cam_down_*`, `rslidar_*`, `lidar_diag`, `local_test`. |
+| **skip_worktree** | Discovers every `config/`, `cfg/`, and `camera_calibrations/` directory under both workspaces and marks the tracked files inside them as `skip-worktree`. Protects per-deployment values (camera serials, calibrations, pipeline tuning, RSAIRY SDK config, VSLAM reactor thresholds) from accidentally landing in `git status`. To commit a real change to one of these files, use the standard `git update-index --no-skip-worktree <file>` dance. |
+| **bashrc** | Rewrites the host `.bashrc` block: `ROS_DOMAIN_ID=23`, workspace path exports, sources `local_ws/install/setup.bash`. Installs the post-reboot resume hook that fires `setup.sh --resume` on the next interactive shell. Adds aliases: `run_isaac`, `colcon_local`, `reset_usb`, `foxglove_bridge`, `cam_down_*`, `rslidar_*`, `lidar_diag`, `local_test`, `config_lidar`, `config_realsense`, `wifi`, `ver_cv_cams`, `update_submods`, `initialize`, `deinitialize`. |
 | **permissions** | Sudoers rule (uhubctl, gpioset, systemctl, `usb_reset.sh`, all without password). USB and GPIO udev rules. Polkit rule for `reset_usb.service`. Adds user to `dialout` and `gpio` groups. |
 | **uhubctl** | Builds and installs `uhubctl` from source. Skips if already installed. |
 | **lidar_sysctl** | Writes `/etc/sysctl.d/99-rslidar.conf` raising `net.core.rmem_max` and `rmem_default` to 25 MiB so the RSAIRY's bursty UDP traffic does not overflow the kernel receive queue. |
 | **lidar_network** | Creates two NetworkManager connections on `enP8p1s0`: `rslidar` (static, priority 10, with explicit `ipv4.routes` for the connected subnet) and `dev` (DHCP, priority 0). Installs `/etc/NetworkManager/dispatcher.d/90-rslidar` which ARP-probes the LiDAR for up to 8 s on link-up and falls back to DHCP if no response. If a LiDAR is reachable, `config_lidar` then sniffs the wire and rewrites both the NM profile and the dispatcher to match the LiDAR's firmware-side IPs. See [LiDAR auto-setup](#auto-setup-config_lidar). |
-| **systemd** | Copies and enables all systemd services. See [Boot sequence](#boot-sequence) below. |
 | **ros_workspace** | Installs Python deps (pyudev, pyserial, empy). Runs `rosdep install`. Builds `local_ws` with colcon. |
 | **docker** | Each sub-step is independently checked: installs Docker engine if missing, enables the service if not running, configures the NVIDIA container runtime if not registered, adds the user to the `docker` group if not in it, installs `docker-buildx-plugin` if missing. |
+| **systemd** | Copies all unit files from `local_ws/services/` and `isaac_ros-dev/services/` to `/etc/systemd/system/` and enables them. See [Boot sequence](#boot-sequence) below. |
+| **realsense** | Calls `scripts/config_realsense.sh` to detect the front RealSense serial via `rs-enumerate-devices` and write it into `vslam_config.yaml`. |
+| **verify_cameras** | If the questionnaire opted in, runs `scripts/verify_cv_cams.sh` to open the live `cam_down` feed in a cv2 window over the connected NoMachine session. |
+| **build_isaac** (queued) | If the questionnaire opted in, builds the Isaac container via `build_isaac_docker.sh`. The build is queued through a sentinel file so it survives a mid-run reboot. |
+| **colcon_isaac** | Builds the in-container workspace via `docker exec ... colcon build --symlink-install --base-paths src --cmake-args -DBUILD_TESTING=OFF`, then `systemctl reset-failed` + `restart` on `vslam_supervisor.service` so the supervisor advertises before the smoke test runs. Skipped if the Isaac container image does not exist. Prompts unless the operator already opted in via the questionnaire. Also exposed as menu option **c**. |
+| **print_summary** | Lists every step that ran and every step that was skipped. |
+| **prompt_reboot** | Arms `~/.arid_resume_setup` then reboots. The bashrc hook then fires `setup.sh --resume` on the next interactive shell, which waits for boot-enabled units, runs camera verification, picks up the queued Isaac build, recovers the supervisor units, and finishes with the smoke test. |
 
 ---
 
@@ -63,6 +102,7 @@ Auto-started services after boot:
 | **gst_camera_manager.service** | Starts the GStreamer camera manager. The `cam_down` pipeline is loaded but **idle**. Activate via a SetBool service call. See [Cameras](#cameras-csi). |
 | **rslidar_coordinator.service** | Starts the RoboSense RSAIRY supervisor. Manages the `rslidar_sdk_node` subprocess. Coordinator is up at boot; LiDAR is **idle** until SetBool. See [LiDAR](#lidar-robosense-rsairy). |
 | **usb_ros_reset.service** | Hosts the `/reset_usb` ROS 2 service (Trigger). Performs a hardware USB reset on the ARK PAB carrier on demand. |
+| **vslam_supervisor.service** | `After=` + `Requires=` + `PartOf=start_isaac_docker.service`. `docker exec`s the lifecycle supervisor inside the Isaac container so the `/vslam_supervisor/vslam_enable` service stays alive across terminal disconnects. VSLAM itself is **idle** until `initialize` is called. `KillMode=mixed`, 30 s stop timeout, restart-burst cap. See [Visual-Inertial SLAM](#visual-inertial-slam-realsense--isaac-ros-vslam). |
 
 ### What to expect at login
 
@@ -70,7 +110,22 @@ Auto-started services after boot:
 2. ARID TF tree available. `ros2 topic echo /tf_static --once --qos-durability transient_local` returns immediately.
 3. Camera manager idle. The `cam_down` service exists but no frames flowing yet.
 4. LiDAR coordinator idle. `/rslidar_coordinator/enable` service exists; no cloud flowing yet.
-5. Local workspace already sourced in `.bashrc`. ROS 2 packages in `local_ws` are immediately available.
+5. VSLAM supervisor up. `ros2 service list | grep vslam_supervisor` returns `/vslam_supervisor/vslam_enable`; VSLAM is idle until `initialize` is called.
+6. Local workspace already sourced in `.bashrc`. ROS 2 packages in `local_ws` are immediately available.
+
+> **First-boot caveat for `vslam_supervisor.service`**: the supervisor service launches `ros2 launch vslam_supervisor vslam_supervisor.launch.py` inside the container, which requires the container-side workspace to have been colcon-built. `build_isaac` produces the container image but does not build the workspace on its own.
+>
+> The `--full` chain handles this automatically: the `colcon_isaac` step runs straight after `build_isaac` and resets / restarts `vslam_supervisor.service`. If you skipped the prompt or only ran `build_isaac` by itself, finish the bring-up with menu option **c** or the manual recipe:
+>
+> ```bash
+> start_isaac && isaac_bash      # enter the container
+> colcon_isaac                   # build the workspace (vslam_supervisor + px4_vslam etc.)
+> exit
+> sudo systemctl reset-failed vslam_supervisor.service
+> sudo systemctl start vslam_supervisor.service
+> ```
+>
+> Subsequent reboots are fine because the workspace install/ persists in the bind-mounted `isaac_ros-dev/`.
 
 ---
 
@@ -183,6 +238,17 @@ The coordinator subscribes to `/rslidar_points` and ticks at 2 Hz. If frames sto
 
 One front-mounted RealSense camera (D43X-series) feeding the Isaac ROS VSLAM node, plus a PX4 bridge. Camera serial, resolution, and frame ID are configured in [`isaac_ros-dev/src/px4_vslam/config/vslam_config.yaml`](isaac_ros-dev/src/px4_vslam/config/vslam_config.yaml).
 
+The standard lifecycle path is through the supervisor, which survives terminal disconnect and is callable from either side:
+
+```bash
+initialize     # SetBool true  on /vslam_supervisor/vslam_enable
+deinitialize   # SetBool false on /vslam_supervisor/vslam_enable
+```
+
+`vslam_supervisor` runs inside the Isaac container, managed on the host by `vslam_supervisor.service` (`docker exec`s into the container). On `true` it spawns the launch as a managed subprocess (process-group SIGTERM + SIGKILL fallback on stop). On `false` it requires fresh `VehicleLandDetected.landed == True` from PX4 telemetry; refused otherwise. Per-subprocess log at `/tmp/vslam_supervisor/vslam.log`.
+
+Direct (non-supervised) launch is still available; useful for development and one-off bring-up:
+
 ```bash
 # Inside the Isaac ROS container (use `start_isaac` then `isaac_bash`)
 ros2 launch px4_vslam vslam.launch.py
@@ -192,12 +258,12 @@ vslam
 
 The launch blocks until `/robot_description` is on the graph (`arid_description.service` is up). It then starts:
 
-- 1× RealSense driver (`front_realsense`)
+- 1x RealSense driver (`front_realsense`)
 - Isaac ROS Visual SLAM node (2-camera stereo on the front IR pair)
 - `vio_transform`: bridges VSLAM odometry into PX4 via uXRCE-DDS
-- `vslam_reactor_node`: supervises VSLAM, gates jumps, retries SetSlamPose on misalignment
+- `vslam_reactor_node`: supervises the VSLAM solution, gates jumps, retries `SetSlamPose` on misalignment
 
-Tunables for the reactor live in [`px4_vslam_reactor/config/reactor_conf.yaml`](isaac_ros-dev/src/px4_vslam_reactor/config/reactor_conf.yaml). See [`px4_vslam/README.md`](isaac_ros-dev/src/px4_vslam/README.md) and [`px4_vslam_reactor/README.md`](isaac_ros-dev/src/px4_vslam_reactor/README.md) for full topic, service, and config reference.
+Tunables for the reactor live in [`px4_vslam_reactor/config/px4_vslam_reactor.yaml`](isaac_ros-dev/src/px4_vslam_reactor/config/px4_vslam_reactor.yaml). See [`px4_vslam/README.md`](isaac_ros-dev/src/px4_vslam/README.md) and [`px4_vslam_reactor/README.md`](isaac_ros-dev/src/px4_vslam_reactor/README.md) for full topic, service, and config reference.
 
 **Before flying:** edit `vslam_config.yaml` to match the specific RealSense serial number and the actual mount frame in [`arid_description/xacro/arid.xacro`](local_ws/src/arid_description/xacro/arid.xacro).
 
@@ -253,14 +319,15 @@ Then connect Foxglove Studio to `ws://<device-ip>:8765`.
 
 ## Smoke test and diagnostics
 
-Two helper scripts live in [`scripts/`](scripts/) and are wired into the host bashrc as aliases. After `setup.sh` and a reboot, run both in order: `lidar_diag` for network + LiDAR reachability + coordinator/SDK runtime status, then `local_test` for the full host-stack lifecycle smoke test.
+Three helper scripts live in [`scripts/`](scripts/) and are wired into the host bashrc as aliases. After `setup.sh` and a reboot, run them in order: `lidar_diag` for network + LiDAR reachability + coordinator/SDK runtime status, then `local_test` for the full host-stack lifecycle smoke test, then `ver_cv_cams` to confirm `cam_down` actually produces frames over the live X display.
 
 ```bash
 lidar_diag
 local_test
+ver_cv_cams
 ```
 
-Both are verbose, idempotent, and safe to run any time.
+All three are verbose, idempotent, and safe to run any time.
 
 ### `lidar_diag`
 
@@ -302,6 +369,24 @@ Covers:
 
 Source: [`scripts/local_test.sh`](scripts/local_test.sh).
 
+### `ver_cv_cams`
+
+```bash
+ver_cv_cams
+```
+
+Brings the `cam_down` pipeline up via the `gst_camera_manager` service if it is not already streaming, then opens the live compressed image stream in a cv2 window on the connected NoMachine display. Press any key in the terminal (or `q`) to advance / quit. The pipeline is left stopped if this script started it. Gracefully waits for a NoMachine session to attach before opening the window so the camera is never brought up into a dead display.
+
+Source: [`scripts/verify_cv_cams.sh`](scripts/verify_cv_cams.sh).
+
+### Camera focus (`setup.sh` menu option 9)
+
+Brings up the `cam_down` pipeline AND a Foxglove WebSocket bridge on port 8765, prints `ws://<device-ip>:8765` for every routable interface, and tells the operator to add an Image panel for `/cam_down/image_raw/compressed`. Used for adjusting the IMX219 lens focus by watching the live feed in Foxglove Studio. Press `q` in the terminal to stop and tear down. No standalone alias; accessed only through the interactive menu:
+
+```bash
+./setup.sh   # then press 9
+```
+
 ---
 
 ## USB reset
@@ -320,11 +405,12 @@ The service node (`usb_ros_reset.service`) calls `systemctl start reset_usb.serv
 
 ## Camera calibration
 
-A wrapper around `ros2 camera_calibration` is at [`local_ws/auxiliary/camera_calibration/`](local_ws/auxiliary/camera_calibration/). Auto-detects display, bootstraps a numpy<2 venv (so `cv_bridge` works), interactively picks the topic, saves output as `<topic_slug>_calibration.yaml` next to the script. Built to work over a NoMachine remote display.
+Two wrappers around `ros2 camera_calibration` live under [`local_ws/auxiliary/camera_calibration/`](local_ws/auxiliary/camera_calibration/):
 
-```bash
-./local_ws/auxiliary/camera_calibration/camera_calibrate.sh
-```
+- [`camera_calibrate.sh`](local_ws/auxiliary/camera_calibration/camera_calibrate.sh): generic interactive flow. Auto-detects display, bootstraps a `numpy<2` venv (so `cv_bridge` works), picks any `sensor_msgs/Image` topic from the live ROS graph, saves output as `<topic_slug>_calibration.yaml` next to the script.
+- [`camera_calibration_auto/camera_calibrate.sh`](local_ws/auxiliary/camera_calibration/camera_calibration_auto/camera_calibrate.sh): `cam_down`-specific auto flow. Prompts for the board geometry (defaults to the included [10x7-square / 50 mm pattern](local_ws/auxiliary/camera_calibration/calibration_pattern/calib_pattern.pdf)), brings the pipeline up via the `gst_camera_manager` service, runs the interactive calibrator, then writes the result to both the live pipeline calibration (`gst_camera_manager/config/calibrations/cam_down.yaml`) and the timestamped store (`camera_calibrations/cam_down/`).
+
+Both gate on a connected NoMachine session before opening the calibrator GUI. Setup option 8 in the interactive menu runs the auto flow.
 
 ---
 
@@ -371,13 +457,26 @@ Smoke test and diagnostics:
 | `local_test` | Run the host-stack smoke test (`scripts/local_test.sh`). |
 | `lidar_diag` | Run the LiDAR network diagnostic (`scripts/lidar_diag.sh`). |
 | `config_lidar` | Auto-detect LiDAR IPs and rewrite the NM profile. Prepends `sudo`. |
+| `config_realsense` | Auto-detect the RealSense serial and write it into `vslam_config.yaml`. |
+| `ver_cv_cams` | Live `cam_down` feed in a cv2 window over NoMachine (`scripts/verify_cv_cams.sh`). |
+| `wifi` | Interactive NetworkManager Wi-Fi connect (`scripts/wifi.sh`). |
+| `update_submods` | Sync + pin-verify every submodule. `--update` advances live branches. |
+
+VSLAM lifecycle (single SetBool service hosted by `vslam_supervisor` inside the container; both aliases mirrored host-side):
+
+| Alias | Action |
+|---|---|
+| `initialize` | `SetBool(true)` on `/vslam_supervisor/vslam_enable`. Spawns `px4_vslam vslam.launch.py` as a managed subprocess. |
+| `deinitialize` | `SetBool(false)` on `/vslam_supervisor/vslam_enable`. Refused unless `VehicleLandDetected.landed == True` (fresh PX4 telemetry). |
 
 **Inside the container** (set by `arid_env.sh`):
 
 | Alias | Action |
 |---|---|
 | `reset_usb` | Trigger the USB hub reset via the ROS service. |
-| `vslam` | Launch VSLAM (`px4_vslam`). |
+| `vslam` | Launch VSLAM directly (`ros2 launch px4_vslam vslam.launch.py`), bypassing the supervisor. |
+| `initialize` | Same as the host alias. |
+| `deinitialize` | Same as the host alias. |
 | `foxglove_bridge` | Start the Foxglove bridge on port 8765. |
 | `rosdep_isaac` | Install rosdep deps for `isaac_ros_dev`. |
 | `colcon_isaac` | Build the `isaac_ros_dev` workspace. |
@@ -397,7 +496,8 @@ Smoke test and diagnostics:
 | [`local_ws/src/reset_ark_usb`](local_ws/src/reset_ark_usb/) | ROS 2 service wrapping the systemd USB-reset unit. |
 | [`local_ws/auxiliary/camera_calibration`](local_ws/auxiliary/camera_calibration/) | Camera-calibration launcher (NoMachine-friendly). |
 | [`isaac_ros-dev/src/px4_vslam`](isaac_ros-dev/src/px4_vslam/) | RealSense + Isaac VSLAM launch package + PX4 bridge. |
-| [`isaac_ros-dev/src/px4_vslam_reactor`](isaac_ros-dev/src/px4_vslam_reactor/) | VSLAM-to-PX4 supervisor with YAML-tunable thresholds. |
+| [`isaac_ros-dev/src/px4_vslam_reactor`](isaac_ros-dev/src/px4_vslam_reactor/) | Gates VSLAM solution jumps and retries `SetSlamPose` on misalignment. YAML-tunable thresholds. |
+| [`isaac_ros-dev/src/vslam_supervisor`](isaac_ros-dev/src/vslam_supervisor/) | Lifecycle supervisor: hosts `/vslam_supervisor/vslam_enable` (SetBool) to spawn and stop `px4_vslam` as a managed subprocess. Landed-state safety gate on disable. |
 
 ### Submodules (external upstreams)
 

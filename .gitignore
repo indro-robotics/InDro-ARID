@@ -10,9 +10,12 @@
 # Ignore setup logs
 workspaces/log/
 
-# Ignore camera calibration venv and output (auto-recreated by camera_calibrate.sh)
+# Ignore camera calibration venvs and ad-hoc outputs (auto-recreated by camera_calibrate.sh)
 local_ws/auxiliary/camera_calibration/calib_env/
+local_ws/auxiliary/camera_calibration/camera_calibration_auto/calib_env/
 local_ws/auxiliary/camera_calibration/*_calibration.yaml
+# Ignore timestamped calibration records under the store; the per-camera <name>.yaml stays tracked.
+local_ws/auxiliary/camera_calibration/camera_calibrations/*/*_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_*.yaml
 
-# Local machine state (auto-detected LiDAR config, etc. — written by scripts/config_lidar.sh)
+# Local machine state (auto-detected LiDAR config, etc.; written by scripts/config_lidar.sh)
 .lidar/

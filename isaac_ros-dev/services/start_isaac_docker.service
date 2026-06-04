@@ -6,7 +6,7 @@ Requires=docker.service
 [Service]
 User=jetson
 Type=simple
-# Regenerate CDI spec as root before starting the container — Jetson's /dev/nvidia*
+# Regenerate CDI spec as root before starting the container - Jetson's /dev/nvidia*
 # devices can change after reboots/driver updates, causing the cached spec to reference
 # devices that no longer exist (e.g. /dev/nvidia-modeset) and breaking container start.
 ExecStartPre=+/usr/bin/nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml

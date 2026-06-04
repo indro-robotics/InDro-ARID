@@ -1,6 +1,4 @@
 #!/usr/bin/env python
-import os
-import yaml
 import rclpy
 import numpy as np
 import message_filters
@@ -22,12 +20,15 @@ from isaac_ros_visual_slam_interfaces.srv import SetSlamPose
 from px4_msgs.msg import VehicleLocalPosition, VehicleAttitude, VehicleOdometry
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from isaac_ros_visual_slam_interfaces.msg import VisualSlamStatus
-from ament_index_python.packages import get_package_share_directory
 
 
 class vslam_reactor(Node):
-    def __init__(self): 
+    def __init__(self):
         super().__init__('vslam_reactor_node')
+
+        # Tunable parameters declared with defaults, overridden by config/px4_vslam_reactor.yaml
+        # (loaded by px4_vslam/launch/vslam.launch.py). Must run before sync_cache_sz is used below.
+        self._load_params()
 
         # REACTOR CONTROL STATE
         self.init_flag = True
@@ -39,20 +40,6 @@ class vslam_reactor(Node):
 
         self.fmu_local_position = Vector3Stamped()
         self.last_vslam_odom_msg = Odometry()
-
-        # TUNABLES: loaded from config/reactor_conf.yaml (installed to the
-        # package's share dir by setup.py). See that file for per-parameter
-        # descriptions. Hardcoded defaults below are used only as fallbacks
-        # if a key is missing from the YAML.
-        cfg = self._load_reactor_conf()
-        self.vslam_stabilization_time = cfg.get('vslam_stabilization_time', 0.5)
-        self.lin_vel_gate             = cfg.get('lin_vel_gate',             15.0)
-        self.ang_vel_gate             = cfg.get('ang_vel_gate',             float(np.pi * 5))
-        self.VO_rate_lim              = cfg.get('VO_rate_lim',              0.20)
-        self.VO_pos_delta_lim         = cfg.get('VO_pos_delta_lim',         0.4)
-        self.sync_cache_sz            = cfg.get('sync_cache_sz',            300)
-        self.quat_delta_theta         = cfg.get('quat_delta_theta',         float(np.radians(5.0)))
-        self.displacement_delta       = cfg.get('displacement_delta',       0.25)
 
         self.fmu_lockout = False
         self.R_FRD_TO_FLU = R.from_euler('x', np.pi)
@@ -147,28 +134,29 @@ class vslam_reactor(Node):
         self._slam_odom_sub.registerCallback(self.slam_odom_callback)
 
 
-    def _load_reactor_conf(self):
-        """Load config/reactor_conf.yaml from this package's share dir.
-        Returns the parameter dict, or {} if the file is missing/malformed
-        (the caller falls back to hardcoded defaults)."""
-        try:
-            cfg_path = os.path.join(
-                get_package_share_directory('px4_vslam_reactor'),
-                'config', 'reactor_conf.yaml')
-            with open(cfg_path, 'r') as f:
-                data = yaml.safe_load(f) or {}
-            params = data.get('vslam_reactor', {}).get('ros__parameters', {}) or {}
-            self.get_logger().info(
-                'Loaded reactor_conf.yaml (%d tunables)' % len(params))
-            return params
-        except FileNotFoundError:
-            self.get_logger().warn(
-                'reactor_conf.yaml not found; using built-in defaults')
-            return {}
-        except Exception as e:
-            self.get_logger().error(
-                'Failed to parse reactor_conf.yaml (%s); using defaults' % e)
-            return {}
+    def _load_params(self):
+        # Tunable parameters; config/px4_vslam_reactor.yaml overrides these defaults (loaded by
+        # px4_vslam/launch/vslam.launch.py). Angular gates are entered in degrees and converted.
+        defaults = [
+            ('vslam_stabilization_time', 0.5),
+            ('lin_vel_gate', 15.0),
+            ('ang_vel_gate_dps', 900.0),
+            ('VO_rate_lim', 0.20),
+            ('VO_pos_delta_lim', 0.4),
+            ('sync_cache_sz', 300),
+            ('quat_delta_theta_deg', 5.0),
+            ('displacement_delta', 0.25),
+        ]
+        self.declare_parameters('', defaults)
+        self._param_names = [n for n, _ in defaults]
+        self._apply_params()
+
+    def _apply_params(self):
+        for name in self._param_names:
+            setattr(self, name, self.get_parameter(name).value)
+        # Derived (degrees -> radians)
+        self.ang_vel_gate = np.radians(self.ang_vel_gate_dps)
+        self.quat_delta_theta = np.radians(self.quat_delta_theta_deg)
 
 
     def px4_odom_callback(self, msg):

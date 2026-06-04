@@ -11,4 +11,6 @@ alias rosdep_isaac='sudo apt update && rosdep install --from-paths ${ISAAC_ROS_W
 alias colcon_isaac='cd ${ISAAC_ROS_WS} && colcon build --symlink-install --base-paths src --cmake-args -DBUILD_TESTING=OFF && source ./install/setup.bash'
 alias clean_isaac='cd ${ISAAC_ROS_WS} && colcon clean workspace --base-select build install log'
 alias vslam='ros2 launch px4_vslam vslam.launch.py'
+alias initialize='/bin/bash ${ISAAC_ROS_WS}/container_scripts/initialize.sh'
+alias deinitialize='/bin/bash ${ISAAC_ROS_WS}/container_scripts/deinitialize.sh'
 alias foxglove_bridge='ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765'

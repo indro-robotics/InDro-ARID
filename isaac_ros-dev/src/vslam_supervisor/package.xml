@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>vslam_supervisor</name>
+  <version>0.0.1</version>
+  <description>Lifecycle supervisor for the px4_vslam stack. Hosts a SetBool service to start and stop the VSLAM launch as a managed subprocess with a landed-state safety gate.</description>
+  <maintainer email="calvin.rubens@indrorobotics.com">Calvin-InDro</maintainer>
+  <license>Apache License 2.0</license>
+
+  <depend>rclpy</depend>
+  <depend>std_srvs</depend>
+  <depend>px4_msgs</depend>
+
+  <exec_depend>ros2launch</exec_depend>
+  <exec_depend>px4_vslam</exec_depend>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

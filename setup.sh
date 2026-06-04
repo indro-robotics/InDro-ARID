@@ -1,6 +1,8 @@
 #!/bin/bash
-# ARID drone workspace setup. Every step is idempotent. Safe to re-run.
-# Usage: ./setup.sh [--help]
+# ARID workspace setup.
+# Usage: ./setup.sh [--full|--resume|--help]
+# Every step auto-detects its current state and installs / configures only what is
+# missing. Safe to re-run any time.
 set -euo pipefail
 
 # Output helpers
@@ -14,8 +16,27 @@ warn() { echo -e "  ${YELLOW}[WARN]${NC} $*"; }
 skip() { echo -e "  [SKIP]  $*"; }
 err()  { echo -e "  ${RED}[ERROR]${NC} $*" >&2; }
 
+# Accept any case of y / yes (is_yes) or n / no (is_no) at prompts. Strip non-letter
+# characters first so a trailing carriage return some terminals append does not
+# defeat the match.
+is_yes() { local a="${1//[^A-Za-z]/}"; case "${a,,}" in y|yes) return 0 ;; *) return 1 ;; esac; }
+is_no()  { local a="${1//[^A-Za-z]/}"; case "${a,,}" in n|no)  return 0 ;; *) return 1 ;; esac; }
+
 STEPS_RUN=()
 STEPS_SKIPPED=()
+RUN_FULL=0          # --full: skip the menu and run the whole setup
+RUN_RESUME=0        # --resume: continue setup after a reboot (smoke test + camera verification)
+
+# Single source of truth for the Foxglove bridge launch (the 'foxglove_bridge' alias and
+# the camera-focus tool both use this, so the port stays in one place).
+FOXGLOVE_LAUNCH="ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765"
+
+# Pre-collected answers (full setup only). PRE=1 means "use these, do not prompt mid-run".
+PRE=0
+PRE_HOST=""; PRE_PASS=""
+PRE_WIFI=""; PRE_WIFI_SSID=""; PRE_WIFI_PASS=""
+PRE_NOMACHINE=""; PRE_PX4=""
+PRE_REALSENSE=""; PRE_VERIFY=""; PRE_BUILD_ISAAC=""; PRE_REBOOT=""
 
 # Error trap
 failure() {
@@ -60,10 +81,17 @@ echo "Logging to ${LOG_FILE}"
 parse_args() {
     for arg in "$@"; do
         case "$arg" in
+            --full|-y)    RUN_FULL=1 ;;
+            --resume)     RUN_RESUME=1 ;;
             --help|-h)
-                echo "Usage: $0 [--help]"
-                echo "All steps auto-detect their current state and install/configure"
-                echo "only what's missing. Safe to re-run any time."
+                cat <<EOH
+Usage: $0 [--full|--resume|--help]
+  (no args)  Interactive menu: full setup or individual tools.
+  --full     Run the questionnaire, then the full setup unattended.
+  --resume   Continue setup after a reboot (smoke test + camera verification).
+All steps auto-detect their current state and install / configure only what is
+missing. Safe to re-run any time.
+EOH
                 exit 0 ;;
             *) err "Unknown argument: $arg"; exit 1 ;;
         esac
@@ -165,7 +193,7 @@ setup_apt_packages() {
         software-properties-common \
         ca-certificates curl gnupg \
         libusb-1.0-0-dev pkgconf gpiod \
-        iputils-arping \
+        iputils-arping tcpdump arp-scan \
         pva-allow-2 \
         python3-colcon-clean \
         ros-humble-camera-info-manager \
@@ -237,8 +265,8 @@ setup_git() {
         -exec chmod +x {} \;
     ok "Script permissions set"
 
-    git -C "${REPO_ROOT}" submodule update --init --recursive
-    ok "Submodules updated"
+    "${WORKSPACES}/scripts/update_submods.sh"
+    ok "Submodules synced and verified against pinned commits"
 
     STEPS_RUN+=("git")
 }
@@ -275,13 +303,11 @@ setup_docker_patches() {
 setup_skip_worktree() {
     step "Protecting per-deployment config files"
 
-    local protected_dirs=(
-        "local_ws/src/ros_gst_cameras/gst_camera_manager/config"
-        "isaac_ros-dev/src/px4_vslam/config"
-    )
-
     local protected=0
-    for rel_dir in "${protected_dirs[@]}"; do
+
+    while IFS= read -r dir; do
+        local rel_dir
+        rel_dir=$(realpath --relative-to="$REPO_ROOT" "$dir")
         local files
         files=$(git -C "$REPO_ROOT" ls-files "$rel_dir" 2>/dev/null || true)
         if [[ -n "$files" ]]; then
@@ -289,10 +315,8 @@ setup_skip_worktree() {
                 2>/dev/null || true
             ok "Protected: ${rel_dir}"
             (( protected++ )) || true
-        else
-            warn "No tracked files in ${rel_dir} - skipped"
         fi
-    done
+    done < <(find "${ISAAC_ROS_WS}/src" "${LOCAL_WS}/src" -type d \( -name "config" -o -name "cfg" -o -name "camera_calibrations" \) 2>/dev/null)
 
     STEPS_RUN+=("skip_worktree")
     ok "${protected} config directories protected"
@@ -309,7 +333,6 @@ setup_bashrc() {
         -e '/# BEGIN ARID SETUP/,/# END ARID SETUP/d' \
         -e '/^[[:space:]]*source[[:space:]].*local_ws\/install\/setup\.bash/d' \
         -e '/^[[:space:]]*export[[:space:]]\+ROS_DOMAIN_ID=/d' \
-        -e '/^[[:space:]]*export[[:space:]]\+GST_PLUGIN_PATH=/d' \
         -e '/^[[:space:]]*export[[:space:]]\+WORKSPACES=/d' \
         -e '/^[[:space:]]*export[[:space:]]\+LOCAL_WS=/d' \
         -e '/^[[:space:]]*export[[:space:]]\+ISAAC_ROS_WS=/d' \
@@ -317,7 +340,8 @@ setup_bashrc() {
         -e '/^[[:space:]]*alias[[:space:]]\+\(reset_usb\|colcon_local\|clean_local\|rosdep_local\|foxglove_bridge\)=/d' \
         -e '/^[[:space:]]*alias[[:space:]]\+cam_down_\(start\|stop\|status\|alive\)=/d' \
         -e '/^[[:space:]]*alias[[:space:]]\+rslidar_\(start\|stop\|status\|alive\|restart\)=/d' \
-        -e '/^[[:space:]]*alias[[:space:]]\+\(lidar_diag\|local_test\|config_lidar\|config_realsense\)=/d' \
+        -e '/^[[:space:]]*alias[[:space:]]\+\(lidar_diag\|local_test\|config_lidar\|config_realsense\|wifi\|ver_cv_cams\|update_submods\)=/d' \
+        -e '/^[[:space:]]*alias[[:space:]]\+\(initialize\|deinitialize\)=/d' \
         "$BASHRC_FILE"
 
     cat >> "$BASHRC_FILE" << EOF
@@ -328,7 +352,6 @@ if [ -d /tmp/.X11-unix ]; then
 fi
 xhost +local: >/dev/null 2>&1 || true
 export ROS_DOMAIN_ID=23
-export GST_PLUGIN_PATH=/usr/local/lib/aarch64-linux-gnu/gstreamer-1.0\${GST_PLUGIN_PATH:+:\$GST_PLUGIN_PATH}
 export WORKSPACES=${WORKSPACES}
 export LOCAL_WS=${LOCAL_WS}
 export ISAAC_ROS_WS=${ISAAC_ROS_WS}
@@ -356,6 +379,18 @@ alias lidar_diag='/bin/bash ${WORKSPACES}/scripts/lidar_diag.sh'
 alias local_test='/bin/bash ${WORKSPACES}/scripts/local_test.sh'
 alias config_lidar='sudo /bin/bash ${WORKSPACES}/scripts/config_lidar.sh'
 alias config_realsense='/bin/bash ${WORKSPACES}/scripts/config_realsense.sh'
+alias wifi='/bin/bash ${WORKSPACES}/scripts/wifi.sh'
+alias ver_cv_cams='/bin/bash ${WORKSPACES}/scripts/verify_cv_cams.sh'
+alias update_submods='/bin/bash ${WORKSPACES}/scripts/update_submods.sh'
+alias initialize='/bin/bash ${ISAAC_ROS_WS}/container_scripts/initialize.sh'
+alias deinitialize='/bin/bash ${ISAAC_ROS_WS}/container_scripts/deinitialize.sh'
+# Post-reboot resume hook: if setup.sh armed a resume flag before reboot, prompt to
+# continue (smoke test + camera verification). Only fires for interactive shells.
+if [[ \$- == *i* && -f "${HOME_DIR}/.arid_resume_setup" && -t 0 && -t 1 ]]; then
+    if /bin/bash "${WORKSPACES}/setup.sh" --resume; then
+        rm -f "${HOME_DIR}/.arid_resume_setup"
+    fi
+fi
 # END ARID SETUP
 EOF
 
@@ -368,7 +403,7 @@ setup_permissions() {
     step "Sudoers, udev, polkit, groups"
 
     sudo tee "$SUDOERS_FILE" > /dev/null << EOF
-${USERNAME} ALL=(ALL) NOPASSWD: /usr/sbin/uhubctl, /usr/bin/gpioset, /bin/systemctl start *, /bin/systemctl stop *, /bin/systemctl restart *, /bin/systemctl kill *, ${WORKSPACES}/scripts/usb_reset.sh
+${USERNAME} ALL=(ALL) NOPASSWD: /usr/sbin/uhubctl, /usr/bin/gpioset, /bin/systemctl start *, /bin/systemctl stop *, /bin/systemctl restart *, /bin/systemctl kill *, /bin/systemctl reset-failed *, ${WORKSPACES}/scripts/usb_reset.sh
 EOF
     sudo chmod 440 "$SUDOERS_FILE"
     ok "Sudoers rule written"
@@ -543,6 +578,7 @@ setup_systemd() {
     sudo systemctl enable usbfs-memory.service
     sudo systemctl enable usb_ros_reset.service
     sudo systemctl enable start_isaac_docker.service
+    sudo systemctl enable vslam_supervisor.service
     sudo systemctl enable jetson-clocks.service
     sudo systemctl enable gst_camera_manager.service
     sudo systemctl enable arid_description.service
@@ -696,23 +732,539 @@ print_summary() {
     echo -e "${BOLD}======================================${NC}"
 }
 
-# Reboot prompt
-prompt_reboot() {
-    echo ""
-    echo -e "${YELLOW}${BOLD}A reboot is required for all changes to take effect.${NC}"
-    read -r -p "Reboot now? (y/n): " do_reboot
-    if [[ "$do_reboot" =~ ^[yY]$ ]]; then
-        sudo reboot
+# Hostname / password
+first_boot() {
+    step "First-boot hostname / password"
+
+    local sentinel="${HOME_DIR}/.arid_provisioned"
+    if [[ -f "${sentinel}" ]]; then
+        skip "already provisioned"
+        STEPS_SKIPPED+=("first_boot")
+        return 0
+    fi
+
+    local new_host="${PRE_HOST:-arid}"
+    if (( ! PRE )); then
+        read -r -p "Set hostname? (y/n, Enter = ${new_host}): " a || a=""
+        if is_yes "$a"; then read -r -p "  Hostname: " new_host || new_host=""; fi
+    fi
+    if [[ -n "${new_host}" ]] && [[ "${new_host}" != "$(hostname)" ]]; then
+        sudo hostnamectl set-hostname "${new_host}"
+        sudo sed -i "s/127\.0\.1\.1.*/127.0.1.1\t${new_host}/" /etc/hosts || true
+        ok "hostname set to ${new_host}"
+    fi
+
+    if [[ -n "${PRE_PASS}" ]]; then
+        echo "${USERNAME}:${PRE_PASS}" | sudo chpasswd
+        ok "password updated"
+    elif (( ! PRE )); then
+        read -r -p "Set ${USERNAME} password? (y/n, Enter = leave unchanged): " a || a=""
+        if is_yes "$a"; then sudo passwd "${USERNAME}" || warn "password change cancelled"; fi
+    fi
+
+    touch "${sentinel}"
+    STEPS_RUN+=("first_boot")
+}
+
+# Disable unattended-upgrades on a deployed drone (predictable boot, no surprise updates).
+disable_updates() {
+    step "Disable unattended apt upgrades"
+    if [[ -f /etc/apt/apt.conf.d/20auto-upgrades ]]; then
+        sudo sed -i 's|^APT::Periodic::Unattended-Upgrade.*|APT::Periodic::Unattended-Upgrade "0";|' \
+            /etc/apt/apt.conf.d/20auto-upgrades 2>/dev/null || true
+        sudo sed -i 's|^APT::Periodic::Update-Package-Lists.*|APT::Periodic::Update-Package-Lists "0";|' \
+            /etc/apt/apt.conf.d/20auto-upgrades 2>/dev/null || true
+    fi
+    sudo systemctl disable --now unattended-upgrades.service 2>/dev/null || true
+    sudo systemctl disable --now apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+    STEPS_RUN+=("disable_updates")
+    ok "unattended upgrades disabled"
+}
+
+# Enable network time sync so PX4 timestamp alignment stays correct after a power cycle.
+enable_clock_sync() {
+    step "Enable network time sync"
+    sudo systemctl enable --now systemd-timesyncd.service 2>/dev/null || true
+    STEPS_RUN+=("clock_sync")
+    ok "systemd-timesyncd active"
+}
+
+# Interactive Wi-Fi connect (calls scripts/wifi.sh; honours pre-collected SSID / password).
+ensure_wifi() {
+    step "Wi-Fi"
+    if nmcli -t -f TYPE,STATE device status 2>/dev/null | grep -q '^wifi:connected'; then
+        local cur
+        cur=$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null \
+            | awk -F: '/:802-11-wireless$/{print $1; exit}')
+        ok "already connected${cur:+ to '${cur}'}"
+    fi
+    if [[ "${PRE_WIFI:-}" == "skip" ]]; then
+        skip "Wi-Fi (declined)"
+        STEPS_SKIPPED+=("wifi")
+        return 0
+    fi
+    if [[ "${PRE_WIFI:-}" == "yes" && -n "${PRE_WIFI_SSID:-}" ]]; then
+        ARID_WIFI_SSID="${PRE_WIFI_SSID}" ARID_WIFI_PASS="${PRE_WIFI_PASS:-}" \
+            bash "${WORKSPACES}/scripts/wifi.sh" || warn "wifi.sh returned non-zero"
+        STEPS_RUN+=("wifi")
+        return 0
+    fi
+    if (( PRE )); then return 0; fi
+    local a=""
+    read -r -p "Connect to a Wi-Fi network now? (y/n, Enter = skip): " a || a=""
+    if is_yes "$a"; then
+        bash "${WORKSPACES}/scripts/wifi.sh" || warn "wifi.sh returned non-zero"
+        STEPS_RUN+=("wifi")
     else
-        echo "Remember to reboot before using this system."
+        skip "Wi-Fi (declined)"
+        STEPS_SKIPPED+=("wifi")
     fi
 }
 
-# Main
-main() {
-    parse_args "$@"
+# NoMachine install (idempotent; deferred to the user if a fresh install is needed).
+nomachine() {
+    step "NoMachine"
+    if dpkg -s nomachine >/dev/null 2>&1 || [[ -x /usr/NX/bin/nxserver ]]; then
+        if [[ "${PRE_NOMACHINE:-}" == "skip" ]]; then
+            skip "NoMachine already installed (upgrade declined)"
+            STEPS_SKIPPED+=("nomachine")
+            return 0
+        fi
+        if (( PRE )); then
+            ok "NoMachine already installed"
+            STEPS_SKIPPED+=("nomachine")
+            return 0
+        fi
+        local a=""
+        read -r -p "NoMachine already installed. Reinstall? (y/n, Enter = skip): " a || a=""
+        if ! is_yes "$a"; then
+            ok "NoMachine already installed"
+            STEPS_SKIPPED+=("nomachine")
+            return 0
+        fi
+    fi
+    warn "NoMachine arm64 .deb must be downloaded from https://www.nomachine.com manually."
+    warn "After downloading: sudo dpkg -i nomachine_*_arm64.deb && sudo /usr/NX/bin/nxserver --restart"
+    STEPS_SKIPPED+=("nomachine (manual)")
+}
+
+# Foxglove + live cam_down feed; operator tunes the lens focus by watching it.
+camera_focus() {
+    step "Camera focus"
+
+    set +u
+    source /opt/ros/humble/setup.bash 2>/dev/null
+    [[ -f "${LOCAL_WS}/install/setup.bash" ]] && source "${LOCAL_WS}/install/setup.bash"
+    set -u
+    export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-23}"
+
+    if ! ros2 pkg prefix foxglove_bridge >/dev/null 2>&1; then
+        warn "foxglove_bridge not installed - run 'sudo apt install ros-humble-foxglove-bridge'"
+        return
+    fi
+
+    if ! ros2 service list 2>/dev/null | grep -q '^/gst_camera_manager/'; then
+        if systemctl is-active --quiet gst_camera_manager.service 2>/dev/null; then
+            echo "  gst_camera_manager.service active - waiting for it to register..."
+        else
+            warn "gst_camera_manager not running - starting gst_camera_manager.service"
+            sudo systemctl start gst_camera_manager.service 2>/dev/null || true
+        fi
+        local i; for i in $(seq 1 30); do
+            ros2 service list 2>/dev/null | grep -q '^/gst_camera_manager/' && break
+            sleep 1
+        done
+    fi
+    ros2 service list 2>/dev/null | grep -q '^/gst_camera_manager/' \
+        || { warn "gst_camera_manager unavailable - aborting"; return; }
+
+    echo "  Starting cam_down..."
+    ros2 service call /gst_camera_manager/cam_down std_srvs/srv/SetBool "{data: false}" >/dev/null 2>&1 || true
+    sleep 2
+    ros2 service call /gst_camera_manager/cam_down std_srvs/srv/SetBool "{data: true}" >/dev/null 2>&1 \
+        && ok "cam_down streaming" \
+        || warn "cam_down failed to start (is the Isaac container holding sensor-id=0?)"
+
+    echo "  Starting Foxglove bridge..."
+    # shellcheck disable=SC2086
+    setsid ${FOXGLOVE_LAUNCH} >/tmp/arid_focus_foxglove.log 2>&1 &
+    local fox_pgid=$!
+    sleep 3
+
+    local fox_port; fox_port=$(grep -oE 'port:=[0-9]+' <<<"${FOXGLOVE_LAUNCH}" | grep -oE '[0-9]+')
+    fox_port="${fox_port:-8765}"
+    echo ""
+    echo -e "  ${BOLD}Open Foxglove Studio -> Open connection -> Foxglove WebSocket. Connect to:${NC}"
+    local ip found=0
+    for ip in $(ip -4 -o addr show scope global 2>/dev/null \
+            | awk '$2 !~ /^(docker|br-|veth|l4tbr|usb|virbr)/ {print $4}' | cut -d/ -f1); do
+        echo -e "    ${GREEN}ws://${ip}:${fox_port}${NC}"; found=1
+    done
+    (( found )) || warn "no routable IP detected - check 'ip addr' (port ${fox_port})"
+    echo "  Add an Image panel for: /cam_down/image_raw/compressed"
+    echo ""
+    echo "  Adjust focus in Foxglove, then press q to stop and return to the menu."
+    while read -rsn1 -t 0.1 _ 2>/dev/null; do :; done
+    local key=""
+    while [[ "$key" != "q" && "$key" != "Q" ]]; do read -rn1 key || break; done
+
+    echo "  Stopping Foxglove bridge and cam_down..."
+    kill -INT  -- -"${fox_pgid}" 2>/dev/null || true
+    sleep 1
+    kill -KILL -- -"${fox_pgid}" 2>/dev/null || true
+    ros2 service call /gst_camera_manager/cam_down std_srvs/srv/SetBool "{data: false}" >/dev/null 2>&1 || true
+    ok "stopped"
+}
+
+# Wrappers for the menu / questionnaire-driven flows.
+verify_cameras() {
+    if [[ "${PRE_VERIFY:-}" == "skip" ]]; then
+        skip "camera verification (declined)"
+        STEPS_SKIPPED+=("verify_cameras")
+        return 0
+    fi
+    if (( PRE )) && [[ "${PRE_VERIFY:-}" != "yes" ]]; then return 0; fi
+    if (( ! PRE )); then
+        local a=""
+        read -r -p "Verify the camera feed now? (y/n, Enter = skip): " a || a=""
+        is_yes "$a" || { STEPS_SKIPPED+=("verify_cameras"); return 0; }
+    fi
+    bash "${WORKSPACES}/scripts/verify_cv_cams.sh" || warn "camera verification reported failure"
+    STEPS_RUN+=("verify_cameras")
+}
+
+verify_cameras_menu() {
+    bash "${WORKSPACES}/scripts/verify_cv_cams.sh"
+}
+
+calibrate_cameras() {
+    step "Camera calibration"
+    bash "${WORKSPACES}/local_ws/auxiliary/camera_calibration/camera_calibration_auto/camera_calibrate.sh"
+}
+
+# Build the Isaac container with a confirmation prompt. Image present -> "Rebuild?"
+# default skip. Image absent -> "Continue with building?" default skip; strict yes on both.
+build_isaac_step() {
+    step "Build Isaac container"
+    local sentinel="${HOME_DIR}/.arid_pending_build_isaac"
+    local exists=0 ans build_rc=0
+    if docker image inspect isaac_ros_dev-aarch64-container >/dev/null 2>&1; then exists=1; fi
+    if (( exists )); then
+        read -r -p "Isaac container image already exists. Rebuild it now? (y/n, Enter = no): " ans || ans=""
+    else
+        read -r -p "Continue with building the Isaac container? (y/n, Enter = no): " ans || ans=""
+    fi
+    # Strict yes on both prompts: garbage input is not a green light for an expensive operation.
+    if ! is_yes "${ans}"; then
+        skip "Isaac container build deferred (rebuild any time with build_isaac)"
+        STEPS_SKIPPED+=("build_isaac")
+        rm -f "${sentinel}"
+        return 0
+    fi
+    if /bin/bash "${ISAAC_ROS_WS}/container_scripts/build_isaac_docker.sh"; then
+        STEPS_RUN+=("build_isaac")
+        rm -f "${sentinel}"
+        ok "Isaac container build complete"
+        return 0
+    else
+        build_rc=$?
+        err "build_isaac_docker.sh returned ${build_rc} - container image not built"
+        STEPS_RUN+=("build_isaac (failed)")
+        rm -f "${sentinel}"
+        return "${build_rc}"
+    fi
+}
+
+_run_build_isaac_if_queued() {
+    local sentinel="${HOME_DIR}/.arid_pending_build_isaac"
+    [[ -f "${sentinel}" ]] || return 0
+    build_isaac_step
+}
+
+# Colcon-build the in-container workspace and bring the supervisor up.
+# Prerequisite: the Isaac container image must exist (built by build_isaac_step). The
+# supervisor service launches `ros2 launch vslam_supervisor vslam_supervisor.launch.py`
+# inside the container; without an in-container install/setup.bash carrying that package
+# the unit fails the StartLimitBurst at boot.
+colcon_isaac_step() {
+    step "Colcon-build in-container workspace"
+    local container="isaac_ros_dev-aarch64-container"
+    if ! docker image inspect "${container}" >/dev/null 2>&1; then
+        skip "Isaac container image not built; run build_isaac first"
+        STEPS_SKIPPED+=("colcon_isaac")
+        return 0
+    fi
+    local ans
+    # When `--full` queued the container build, run colcon without re-prompting so the
+    # supervisor comes up at boot. Otherwise prompt, defaulting to yes so an Enter-press
+    # proceeds with the build. The operator can still opt out with an explicit n / no.
+    if (( PRE )) && [[ "${PRE_BUILD_ISAAC:-}" == "yes" ]]; then
+        ans="y"
+    else
+        read -r -p "Colcon-build the workspace inside the container now? (y/n, Enter = yes): " ans || ans=""
+    fi
+    if is_no "${ans}"; then
+        skip "colcon_isaac deferred (run colcon_isaac inside the container any time)"
+        STEPS_SKIPPED+=("colcon_isaac")
+        return 0
+    fi
+
+    # Container must be running. Refuse to colcon-build into a stopped container so the
+    # operator sees the explicit dependency rather than getting a confusing build failure.
+    if ! docker inspect -f '{{.State.Running}}' "${container}" 2>/dev/null | grep -q true; then
+        err "Isaac container is not running."
+        err "Start it first: 'start_isaac' (alias) or 'sudo systemctl start start_isaac_docker.service'"
+        STEPS_SKIPPED+=("colcon_isaac (container down)")
+        return 1
+    fi
+
+    echo "  Building workspace (several minutes on a cold cache)..."
+    if docker exec "${container}" bash -lc \
+        'cd /workspaces/isaac_ros-dev && colcon build --symlink-install --base-paths src --cmake-args -DBUILD_TESTING=OFF'; then
+        ok "colcon build complete"
+        STEPS_RUN+=("colcon_isaac")
+        # Bring the supervisor up now that the workspace is built. Reset-failed clears
+        # StartLimitBurst from the first-boot failures; restart picks up the new image.
+        sudo -n systemctl reset-failed vslam_supervisor.service 2>/dev/null || true
+        sudo -n systemctl restart vslam_supervisor.service 2>/dev/null \
+            || warn "vslam_supervisor.service restart failed - check 'sudo systemctl status vslam_supervisor.service'"
+        return 0
+    fi
+    local rc=$?
+    err "colcon build returned ${rc}"
+    STEPS_RUN+=("colcon_isaac (failed)")
+    return "${rc}"
+}
+
+# Post-install validation: services up, ROS graph contract, no orphans.
+# Uninstall: undo the host-side state that setup.sh creates. Strict explicit confirmation;
+# never called from run_full_setup or run_resume. Leaves the repo clone, hostname, password,
+# group memberships, apt holds, ROS / JetPack / Docker engine in place. Removes the Isaac
+# container image so a re-install starts from a clean slate.
+setup_uninstall() {
+    echo ""
+    echo -e "${RED}${BOLD}============== ARID uninstall ==============${NC}"
+    echo "  This will stop and remove every systemd unit installed by setup.sh,"
+    echo "  delete /etc/sudoers.d/jetson_systemctl, the polkit rule, the rslidar"
+    echo "  NetworkManager profiles + dispatcher, the rslidar sysctl drop-in, the"
+    echo "  ARID block in ~/.bashrc, the docker patches inside isaac_ros_common, every"
+    echo "  setup.sh sentinel file, and the Isaac container + image."
+    echo ""
+    echo -e "${BOLD}Left in place:${NC} the repo clone, hostname, password, group memberships,"
+    echo "  apt-mark holds, ROS 2 Humble, JetPack, the Docker engine itself, and any other"
+    echo "  state setup.sh did not write."
+    echo -e "${RED}${BOLD}============================================${NC}"
+    local ans
+    read -r -p "Type 'yes' to proceed: " ans || ans=""
+    if [[ "${ans}" != "yes" ]]; then
+        echo "  Aborted."
+        return 0
+    fi
+
+    step "Stop + disable + remove systemd units"
+    local units=(
+        usbfs-memory.service
+        jetson-clocks.service
+        start_isaac_docker.service
+        vslam_supervisor.service
+        gst_camera_manager.service
+        arid_description.service
+        rslidar_coordinator.service
+        usb_ros_reset.service
+        reset_usb.service
+    )
+    for u in "${units[@]}"; do
+        sudo -n systemctl stop    "$u" 2>/dev/null || true
+        sudo -n systemctl disable "$u" 2>/dev/null || true
+        sudo rm -f "/etc/systemd/system/$u" 2>/dev/null || true
+    done
+    sudo systemctl daemon-reload 2>/dev/null || true
+    sudo systemctl reset-failed 2>/dev/null || true
+    ok "systemd units removed"
+
+    step "Remove NetworkManager LiDAR config"
+    for con in rslidar dev; do
+        nmcli -t -f NAME connection show 2>/dev/null | grep -qxF "$con" \
+            && sudo nmcli connection delete "$con" >/dev/null 2>&1 || true
+    done
+    sudo rm -f "${RSLIDAR_DISPATCHER}" 2>/dev/null || true
+    ok "NM profiles + dispatcher removed"
+
+    step "Remove sysctl drop-in"
+    sudo rm -f "${RSLIDAR_SYSCTL}" 2>/dev/null || true
+    sudo sysctl --system >/dev/null 2>&1 || true
+    ok "sysctl drop-in removed"
+
+    step "Remove sudoers, polkit, udev"
+    sudo rm -f "${SUDOERS_FILE}" 2>/dev/null || true
+    sudo rm -f "${POLKIT_RULE_FILE}" 2>/dev/null || true
+    sudo rm -f /etc/udev/rules.d/52-usb.rules /etc/udev/rules.d/99-gpio.rules 2>/dev/null || true
+    sudo udevadm control --reload-rules 2>/dev/null || true
+    ok "Sudoers + polkit + udev rules removed"
+
+    step "Strip ARID block from ~/.bashrc"
+    sed -i '/# BEGIN ARID SETUP/,/# END ARID SETUP/d' "$BASHRC_FILE"
+    ok "bashrc cleaned"
+
+    step "Un-skip-worktree config + docker patches"
+    while IFS= read -r dir; do
+        local rel_dir
+        rel_dir=$(realpath --relative-to="$REPO_ROOT" "$dir")
+        local files
+        files=$(git -C "$REPO_ROOT" ls-files "$rel_dir" 2>/dev/null || true)
+        if [[ -n "$files" ]]; then
+            echo "$files" | xargs git -C "$REPO_ROOT" update-index --no-skip-worktree 2>/dev/null || true
+        fi
+    done < <(find "${ISAAC_ROS_WS}/src" "${LOCAL_WS}/src" -type d \( -name "config" -o -name "cfg" -o -name "camera_calibrations" \) 2>/dev/null)
+    if [[ -d "${ISAAC_ROS_WS}/src/isaac_ros_common/.git" ]] || [[ -f "${ISAAC_ROS_WS}/src/isaac_ros_common/.git" ]]; then
+        git -C "${ISAAC_ROS_WS}/src/isaac_ros_common" update-index --no-skip-worktree \
+            scripts/.isaac_ros_common-config \
+            scripts/run_dev.sh 2>/dev/null || true
+        git -C "${ISAAC_ROS_WS}/src/isaac_ros_common" checkout -- \
+            scripts/.isaac_ros_common-config \
+            scripts/run_dev.sh 2>/dev/null || true
+        rm -f "${ISAAC_ROS_WS}/src/isaac_ros_common/docker/Dockerfile.arid" 2>/dev/null || true
+        rm -f "${ISAAC_ROS_WS}/src/isaac_ros_common/docker/scripts/arid_env.sh" 2>/dev/null || true
+    fi
+    ok "skip-worktree marks cleared + isaac_ros_common patches reverted"
+
+    step "Remove sentinels"
+    rm -f \
+        "${HOME_DIR}/.arid_provisioned" \
+        "${HOME_DIR}/.arid_pending_build_isaac" \
+        "${HOME_DIR}/.arid_resume_setup" \
+        "${HOME_DIR}/.arid_resume.lock" 2>/dev/null || true
+    ok "sentinel files removed"
+
+    step "Remove Isaac container + image"
+    docker rm -f isaac_ros_dev-aarch64-container 2>/dev/null || true
+    docker rmi -f isaac_ros_dev-aarch64-container 2>/dev/null || true
+    docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null \
+        | grep -E '^isaac_ros_dev-aarch64-container' \
+        | xargs -r docker rmi -f 2>/dev/null || true
+    ok "container + image removed"
+
+    echo ""
+    echo -e "${GREEN}${BOLD}Uninstall complete.${NC}"
+    echo "  Open a new shell to drop the ARID environment from your current bashrc."
+    echo "  The repo clone, hostname, and password are unchanged."
+}
+
+run_smoke_test() {
+    step "Running local smoke test"
+    local rc=0
+    bash "${WORKSPACES}/scripts/local_test.sh" || rc=$?
+    if (( rc == 0 )); then
+        STEPS_RUN+=("smoke_test")
+        ok "Smoke test passed"
+    else
+        STEPS_RUN+=("smoke_test (failures)")
+        warn "Smoke test reported failures - see output above"
+    fi
+    return "${rc}"
+}
+
+# Reboot prompt. Arms the bashrc resume hook so the smoke test fires on the next
+# interactive terminal post-reboot. If `sudo reboot` itself fails, the flag is rolled
+# back so the next login does not prompt for a resume that never actually happened.
+prompt_reboot() {
+    echo ""
+    echo -e "${YELLOW}${BOLD}A reboot is required for all changes to take effect.${NC}"
+    local do_reboot="${PRE_REBOOT:-y}"
+    if (( ! PRE )); then read -r -p "Reboot now? (y/n): " do_reboot || do_reboot="n"; fi
+    if is_yes "$do_reboot"; then
+        touch "${HOME_DIR}/.arid_resume_setup"
+        if ! sudo reboot; then
+            warn "sudo reboot failed - rolling back the resume flag"
+            rm -f "${HOME_DIR}/.arid_resume_setup"
+            return 1
+        fi
+    else
+        echo "Remember to reboot before using this system - the smoke test runs on the next post-reboot terminal."
+    fi
+}
+
+# Front-load every decision so the rest of the setup can run unattended. Each step
+# consults its PRE_* answer instead of prompting. Live-camera steps still show their
+# feeds when reached.
+collect_answers() {
+    step "Setup questionnaire - answer once; setup then runs without further prompts"
+    PRE=1
+    local a
+
+    if [[ -f "${HOME_DIR}/.arid_provisioned" ]]; then
+        echo "  Already provisioned - hostname / password unchanged."
+    else
+        read -r -p "  Set hostname? (y/n, Enter = arid): " a || a=""
+        is_yes "$a" && { read -r -p "    Hostname: " PRE_HOST || PRE_HOST=""; }
+        read -r -p "  Set password? (y/n, Enter = leave unchanged): " a || a=""
+        if is_yes "$a"; then read -r -s -p "    Password: " PRE_PASS || PRE_PASS=""; echo ""; fi
+    fi
+
+    if nmcli -t -f TYPE,STATE device status 2>/dev/null | grep -q '^wifi:connected'; then
+        local cur
+        cur=$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null \
+            | awk -F: '/:802-11-wireless$/{print $1; exit}')
+        ok "Wi-Fi: connected${cur:+ to '${cur}'}"
+    else
+        warn "Wi-Fi: not connected"
+    fi
+    read -r -p "  Connect to Wi-Fi? (y/n, Enter = skip): " a || a=""
+    if is_yes "$a"; then
+        read -r -p "    SSID: " PRE_WIFI_SSID || PRE_WIFI_SSID=""
+        read -r -s -p "    Password (empty = open): " PRE_WIFI_PASS || PRE_WIFI_PASS=""; echo ""
+        PRE_WIFI=yes
+    else
+        PRE_WIFI=skip
+    fi
+
+    if dpkg -s nomachine >/dev/null 2>&1 || [[ -x /usr/NX/bin/nxserver ]]; then
+        read -r -p "  Reinstall NoMachine? (y/n, Enter = skip): " a || a=""
+        is_yes "$a" && PRE_NOMACHINE=yes || PRE_NOMACHINE=skip
+    else
+        PRE_NOMACHINE=install
+    fi
+
+    if command -v arm-none-eabi-gcc >/dev/null 2>&1; then
+        PRE_PX4=present
+    else
+        read -r -p "  Install PX4 toolchain? (y/n, Enter = no): " a || a=""
+        is_yes "$a" && PRE_PX4=yes || PRE_PX4=no
+    fi
+
+    read -r -p "  Assign RealSense serial into vslam_config.yaml? (y/n, Enter = skip): " a || a=""
+    is_yes "$a" && PRE_REALSENSE=yes || PRE_REALSENSE=skip
+
+    read -r -p "  Verify the camera feed at the end? (y/n, Enter = skip): " a || a=""
+    is_yes "$a" && PRE_VERIFY=yes || PRE_VERIFY=skip
+
+    if docker image inspect isaac_ros_dev-aarch64-container >/dev/null 2>&1; then
+        read -r -p "  Rebuild the Isaac container? (y/n, Enter = skip): " a || a=""
+    else
+        read -r -p "  Build the Isaac container? (y/n, Enter = skip; rebuild manually with 'build_isaac'): " a || a=""
+    fi
+    if is_yes "$a"; then
+        PRE_BUILD_ISAAC=yes
+        touch "${HOME_DIR}/.arid_pending_build_isaac"
+    else
+        PRE_BUILD_ISAAC=skip
+    fi
+
+    read -r -p "  Reboot when done? (y/n, Enter = y): " a || a=""
+    is_no "$a" && PRE_REBOOT=no || PRE_REBOOT=yes
+
+    ok "Answers recorded - running unattended."
+}
+
+run_full_setup() {
     preflight
+    collect_answers
+    first_boot
     setup_power
+    disable_updates
+    enable_clock_sync
+    ensure_wifi
+    nomachine
     setup_repos
     setup_apt_packages
     setup_px4_deps
@@ -724,12 +1276,152 @@ main() {
     setup_uhubctl
     setup_lidar_sysctl
     setup_lidar_network
-    setup_systemd
     setup_ros_workspace
+    # Docker engine + NVIDIA runtime must be in place before systemd enables
+    # `start_isaac_docker.service`, otherwise a mid-run abort + reboot leaves the boot
+    # service trying to start an absent daemon.
     setup_docker
+    setup_systemd
     setup_realsense
+    verify_cameras
+    _run_build_isaac_if_queued
+    colcon_isaac_step
     print_summary
     prompt_reboot
+}
+
+# Continue setup where it left off after a reboot. The smoke test runs after boot-enabled
+# units have come up naturally and the ROS graph has settled. local_test.sh bootstraps
+# any still-inactive required service, but the post-reboot run is the meaningful one.
+run_resume() {
+    # Prevent two terminals (both prompted by the bashrc resume hook) from racing on
+    # cameras, port 8765, gst pipelines, etc. A second terminal exits if the lock is
+    # already held. We DELIBERATELY do not rm the lock file on exit: flock is bound to
+    # the inode, so leaving a zero-byte file on disk ensures all subsequent opens land
+    # on the same inode and inherit the exclusion guarantee.
+    local lock="${HOME_DIR}/.arid_resume.lock"
+    if ! exec 9>"${lock}" 2>/dev/null; then
+        warn "could not open resume lock at ${lock} - continuing without serialisation"
+    elif ! flock -n 9; then
+        echo "Another resume is already in progress in another terminal - exiting."
+        return 1
+    fi
+
+    step "Continuing setup where it left off - camera verification"
+    if bash "${WORKSPACES}/scripts/verify_cv_cams.sh"; then
+        ok "camera verification complete"
+    else
+        warn "camera verification incomplete - run 'ver_cv_cams' to retry"
+    fi
+
+    if [[ -f "${HOME_DIR}/.arid_pending_build_isaac" ]]; then
+        _run_build_isaac_if_queued || true
+        # Chain the workspace build so the supervisor unit can actually launch on the
+        # advertise-wait that follows. The operator already opted in to building during the
+        # questionnaire; PRE=1 + PRE_BUILD_ISAAC=yes short-circuits the second prompt.
+        PRE=1
+        PRE_BUILD_ISAAC=yes
+        colcon_isaac_step || true
+    fi
+
+    # After a normal end-of-setup reboot, systemd starts start_isaac_docker +
+    # vslam_supervisor at boot, but the container + ROS launch take 30-90 s cold.
+    # Without this wait, smoke-test Section 4 races the supervisor and reports false
+    # negatives. The block is a no-op if the image does not exist or the supervisor is
+    # already up.
+    local have_image=0
+    if docker image inspect isaac_ros_dev-aarch64-container >/dev/null 2>&1; then
+        have_image=1
+    fi
+    if (( have_image == 0 )); then
+        warn "Isaac container image not available - skipping supervisor wait."
+        warn "Re-run 'build_isaac' once the underlying issue is resolved, then:"
+        warn "sudo systemctl restart start_isaac_docker.service vslam_supervisor.service"
+    else
+        step "Recovering Docker + supervisor units (if not yet running)"
+        sudo -n systemctl reset-failed start_isaac_docker.service vslam_supervisor.service 2>/dev/null || true
+        sudo -n systemctl stop  start_isaac_docker.service vslam_supervisor.service 2>/dev/null || true
+        sudo -n systemctl start start_isaac_docker.service 2>/dev/null || warn "start_isaac_docker.service start failed"
+        sudo -n systemctl start vslam_supervisor.service    2>/dev/null || warn "vslam_supervisor.service start failed"
+        step "Waiting for vslam_supervisor to advertise (up to 90 s)"
+        set +u
+        [[ -f /opt/ros/humble/setup.bash ]] && source /opt/ros/humble/setup.bash
+        export ROS_DOMAIN_ID=23
+        set -u
+        local i ok_sup=0
+        for i in $(seq 1 18); do
+            if timeout 5 ros2 service list 2>/dev/null \
+                | grep -qx /vslam_supervisor/vslam_enable; then
+                ok_sup=1; break
+            fi
+            (( i % 3 == 0 )) && echo "    waiting... (${i}/18, $((i * 5)) s elapsed)"
+            sleep 5
+        done
+        if (( ok_sup )); then
+            ok "supervisor service on the graph"
+        else
+            warn "supervisor did not advertise within 90 s - smoke test Section 4 may report failures"
+        fi
+    fi
+
+    local smoke_rc=0
+    run_smoke_test || smoke_rc=$?
+    echo ""
+    echo -e "${BOLD}Setup complete.${NC}"
+    return "${smoke_rc}"
+}
+
+# Interactive menu: full setup, or any one tool. Individual tools are the same scripts
+# the host aliases call; a non-zero exit returns to the menu rather than aborting.
+menu() {
+    while true; do
+        echo ""
+        echo -e "${BOLD}============== ARID setup ==============${NC}"
+        echo "  1) Full setup"
+        echo "  2) Smoke test"
+        echo "  3) RealSense assignment"
+        echo "  4) Camera feed check"
+        echo "  5) LiDAR diagnostic"
+        echo "  6) LiDAR auto-detect"
+        echo "  7) Wi-Fi connect"
+        echo "  8) Camera calibration"
+        echo "  9) Camera focus"
+        echo "  b) Build Isaac container"
+        echo "  c) Colcon-build container workspace"
+        echo "  u) Uninstall (undo setup.sh; keeps repo, hostname, password)"
+        echo -e "${BOLD}========================================${NC}"
+        echo "  q) Quit"
+        local choice
+        read -rn1 -p "  Select: " choice || choice="q"
+        echo ""
+        case "${choice}" in
+            1) run_full_setup; break ;;
+            2) bash "${WORKSPACES}/scripts/local_test.sh"        || true ;;
+            3) bash "${WORKSPACES}/scripts/config_realsense.sh"  || true ;;
+            4) verify_cameras_menu                               || true ;;
+            5) bash "${WORKSPACES}/scripts/lidar_diag.sh"        || true ;;
+            6) sudo bash "${WORKSPACES}/scripts/config_lidar.sh" || true ;;
+            7) bash "${WORKSPACES}/scripts/wifi.sh"              || true ;;
+            8) calibrate_cameras                                 || true ;;
+            9) camera_focus                                      || true ;;
+            b|B) build_isaac_step                                || true ;;
+            c|C) colcon_isaac_step                               || true ;;
+            u|U) setup_uninstall                                 || true ;;
+            q|Q) echo "  Quit."; break ;;
+            *) warn "invalid selection: '${choice}'" ;;
+        esac
+    done
+}
+
+main() {
+    parse_args "$@"
+    if (( RUN_RESUME )); then
+        run_resume
+    elif (( RUN_FULL )); then
+        run_full_setup
+    else
+        menu
+    fi
 }
 
 main "$@"

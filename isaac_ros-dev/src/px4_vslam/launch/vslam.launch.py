@@ -1,6 +1,7 @@
 import os
 
 import launch
+from ament_index_python.packages import get_package_share_directory
 from launch.actions import (DeclareLaunchArgument, ExecuteProcess, LogInfo,
                             RegisterEventHandler)
 from launch.event_handlers import OnProcessExit
@@ -50,11 +51,16 @@ def generate_launch_description():
         executable='vio_transform'
     )
 
+    vslam_reactor_config = os.path.join(
+        get_package_share_directory('px4_vslam_reactor'),
+        'config', 'px4_vslam_reactor.yaml')
+
     vslam_reactor_node = Node(
         package='px4_vslam_reactor',
         executable='vslam_reactor_node',
         name='vslam_reactor',
-        output='screen'
+        output='screen',
+        parameters=[vslam_reactor_config]
     )
 
     vslam_container = ComposableNodeContainer(

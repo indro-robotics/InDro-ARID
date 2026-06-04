@@ -1,0 +1,15 @@
+# px4_vslam_reactor tunable parameters.
+# Loaded by px4_vslam/launch/vslam.launch.py and applied to the vslam_reactor node. The same
+# defaults are also declared in the node so it runs if this file is absent. Angular gates are
+# entered in degrees here and converted to radians in the node.
+/**:
+  ros__parameters:
+
+    vslam_stabilization_time: 0.5    # s, settle time before trusting a fresh VSLAM solution after a SetSlamPose reset
+    lin_vel_gate: 15.0               # m/s, reject odometry above this linear velocity (jump detection)
+    ang_vel_gate_dps: 900.0          # deg/s, reject odometry above this angular velocity (jump detection)
+    VO_rate_lim: 0.20                # s, min interval between set-pose corrections
+    VO_pos_delta_lim: 0.4            # m, max position jump accepted in one correction (paired with VO_rate_lim)
+    sync_cache_sz: 300               # message_filters sync cache depth for PX4 / VSLAM timestamp alignment
+    quat_delta_theta_deg: 5.0        # deg, orientation tolerance for post-reset PX4 / VSLAM pose match
+    displacement_delta: 0.25         # m, position tolerance for post-reset PX4 / VSLAM pose match
