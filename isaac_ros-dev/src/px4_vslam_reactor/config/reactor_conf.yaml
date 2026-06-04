@@ -1,4 +1,4 @@
-# px4_vslam_reactor — tunable parameters
+# px4_vslam_reactor tunable parameters
 #
 # Loaded at runtime by the reactor node. Override any default by editing this
 # file (re-run colcon build / source install after changes). The launch file
@@ -14,16 +14,16 @@ vslam_reactor:
     # the map after a forced pose reset. (seconds)
     vslam_stabilization_time: 0.5
 
-    # Jump-detection — max plausible linear velocity between two consecutive
+    # Jump-detection: max plausible linear velocity between two consecutive
     # VSLAM odom samples. If exceeded, the newer sample is treated as a
     # teleport / tracking glitch and the odom update is dropped. (m/s)
     lin_vel_gate: 15.0
 
-    # Jump-detection — max plausible angular velocity between two consecutive
+    # Jump-detection: max plausible angular velocity between two consecutive
     # VSLAM odom samples. Default ~5π rad/s (~900 deg/s). (rad/s)
     ang_vel_gate: 15.7
 
-    # Jump-detection (companion pair) — if the position delta between samples
+    # Jump-detection (companion pair): if the position delta between samples
     # exceeds `VO_pos_delta_lim` AND the time delta exceeds `VO_rate_lim`,
     # the sample is rejected as a teleport. Together they catch
     # slow-but-unreasonably-large jumps that the instantaneous velocity
@@ -31,13 +31,13 @@ vslam_reactor:
     VO_rate_lim: 0.20
     VO_pos_delta_lim: 0.4
 
-    # message_filters synchronizer cache size — number of messages buffered
+    # message_filters synchronizer cache size: number of messages buffered
     # per topic for PX4 ↔ VSLAM timestamp alignment. Larger = wider alignment
     # window, more memory; smaller = tighter matching but more dropped pairs.
     sync_cache_sz: 300
 
     # After a SetSlamPose reset, VSLAM odom must agree with PX4 odom within
-    # these tolerances — otherwise the reset is flagged as misaligned and
+    # these tolerances; otherwise the reset is flagged as misaligned and
     # retried. (radians, meters)
     quat_delta_theta: 0.085       # radians(~5.0 deg.) tolerance
     displacement_delta: 0.25      # 25 cm position tolerance

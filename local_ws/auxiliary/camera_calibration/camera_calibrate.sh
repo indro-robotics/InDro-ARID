@@ -109,5 +109,5 @@ if [ -f /tmp/ost.yaml ]; then
     cp /tmp/ost.yaml "$OUT"
     echo "[calib] Calibration saved to $OUT"
 else
-    echo "[calib] No calibration output found — did you click Save before closing?"
+    echo "[calib] No calibration output found. Did you click Save before closing?"
 fi

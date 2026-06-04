@@ -1,10 +1,20 @@
-# ARID Drone Workspace
+# InDro ARID Workspace
 
-NVIDIA Jetson Orin · ROS 2 Humble · Isaac ROS · PX4
+**Autonomous Research Indoor Drone.** NVIDIA Jetson Orin · ARK PAB carrier · ROS 2 Humble · NVIDIA Isaac ROS · PX4
 
-End-to-end workspace for the **ARID** quadrotor. Includes the bootstrap script, robot description, GStreamer-based CSI camera stack, RealSense visual-inertial SLAM, RoboSense RSAIRY LiDAR coordinator, PX4 fork, USB-reset service, and Foxglove visualization.
+End-to-end repository for provisioning, building, and operating a deployed ARID. Contents:
 
-> **ROS_DOMAIN_ID = 23** (non-standard). The default ROS 2 domain is 0; ARID systems run on domain 23 to isolate from other ROS networks on the same LAN. This is exported by the host `.bashrc` and inside the Isaac container via `arid_env.sh`. Any tool that needs to see the graph (Foxglove, `ros2 topic list` from another machine, etc.) must be set to **`ROS_DOMAIN_ID=23`** as well, or it will see nothing.
+- **Bootstrap** (`setup.sh`). Idempotent provisioning from a fresh Ubuntu 22.04 install: apt repos and ROS packages, NetworkManager profiles + dispatcher for the LiDAR Ethernet path, kernel UDP buffer tuning, USB and GPIO udev rules, sudoers + group memberships, systemd unit installation, host `.bashrc` rewrite (alias set), local ROS 2 workspace build, and the Isaac ROS Docker container with the ARID-patched Dockerfile chain.
+- **Robot description** (`arid_description`). URDF / xacro and meshes for the airframe and sensor frames. `robot_state_publisher` (systemd-managed) publishes `/robot_description` (latched) and `/tf_static` on boot.
+- **CSI camera stack** (`ros_gst_cameras`). `gst_cam_node` (C++) wraps a GStreamer pipeline; `gst_camera_manager` (Python) supervises it, exposes `SetBool` start/stop services plus `status` / `status_all` / `stop_all` Triggers, and runs a frame-flow watchdog publishing a latched `Bool` per pipeline. Currently configured for the downward IMX219 (`cam_down`).
+- **RSAIRY LiDAR** (`rslidar_coordinator`). Supervisor for the RoboSense RSAIRY SDK. `SetBool` / `Trigger` services, latched `alive` Bool, process-group teardown that survives the SDK's `ERRCODE_MSOPTIMEOUT` retry loop, and a NetworkManager dispatcher that auto-configures the LiDAR Ethernet link with DHCP fallback.
+- **Visual SLAM** (`px4_vslam`, `px4_vslam_reactor`). NVIDIA Isaac cuVSLAM against the front Intel RealSense (D43X-series IR stereo), bridged into PX4 visual odometry via `vio_transform` (FLU → FRD). The reactor gates pose jumps and retries `SetSlamPose` on misalignment.
+- **PX4 firmware**. InDro fork (`local_ws/auxiliary/PX4-Autopilot`, branch `PX4-InDro`) with the `4025_arid_quad_v1_1` airframe. Flashable prebuilt artifacts in `local_ws/auxiliary/PX4_prebuilt/` for FMU bring-up without a host build environment.
+- **USB recovery** (`reset_ark_usb`). ROS service hosting `/reset_usb` (Trigger). On call, the systemd one-shot power-cycles the ARK PAB USB hub via `uhubctl` + GPIO 85.
+- **Host diagnostics**. `lidar_diag` (LiDAR network walk-through), `local_test` (host-stack lifecycle smoke test), `config_lidar` (LiDAR IP auto-detect + NM profile rewrite), `config_realsense` (front RealSense serial auto-detect into `vslam_config.yaml`).
+- **Visualisation**. apt-installed Foxglove bridge on both host and container, configured to listen on TCP 8765.
+
+> **ROS_DOMAIN_ID = 23** (non-standard). The default ROS 2 domain is 0; ARID systems run on domain 23 to isolate from other ROS networks on the same LAN. This is exported by the host `.bashrc` and inside the Isaac container via `arid_env.sh`. Any tool that needs to see the graph (Foxglove, `ros2 topic list` from another machine) must be set to **`ROS_DOMAIN_ID=23`** as well, or it will see nothing.
 
 ---
 
@@ -125,33 +135,30 @@ What it does:
 5. Brings up `rslidar` and verifies the LiDAR answers ARP at the discovered IP.
 6. Persists the detected values to `.lidar/rslidar_detected.conf` (workspace-local, gitignored). `lidar_diag` reads this file.
 
-Run it manually any time a LiDAR is swapped, reconfigured via RSView, or moved between hosts:
+Run it manually any time a LiDAR is swapped, reconfigured via RSView, or moved between hosts. The `config_lidar` alias prepends `sudo` because the script needs `tcpdump` in promiscuous mode and writes to `/etc/NetworkManager/`:
 
 ```bash
-config_lidar     # alias prepends sudo (tcpdump promisc + writing to /etc)
+config_lidar
 ```
 
 If the LiDAR is unreachable at setup time, the fallback static (`192.168.1.102/24` targeting `192.168.1.200`) stays in place. Re-run `config_lidar` once the LiDAR is plugged in and powered.
 
 ### Start, stop, status
 
+The host aliases are the recommended driver:
+
 ```bash
-# Start the LiDAR pipeline (spawns rslidar_sdk_node)
 rslidar_start
-# or:
-ros2 service call /rslidar_coordinator/enable std_srvs/srv/SetBool '{data: true}'
-
-# Stop
 rslidar_stop
-
-# Status: RUNNING (pid=N) or STOPPED
 rslidar_status
-
-# Read latched liveness Bool
 rslidar_alive
-
-# One-shot restart (stop then start)
 rslidar_restart
+```
+
+`rslidar_start` is equivalent to a direct SetBool call on the coordinator's enable service:
+
+```bash
+ros2 service call /rslidar_coordinator/enable std_srvs/srv/SetBool '{data: true}'
 ```
 
 ### Topics and frame
@@ -202,10 +209,12 @@ Custom PX4 fork at [`local_ws/auxiliary/PX4-Autopilot/`](local_ws/auxiliary/PX4-
 
 ### Build
 
+Build the firmware for the target board, or append `upload` to flash over USB with the FMU in bootloader mode:
+
 ```bash
 cd local_ws/auxiliary/PX4-Autopilot
-make ark_fmu-v6x_default                # build for ARK FMU v6X
-make ark_fmu-v6x_default upload         # flash over USB (FMU in bootloader mode)
+make ark_fmu-v6x_default
+make ark_fmu-v6x_default upload
 ```
 
 Output: `build/ark_fmu-v6x_default/ark_fmu-v6x_default.px4`.
@@ -238,26 +247,28 @@ ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765
 foxglove_bridge
 ```
 
-Then connect Foxglove Studio to `ws://<jetson-ip>:8765`.
+Then connect Foxglove Studio to `ws://<device-ip>:8765`.
 
 ---
 
 ## Smoke test and diagnostics
 
-Two helper scripts live in [`scripts/`](scripts/) and are wired into the host bashrc as aliases. After `setup.sh` and a reboot, run both in order:
+Two helper scripts live in [`scripts/`](scripts/) and are wired into the host bashrc as aliases. After `setup.sh` and a reboot, run both in order: `lidar_diag` for network + LiDAR reachability + coordinator/SDK runtime status, then `local_test` for the full host-stack lifecycle smoke test.
 
 ```bash
-lidar_diag     # network + LiDAR reachability + coordinator/SDK runtime status
-local_test     # full host-stack lifecycle smoke test
+lidar_diag
+local_test
 ```
 
 Both are verbose, idempotent, and safe to run any time.
 
 ### `lidar_diag`
 
+Run without `sudo` for read-only checks; the passive `tcpdump` and `arp-scan` steps require root:
+
 ```bash
-lidar_diag         # read-only checks; steps 5 & 6 skipped without sudo
-sudo lidar_diag    # full diagnostic including passive tcpdump and arp-scan
+lidar_diag
+sudo lidar_diag
 ```
 
 Reads the auto-detected IPs from `.lidar/rslidar_detected.conf` (populated by `config_lidar`). Walks through:
@@ -319,49 +330,58 @@ A wrapper around `ros2 camera_calibration` is at [`local_ws/auxiliary/camera_cal
 
 ## Useful aliases
 
-**Host (set by setup.sh):**
+**Host** (set by `setup.sh`'s `bashrc` step):
 
-```bash
-run_isaac        # Launch Isaac ROS Docker interactively
-build_isaac      # Rebuild the Isaac ROS Docker image
-start_isaac      # Start the container in background
-stop_isaac       # Stop the container
-isaac_bash       # Open a shell inside the running container
-reset_usb        # Manually trigger USB hub reset
-colcon_local     # Build local_ws and source it
-clean_local      # Clean local_ws build/install/log
-rosdep_local     # Install rosdep deps for local_ws
-foxglove_bridge  # Launch the Foxglove WebSocket bridge on port 8765
+| Alias | Action |
+|---|---|
+| `run_isaac` | Launch Isaac ROS Docker interactively. |
+| `build_isaac` | Rebuild the Isaac ROS Docker image. |
+| `start_isaac` | Start the container in the background. |
+| `stop_isaac` | Stop the container. |
+| `isaac_bash` | Open a shell inside the running container. |
+| `reset_usb` | Manually trigger the USB hub reset. |
+| `colcon_local` | Build `local_ws` and source it. |
+| `clean_local` | Clean `local_ws` build/install/log. |
+| `rosdep_local` | Install rosdep deps for `local_ws`. |
+| `foxglove_bridge` | Launch the Foxglove WebSocket bridge on port 8765. |
 
-# CSI camera (cam_down, gst_camera_manager)
-cam_down_start   # SetBool(true)  on /gst_camera_manager/cam_down
-cam_down_stop    # SetBool(false) on /gst_camera_manager/cam_down
-cam_down_status  # Trigger /gst_camera_manager/cam_down/status
-cam_down_alive   # Read the latched /gst_camera_manager/cam_down/alive Bool (TRANSIENT_LOCAL)
+CSI camera (`cam_down`, supervised by `gst_camera_manager`):
 
-# RSAIRY LiDAR (rslidar_coordinator)
-rslidar_start    # SetBool(true)  on /rslidar_coordinator/enable
-rslidar_stop     # SetBool(false) on /rslidar_coordinator/enable
-rslidar_status   # Trigger /rslidar_coordinator/status
-rslidar_alive    # Read the latched /rslidar_coordinator/alive Bool (TRANSIENT_LOCAL)
-rslidar_restart  # Trigger /rslidar_coordinator/restart (stop + respawn)
+| Alias | Action |
+|---|---|
+| `cam_down_start` | `SetBool(true)` on `/gst_camera_manager/cam_down`. |
+| `cam_down_stop` | `SetBool(false)` on `/gst_camera_manager/cam_down`. |
+| `cam_down_status` | Trigger `/gst_camera_manager/cam_down/status`. |
+| `cam_down_alive` | Read the latched `/gst_camera_manager/cam_down/alive` Bool (TRANSIENT_LOCAL). |
 
-# Smoke test and diagnostics
-local_test       # Run the host-stack smoke test (scripts/local_test.sh)
-lidar_diag       # Run the LiDAR network diagnostic (scripts/lidar_diag.sh)
-config_lidar     # Auto-detect LiDAR IPs and rewrite NM profile (sudo)
-```
+RSAIRY LiDAR (supervised by `rslidar_coordinator`):
 
-**Inside the container (set by `arid_env.sh`):**
+| Alias | Action |
+|---|---|
+| `rslidar_start` | `SetBool(true)` on `/rslidar_coordinator/enable`. |
+| `rslidar_stop` | `SetBool(false)` on `/rslidar_coordinator/enable`. |
+| `rslidar_status` | Trigger `/rslidar_coordinator/status`. |
+| `rslidar_alive` | Read the latched `/rslidar_coordinator/alive` Bool (TRANSIENT_LOCAL). |
+| `rslidar_restart` | Trigger `/rslidar_coordinator/restart` (stop + respawn). |
 
-```bash
-reset_usb        # Trigger USB reset via ROS service
-vslam            # Launch VSLAM (px4_vslam)
-foxglove_bridge  # Start Foxglove bridge on port 8765
-rosdep_isaac     # Install rosdep deps for isaac_ros_dev
-colcon_isaac     # Build isaac_ros_dev workspace
-clean_isaac      # Clean isaac_ros_dev build/install/log
-```
+Smoke test and diagnostics:
+
+| Alias | Action |
+|---|---|
+| `local_test` | Run the host-stack smoke test (`scripts/local_test.sh`). |
+| `lidar_diag` | Run the LiDAR network diagnostic (`scripts/lidar_diag.sh`). |
+| `config_lidar` | Auto-detect LiDAR IPs and rewrite the NM profile. Prepends `sudo`. |
+
+**Inside the container** (set by `arid_env.sh`):
+
+| Alias | Action |
+|---|---|
+| `reset_usb` | Trigger the USB hub reset via the ROS service. |
+| `vslam` | Launch VSLAM (`px4_vslam`). |
+| `foxglove_bridge` | Start the Foxglove bridge on port 8765. |
+| `rosdep_isaac` | Install rosdep deps for `isaac_ros_dev`. |
+| `colcon_isaac` | Build the `isaac_ros_dev` workspace. |
+| `clean_isaac` | Clean the `isaac_ros_dev` build/install/log. |
 
 ---
 
@@ -377,7 +397,7 @@ clean_isaac      # Clean isaac_ros_dev build/install/log
 | [`local_ws/src/reset_ark_usb`](local_ws/src/reset_ark_usb/) | ROS 2 service wrapping the systemd USB-reset unit. |
 | [`local_ws/auxiliary/camera_calibration`](local_ws/auxiliary/camera_calibration/) | Camera-calibration launcher (NoMachine-friendly). |
 | [`isaac_ros-dev/src/px4_vslam`](isaac_ros-dev/src/px4_vslam/) | RealSense + Isaac VSLAM launch package + PX4 bridge. |
-| [`isaac_ros-dev/src/px4_vslam_reactor`](isaac_ros-dev/src/px4_vslam_reactor/) | VSLAM ↔ PX4 supervisor with YAML-tunable thresholds. |
+| [`isaac_ros-dev/src/px4_vslam_reactor`](isaac_ros-dev/src/px4_vslam_reactor/) | VSLAM-to-PX4 supervisor with YAML-tunable thresholds. |
 
 ### Submodules (external upstreams)
 

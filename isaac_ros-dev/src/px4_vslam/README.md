@@ -41,17 +41,16 @@ front_realsense/front_realsense_link:
     serial_no: "<camera-serial>"
     enable_infra1: true
     enable_infra2: true
-    enable_color: true                # RGB stream available for downstream consumers
+    enable_color: true
     depth_module: { profile: '640x360x90' }
-    rgb_camera:    { profile: '1280x720x15' }   # D43X-native RGB profile
-    # ...
+    rgb_camera:    { profile: '1280x720x15' }
 
 visual_slam_node:
   ros__parameters:
     map_frame:  'map'
     odom_frame: 'odom'
-    base_frame: 'base_link'       # must exist in the published TF tree
-    imu_frame:  '<imu_frame>'     # must exist in the published TF tree
+    base_frame: 'base_link'
+    imu_frame:  '<imu-frame>'
     num_cameras: 2
     camera_optical_frames:
       - 'front_realsense_infra1_optical_frame'

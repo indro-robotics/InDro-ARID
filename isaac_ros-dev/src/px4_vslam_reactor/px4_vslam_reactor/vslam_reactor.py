@@ -40,7 +40,7 @@ class vslam_reactor(Node):
         self.fmu_local_position = Vector3Stamped()
         self.last_vslam_odom_msg = Odometry()
 
-        # TUNABLES — loaded from config/reactor_conf.yaml (installed to the
+        # TUNABLES: loaded from config/reactor_conf.yaml (installed to the
         # package's share dir by setup.py). See that file for per-parameter
         # descriptions. Hardcoded defaults below are used only as fallbacks
         # if a key is missing from the YAML.
@@ -57,15 +57,12 @@ class vslam_reactor(Node):
         self.fmu_lockout = False
         self.R_FRD_TO_FLU = R.from_euler('x', np.pi)
 
-        ### TF BUFFERING ###########################################################################
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
-        ### CALLBACK GROUPS ########################################################################
         self.vslam_cbg = MutuallyExclusiveCallbackGroup()
         self.gen_processing_cbg = MutuallyExclusiveCallbackGroup()
 
-        ### QoS PARAMETERS #########################################################################
         self.qos_fmu = QoSProfile(
             reliability=QoSReliabilityPolicy.BEST_EFFORT,
             durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
@@ -83,7 +80,6 @@ class vslam_reactor(Node):
             durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
             depth=1)
 
-        ### PUBLISHERS #############################################################################
         self.pub_filtered_odom_ = self.create_publisher(Odometry,
                                                         '/visual_slam/filt_slam_odometry',
                                                          qos_profile=self.qos_vslam,
@@ -100,7 +96,6 @@ class vslam_reactor(Node):
                                                      callback_group=self.vslam_cbg)
 
 
-        ### SUBSCRIBERS ############################################################################
         self.vslam_status_sub = self.create_subscription(VisualSlamStatus,
                                                          '/visual_slam/status',
                                                          self.visual_slam_status_callback,
@@ -136,24 +131,19 @@ class vslam_reactor(Node):
                                                          callback_group=self.vslam_cbg)
 
 
-        ### CACHES #################################################################################
         self._drone_odom_cache = message_filters.Cache(self._drone_odom_sub,
                                                        cache_size=self.sync_cache_sz)
 
-        ### SERVICES ###############################################################################
         self.set_slam_pose_client = self.create_client(SetSlamPose, 'visual_slam/set_slam_pose')
-        
+
         self.trigger_slam_pose_service = self.create_service(Trigger, 'visual_slam/set_reactor_pose',
                                                              self.set_slam_pose_callback,
                                                              callback_group=self.gen_processing_cbg)
 
-        ### TRANSFORM BROADCASTERS #################################################################            
         self.px4_tf_broadcaster = TransformBroadcaster(self)
 
-        ### CALLBACK TIMERS ########################################################################
         while not self.set_slam_pose_client.wait_for_service(): pass
 
-        ### CALLBACK REGISTRATIONS #################################################################
         self._slam_odom_sub.registerCallback(self.slam_odom_callback)
 
 
@@ -173,11 +163,11 @@ class vslam_reactor(Node):
             return params
         except FileNotFoundError:
             self.get_logger().warn(
-                'reactor_conf.yaml not found — using built-in defaults')
+                'reactor_conf.yaml not found; using built-in defaults')
             return {}
         except Exception as e:
             self.get_logger().error(
-                'Failed to parse reactor_conf.yaml (%s) — using defaults' % e)
+                'Failed to parse reactor_conf.yaml (%s); using defaults' % e)
             return {}
 
 

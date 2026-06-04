@@ -12,9 +12,14 @@ With no arguments, the script queries the ROS graph for every live `sensor_msgs/
 
 ```bash
 ./camera_calibrate.sh
-# [calib] Select an image topic to calibrate (or Ctrl-C to abort):
-# 1) /cam_down/image_raw
-# [calib] > 1
+```
+
+Example output:
+
+```
+[calib] Select an image topic to calibrate (or Ctrl-C to abort):
+1) /cam_down/image_raw
+[calib] > 1
 ```
 
 `CAMERA_NS` is auto-derived from the selected topic (strips the trailing segment, e.g. `/cam_down/image_raw` becomes `/cam_down`).

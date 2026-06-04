@@ -14,14 +14,14 @@ VSLAM_CONFIG="${WORKSPACES}/isaac_ros-dev/src/px4_vslam/config/vslam_config.yaml
 command -v rs-enumerate-devices >/dev/null 2>&1 \
     || { [[ -f /opt/ros/humble/setup.bash ]] && source /opt/ros/humble/setup.bash; }
 
-# ───────────────── output helpers ─────────────────
+# Output helpers
 if [[ -t 1 ]]; then
     BLUE='\033[1;34m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 else
     BLUE=''; GREEN=''; YELLOW=''; RED=''; CYAN=''; BOLD=''; NC=''
 fi
 hdr()  { echo -e "\n${BLUE}${BOLD}================================================================================${NC}"; echo -e "${BLUE}${BOLD}$*${NC}"; echo -e "${BLUE}${BOLD}================================================================================${NC}"; }
-step() { echo -e "\n${BLUE}${BOLD}── $* ──${NC}"; }
+step() { echo -e "\n${BLUE}${BOLD}-- $* --${NC}"; }
 what() { echo -e "${CYAN}WHAT:${NC}    $*"; }
 why()  { echo -e "${CYAN}WHY:${NC}     $*"; }
 raw()  { echo -e "${CYAN}RAW:${NC}"; echo "$1" | sed 's/^/         /'; }
@@ -35,7 +35,6 @@ hdr "Front RealSense Serial Auto-Configuration"
 echo ""
 echo "Target: ${VSLAM_CONFIG}"
 
-# ───────────────── 1. yaml present ─────────────────
 step "1. vslam_config.yaml present"
 if [[ ! -f "${VSLAM_CONFIG}" ]]; then
     fail "${VSLAM_CONFIG} not found"
@@ -48,9 +47,8 @@ if ! grep -qE '^[[:space:]]*serial_no:' "${VSLAM_CONFIG}"; then
 fi
 ok "found, has a serial_no: line"
 
-# ───────────────── 2. host-side USB probe ─────────────────
 step "2. USB probe (host-side)"
-what     "lsusb for Intel ID 8086 — RealSense vendor."
+what     "lsusb for Intel ID 8086 (RealSense vendor)."
 why      "Fail fast before invoking rs-enumerate-devices, which may hang briefly when no camera is enumerable."
 USB_OUT=$(lsusb -d 8086: 2>/dev/null | grep -i realsense || true)
 if [[ -z "${USB_OUT}" ]]; then
@@ -61,13 +59,12 @@ fi
 raw "${USB_OUT}"
 COUNT=$(echo "${USB_OUT}" | wc -l)
 if [[ "${COUNT}" -gt 1 ]]; then
-    warn "${COUNT} RealSense cameras detected — this script assumes exactly one"
+    warn "${COUNT} RealSense cameras detected; this script assumes exactly one"
     note "the first serial returned by rs-enumerate-devices will be written"
 else
     ok "1 RealSense on USB"
 fi
 
-# ───────────────── 3. rs-enumerate-devices available ─────────────────
 step "3. rs-enumerate-devices on PATH"
 if ! command -v rs-enumerate-devices >/dev/null 2>&1; then
     fail "rs-enumerate-devices not found"
@@ -76,7 +73,6 @@ if ! command -v rs-enumerate-devices >/dev/null 2>&1; then
 fi
 ok "$(which rs-enumerate-devices)"
 
-# ───────────────── 4. serial via rs-enumerate-devices ─────────────────
 step "4. Query RealSense serial"
 what     "rs-enumerate-devices; parse the first 'Serial Number' field (the librealsense ID, not the USB iSerial)."
 why      "realsense2_camera matches on librealsense's Serial Number. lsusb's iSerial reports the ASIC serial instead, which won't match."
@@ -93,7 +89,6 @@ if [[ ! "${SERIAL}" =~ ^[0-9]+$ ]]; then
 fi
 ok "serial: ${SERIAL}"
 
-# ───────────────── 5. write to yaml ─────────────────
 step "5. Update serial_no in vslam_config.yaml"
 what     "Replace the value on the serial_no: line; preserve indentation and any trailing comment."
 CURRENT=$(grep -E '^[[:space:]]*serial_no:' "${VSLAM_CONFIG}" | head -1)
@@ -115,11 +110,10 @@ else
     exit 1
 fi
 
-# ───────────────── summary ─────────────────
 hdr "Summary"
 echo "  RealSense serial:  ${SERIAL}"
 echo "  Written to:        ${VSLAM_CONFIG}"
 echo ""
-echo "  Next: rebuild px4_vslam if it's already been built, or just relaunch vslam."
+echo "  Next: rebuild px4_vslam if it has already been built, or relaunch vslam."
 echo ""
 exit 0

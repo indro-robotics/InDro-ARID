@@ -12,7 +12,7 @@ from launch_ros.parameter_descriptions import ParameterFile
 
 def generate_launch_description():
 
-    # Config file (vslam tuning + realsense params) ------------------------------
+    # Config file (vslam tuning + realsense params)
     launch_dir = os.path.dirname(os.path.realpath(__file__))
     config = DeclareLaunchArgument(
         'camera_config_file',
@@ -29,11 +29,8 @@ def generate_launch_description():
     ld = env.get('LD_LIBRARY_PATH', '')
     env['LD_LIBRARY_PATH'] = f"/opt/ros/humble/lib:{ld}" if ld else "/opt/ros/humble/lib"
 
-    # Wait for the host-side arid_description to be running ----------------------
-    # The host runs arid_description.service (robot_state_publisher) which latches
-    # /robot_description and /tf_static. VSLAM needs those TF frames. We block the
-    # rest of this launch until the latched /robot_description message is visible
-    # on the DDS graph — `ros2 topic echo --once` with matching TRANSIENT_LOCAL QoS
+    # Block until the host-side arid_description (robot_state_publisher) latches
+    # /robot_description. `ros2 topic echo --once` with matching TRANSIENT_LOCAL QoS
     # exits immediately once the publisher is up.
     wait_for_description = ExecuteProcess(
         cmd=['ros2', 'topic', 'echo',
@@ -45,7 +42,7 @@ def generate_launch_description():
         name='wait_for_robot_description',
     )
 
-    # Converts VIO solution to PX4 topic -----------------------------------------
+    # Converts VIO solution to PX4 topic
     vio_transform_node = Node(
         name='vio_transform',
         namespace='vio_transform',
@@ -102,7 +99,7 @@ def generate_launch_description():
         RegisterEventHandler(OnProcessExit(
             target_action=wait_for_description,
             on_exit=[
-                LogInfo(msg='[vslam] /robot_description detected — starting VSLAM stack'),
+                LogInfo(msg='[vslam] /robot_description detected; starting VSLAM stack'),
                 vslam_container,
                 vslam_reactor_node,
                 vio_transform_node,

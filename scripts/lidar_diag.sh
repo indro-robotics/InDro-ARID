@@ -28,14 +28,14 @@ if [[ -r "${DETECTED_CONF}" ]]; then
     DETECTED="yes"
 fi
 
-# ───── output helpers ─────
+# Output helpers
 if [[ -t 1 ]]; then
     BLUE='\033[1;34m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 else
     BLUE=''; GREEN=''; YELLOW=''; RED=''; CYAN=''; BOLD=''; NC=''
 fi
 hdr()      { echo -e "\n${BLUE}${BOLD}================================================================================${NC}"; echo -e "${BLUE}${BOLD}$*${NC}"; echo -e "${BLUE}${BOLD}================================================================================${NC}"; }
-step()     { echo -e "\n${BLUE}${BOLD}── $* ──${NC}"; }
+step()     { echo -e "\n${BLUE}${BOLD}-- $* --${NC}"; }
 what()     { echo -e "${CYAN}WHAT:${NC}    $*"; }
 why()      { echo -e "${CYAN}WHY:${NC}     $*"; }
 raw()      { echo -e "${CYAN}RAW:${NC}"; echo "$1" | sed 's/^/         /'; }
@@ -53,7 +53,6 @@ LIDAR_DST_PORT=""
 SUDO_OK="no"
 sudo -n true 2>/dev/null && SUDO_OK="yes"
 
-# ───── banner ─────
 hdr "RSAIRY LiDAR Network Diagnostic"
 echo ""
 echo "Host:           $(hostname)"
@@ -72,7 +71,6 @@ fi
 echo "UDP ports:      MSOP/${EXPECTED_MSOP}, DIFOP/${EXPECTED_DIFOP}, IMU/${EXPECTED_IMU}"
 echo "Sudo cached:    ${SUDO_OK}  $( [[ "$SUDO_OK" == "no" ]] && echo "(steps 5 & 6 will be skipped)" )"
 
-# ───── 1. interface + link ─────
 step "1. Interface presence + electrical link"
 what     "Is ${NIC} present, and does it have a live cable (carrier)?"
 why      "No carrier means cable unplugged, peer offline, or broken cable."
@@ -100,14 +98,13 @@ if echo "${LINK_LINE}" | grep -qE 'LOWER_UP'; then
     note "host MAC:    ${MAC:-?}"
     note "RX lifetime: ${RX_PKTS} packets, ${RX_BYTES} bytes, ${RX_ERRS} errors, ${RX_DROP} dropped"
     [[ "${SPEED}" == "100Mb/s" ]] && note "(100 Mb/s expected for the modified cable in this build)"
-    [[ "${RX_ERRS}" != "0" || "${RX_DROP}" != "0" ]] && warn "lifetime errors/drops are non-zero — investigate"
+    [[ "${RX_ERRS}" != "0" || "${RX_DROP}" != "0" ]] && warn "lifetime errors/drops are non-zero; investigate"
 else
-    fail "no carrier — cable unplugged or peer offline"
+    fail "no carrier; cable unplugged or peer offline"
     fix  "plug the LiDAR cable into ${NIC} and confirm the LiDAR is powered"
     exit 1
 fi
 
-# ───── 2. NM active profile ─────
 step "2. NetworkManager profile on ${NIC}"
 what     "Which connection is currently providing IPv4 to ${NIC}?"
 why      "'rslidar' = static IP for LiDAR. 'dev' = DHCP fallback (no LiDAR detected at last link-up)."
@@ -123,7 +120,7 @@ elif [[ "${ACTIVE}" == "dev" ]]; then
     note "the dispatcher gave up waiting for the LiDAR at the last link-up event."
     fix  "nmcli connection up rslidar"
 elif [[ -n "${ACTIVE}" ]]; then
-    warn "active: '${ACTIVE}' — not one of the two managed profiles"
+    warn "active: '${ACTIVE}' (not one of the two managed profiles)"
     fix  "nmcli connection up rslidar"
 else
     fail "no NM connection active on ${NIC}"
@@ -134,7 +131,6 @@ fi
 ALL_PROFILES=$(nmcli -t -f NAME,DEVICE connection show 2>/dev/null | awk -F: -v ifc="${NIC}" '$2==ifc {print $1}')
 note "profiles bound to ${NIC}: $(echo "${ALL_PROFILES}" | tr '\n' ' ' | sed 's/ $//')"
 
-# ───── 3. IPv4 + route ─────
 step "3. IPv4 address + route via ${NIC}"
 what     "Is there an IP on ${NIC}, and does the kernel know to send ${SUBNET} traffic out it?"
 why      "Without a route, LiDAR-bound packets are silently sent via the wifi default gateway instead."
@@ -160,11 +156,10 @@ elif [[ -n "${ROUTES}" ]]; then
     warn "routes exist on ${NIC} but none for ${SUBNET}"
     fix  "nmcli connection modify rslidar +ipv4.routes '${SUBNET} 0.0.0.0' && nmcli connection up rslidar"
 else
-    fail "no routes via ${NIC} — kernel cannot reach ${SUBNET} on this NIC"
+    fail "no routes via ${NIC}: kernel cannot reach ${SUBNET} on this NIC"
     fix  "nmcli connection modify rslidar +ipv4.routes '${SUBNET} 0.0.0.0' && nmcli connection up rslidar"
 fi
 
-# ───── 4. ARP probe ─────
 step "4. ARP probe at ${EXPECTED_LIDAR_IP}"
 what     "Send 3 ARP-Who-Has from source ${HOST_IP} on ${NIC}. Healthy LiDAR responds in <1 ms."
 why      "ARP is L2; works regardless of UDP listeners. No reply ⇒ LiDAR off, at different IP, or not on this segment."
@@ -194,9 +189,8 @@ else
     note "continuing to passive sniff to find where the LiDAR actually is."
 fi
 
-# ───── 5. passive sniff ─────
 if [[ -z "${LIDAR_FOUND}" ]]; then
-    step "5. Passive sniff (5 s) — any RoboSense traffic on ${NIC}"
+    step "5. Passive sniff (5 s) for RoboSense traffic on ${NIC}"
     what     "tcpdump in promisc mode for UDP packets on ${EXPECTED_MSOP}/${EXPECTED_DIFOP}/${EXPECTED_IMU}."
     why      "Powered LiDARs auto-broadcast MSOP/DIFOP regardless of host config. Reveals real src+dst IPs."
 
@@ -235,7 +229,6 @@ if [[ -z "${LIDAR_FOUND}" ]]; then
     fi
 fi
 
-# ───── 6. subnet scan ─────
 if [[ -z "${LIDAR_FOUND}" ]]; then
     step "6. Active subnet scan with arp-scan"
     what     "ARP every host in ${SUBNET} to find any responder."
@@ -261,7 +254,6 @@ if [[ -z "${LIDAR_FOUND}" ]]; then
     fi
 fi
 
-# ───── 7. SDK runtime status ─────
 step "7. rslidar_coordinator + SDK runtime status"
 what     "Is the supervisor active? Is the SDK subprocess spawned? Is /rslidar_points publishing?"
 why      "Network can be perfect but the SDK might not be running, or might be running with no consumers."
@@ -292,14 +284,13 @@ if [[ -n "${SDK_PID}" ]]; then
             /rslidar_coordinator/alive 2>/dev/null | grep -oE 'data: (true|false)' | head -1)
         note "/rslidar_coordinator/alive: ${ALIVE:-(no value yet)}"
     else
-        note "ros2 CLI not in PATH — skipping topic-level checks (source local_ws/install/setup.bash first)"
+        note "ros2 CLI not in PATH; skipping topic-level checks (source local_ws/install/setup.bash first)"
     fi
 else
     info "no rslidar_sdk_node subprocess running"
     fix  "rslidar_start  # spawns it via the coordinator"
 fi
 
-# ───── summary ─────
 hdr "Summary"
 if [[ -n "${LIDAR_FOUND}" ]]; then
     echo "  LiDAR source IP:        ${LIDAR_SRC_IP:-?}"
@@ -323,9 +314,9 @@ else
     fail "LiDAR not detected"
     echo ""
     echo "  Check, in order:"
-    echo "    1. LiDAR power       — status LED on?"
-    echo "    2. Cable destination — wired to the LiDAR's Ethernet port, not power/debug?"
-    echo "    3. LiDAR IP          — RSView or factory-reset to confirm. RSAIRY default is"
-    echo "                           ${EXPECTED_LIDAR_IP} → ${HOST_IP} on UDP ${EXPECTED_MSOP}/${EXPECTED_DIFOP}."
+    echo "    1. LiDAR power:       status LED on?"
+    echo "    2. Cable destination: wired to the LiDAR's Ethernet port, not power/debug?"
+    echo "    3. LiDAR IP:          RSView or factory-reset to confirm. RSAIRY default is"
+    echo "                          ${EXPECTED_LIDAR_IP} -> ${HOST_IP} on UDP ${EXPECTED_MSOP}/${EXPECTED_DIFOP}."
 fi
 echo ""

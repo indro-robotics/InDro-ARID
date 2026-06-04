@@ -22,7 +22,7 @@ ros2 launch arid_description display.launch.py
 
 `robot_state_publisher` then publishes:
 
-- `/robot_description`: latched `std_msgs/String` with the expanded URDF. Consumed by RViz, Foxglove, MoveIt, etc.
+- `/robot_description`: latched `std_msgs/String` with the expanded URDF. Consumed by RViz, Foxglove, and MoveIt.
 - `/tf_static`: the full fixed-joint transform tree for all sensor, propeller, and airframe frames.
 
 **Auto-start on boot:** `arid_description.service` (installed by `setup.sh`) runs this launch file as a systemd unit, so the TF tree is available system-wide without manual steps.
@@ -76,16 +76,14 @@ All joints are fixed. The RealSense frame sits at the left IR lens per the `real
 
 Requires [Foxglove Studio](https://foxglove.dev/download) (desktop or web) and the `foxglove_bridge` package (`sudo apt install ros-humble-foxglove-bridge`).
 
+Run the `robot_state_publisher` in one terminal and the `foxglove_bridge` WebSocket (port 8765) in another:
+
 ```bash
-ros2 launch arid_description display.launch.py       # terminal 1: robot_state_publisher
-ros2 run foxglove_bridge foxglove_bridge              # terminal 2: WebSocket on port 8765
+ros2 launch arid_description display.launch.py
+ros2 run foxglove_bridge foxglove_bridge
 ```
 
-In Foxglove Studio:
-1. **Open connection** → `ws://<host>:8765` (use `localhost` if running on the same machine).
-2. Add a **3D** panel.
-3. In the 3D panel settings, go to **Custom Layers → Add → URDF** and set topic `/robot_description`.
-4. Set the panel **Frame** to `base_link`.
+In Foxglove Studio, open a connection to `ws://<device-ip>:8765` (use `localhost` on the same machine), add a 3D panel, then in the panel settings under **Custom Layers > Add > URDF** set topic `/robot_description` and set the panel **Frame** to `base_link`.
 
 ## License
 

@@ -1,4 +1,4 @@
-# Placeholder calibration for LUCID Phoenix PHXET124S-MC — full sensor 4096x3000
+# Placeholder calibration for LUCID Phoenix PHXET124S-MC (full sensor 4096x3000).
 # Replace with real values from ros2 run camera_calibration cameracalibrator
 image_width: 4096
 image_height: 3000

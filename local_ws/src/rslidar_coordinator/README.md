@@ -38,8 +38,8 @@ The systemd unit `rslidar_coordinator.service` (installed by the workspace-level
 | `/rslidar_coordinator/restart` | `std_srvs/Trigger` | Stop then start. |
 
 ```bash
-ros2 service call /rslidar_coordinator/enable std_srvs/srv/SetBool '{data: true}'      # start
-ros2 service call /rslidar_coordinator/enable std_srvs/srv/SetBool '{data: false}'     # stop
+ros2 service call /rslidar_coordinator/enable std_srvs/srv/SetBool '{data: true}'
+ros2 service call /rslidar_coordinator/enable std_srvs/srv/SetBool '{data: false}'
 ros2 service call /rslidar_coordinator/status std_srvs/srv/Trigger '{}'
 ```
 
@@ -176,9 +176,9 @@ journalctl -u rslidar_coordinator -f
 # Stop
 rslidar_stop
 
-# When something looks wrong, run the diagnostic
-lidar_diag           # basic checks
-sudo lidar_diag      # adds passive tcpdump and arp-scan
+# Run the diagnostic when something looks wrong
+lidar_diag
+sudo lidar_diag
 ```
 
 ---

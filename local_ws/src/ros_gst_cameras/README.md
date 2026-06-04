@@ -2,7 +2,7 @@
 
 ROS 2 GStreamer-based camera stack. Two packages:
 
-- **`gst_cam_node`**: C++ node that wraps an arbitrary GStreamer pipeline and publishes `image_raw` (plus `image_raw/compressed` when `compress: true`) and `camera_info`. The pipeline is opaque to the node. Anything that produces frames into an `appsink` works: CSI via `nvarguscamerasrc`, V4L2, RTSP, file source, test pattern, etc.
+- **`gst_cam_node`**: C++ node that wraps an arbitrary GStreamer pipeline and publishes `image_raw` (plus `image_raw/compressed` when `compress: true`) and `camera_info`. The pipeline is opaque to the node: anything that produces frames into an `appsink` works.
 - **`gst_camera_manager`**: Python supervisor that loads a YAML of named pipelines and exposes ROS 2 services to start and stop each one as a managed subprocess, with a watchdog on liveness.
 
 ---
@@ -32,44 +32,44 @@ At startup the manager reads `gst_camera_manager/config/pipelines.yaml` and crea
 | `/gst_camera_manager/status_all` | `std_srvs/Trigger` | Multi-line summary of every pipeline's state, one line per pipeline. |
 | `/gst_camera_manager/stop_all` | `std_srvs/Trigger` | Kills every currently-running pipeline. No-op for stopped pipelines. |
 
-`<name>` matches the keys in `pipelines.yaml`. Currently just `cam_down`.
+`<name>` matches the keys in `pipelines.yaml`. Currently: `cam_down`.
 
 #### Examples
 
-**Start or stop a single pipeline:**
+Start or stop the `cam_down` pipeline by setting `data: true` to start or `data: false` to stop:
+
 ```bash
-ros2 service call /gst_camera_manager/cam_down std_srvs/srv/SetBool "{data: true}"   # start
-ros2 service call /gst_camera_manager/cam_down std_srvs/srv/SetBool "{data: false}"  # stop
+ros2 service call /gst_camera_manager/cam_down std_srvs/srv/SetBool "{data: true}"
+ros2 service call /gst_camera_manager/cam_down std_srvs/srv/SetBool "{data: false}"
 ```
 
-**Query state of one pipeline:**
+Query the state of one pipeline:
+
 ```bash
 ros2 service call /gst_camera_manager/cam_down/status std_srvs/srv/Trigger "{}"
-# response:
-# success=True,  message='cam_down RUNNING (pid=12345)'
-# or
-# success=False, message='cam_down STOPPED'
 ```
 
-**See all pipelines at once:**
+The response returns `success=True, message='cam_down RUNNING (pid=N)'` when the pipeline is up, and `success=False, message='cam_down STOPPED'` when it isn't.
+
+Summary across every pipeline (handy for ground-station UIs that render a panel of camera states without polling each `/<name>/status` individually):
+
 ```bash
 ros2 service call /gst_camera_manager/status_all std_srvs/srv/Trigger "{}"
-# response message (multi-line):
-#   [RUNNING] cam_down  (pid=12345)
 ```
-Useful for a quick "what's running" check. Also handy for ground-station UIs that want to render a panel of every camera's state without polling each `/<name>/status` individually.
 
-**Kill everything in one call:**
+Kill every running pipeline in one call. Equivalent to `SetBool false` on each one individually:
+
 ```bash
 ros2 service call /gst_camera_manager/stop_all std_srvs/srv/Trigger "{}"
-# response message: 'stopped: cam_down'  (or 'nothing running')
 ```
-Use when shutting down or before reconfiguring. Equivalent to calling SetBool `false` on each running pipeline.
 
 ### Verify frames
+
+The `compressed` topic is only published when the pipeline's `compress: true` field is set.
+
 ```bash
 ros2 topic hz /cam_down/image_raw
-ros2 topic hz /cam_down/image_raw/compressed   # only when compress: true
+ros2 topic hz /cam_down/image_raw/compressed
 ros2 topic echo /cam_down/camera_info --once
 ```
 
@@ -139,55 +139,21 @@ Append an entry to `pipelines.yaml`:
   my_cam:
     gst_pipeline: >-
       <any gstreamer pipeline ending in appsink>
-    calibration: "my_cam"          # optional: file in config/calibrations/
+    calibration: "my_cam"
     topic: "my_cam"
     frame_id: "my_cam_frame"
-    encoding: ""                   # "" auto-detect, or force e.g. "bgr8"
+    encoding: ""
     compress: true
-    alive_threshold: 2.0           # seconds (float) without camera_info before alive flips false
-    # reliable: true               # optional; default is BEST_EFFORT (sensor_data QoS)
+    alive_threshold: 2.0
 ```
+
+Field semantics are in the *Configuration: `pipelines.yaml`* table above. `calibration` is optional and refers to a file in `config/calibrations/`. `encoding: ""` selects auto-detect; set explicitly to override. Add `reliable: true` to opt out of the default BEST_EFFORT (sensor_data) QoS.
 
 Rebuild (`colcon build --packages-select gst_camera_manager`) or restart the manager to pick it up. The pipeline gets its own `/gst_camera_manager/my_cam` service automatically. No code changes needed.
 
 ### Currently defined pipelines
 
 - **`cam_down`**: CSI camera (sensor-id 0) via `nvarguscamerasrc` at 1920×1080 at 20 fps (delivered ~16 Hz), NV12 to GRAY8 via `nvvidconv`. The sensor is IR-sensitive; the pipeline drops to mono (GRAY8) so the stream is directly usable for IR-aware computer-vision tasks (feature tracking, motion detection, fiducial decoding) without per-channel filtering. Frame ID: `bottom_visual_link`.
-
----
-
-## Example: CSI camera via `nvarguscamerasrc`
-
-The currently used sensor is a Sony IMX219. Typical mode table for IMX219 on Jetson (mode numbers and max framerates are defined by the sensor driver in the device-tree overlay; confirm against the specific overlay in use):
-
-| Mode | Resolution | Max FPS |
-|---|---|---|
-| 0 | 3280 × 2464 | 21 |
-| 1 | 3280 × 1848 | 28 |
-| 2 | 1920 × 1080 | 30 |
-| 3 | 1640 × 1232 | 30 |
-| 4 | 1280 × 720  | 60 |
-
-All modes are 10-bit Bayer RGGB. `nvarguscamerasrc`'s ISP produces NV12, which `nvvidconv` converts to GRAY8 (mono) or BGRx (colour) downstream. Set `sensor-mode=N` on `nvarguscamerasrc` to pick a mode explicitly; otherwise it auto-selects based on the width, height, and framerate in the capsfilter.
-
-Example pipeline string (mono, 1080p at 30 fps):
-```
-nvarguscamerasrc sensor-id=0 wbmode=1 aelock=false ee-mode=2 tnr-mode=2
-  ! video/x-raw(memory:NVMM),width=1920,height=1080,framerate=30/1,format=NV12
-  ! nvvidconv flip-method=0 interpolation-method=1
-  ! video/x-raw,format=GRAY8
-  ! appsink sync=false
-```
-
-Other sensor families (IMX477, IMX219 variants, OV5693, custom modules) follow the same pattern. Consult the board's device-tree overlay for the specific mode table.
-
-## Other example sources
-
-| Source | Pipeline skeleton |
-|---|---|
-| USB / V4L2 camera | `v4l2src device=/dev/video0 ! image/jpeg,width=1280,height=720 ! jpegdec ! videoconvert ! appsink` |
-| RTSP stream | `rtspsrc location=rtsp://host/stream latency=100 ! rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! appsink` |
-| Test pattern | `videotestsrc ! video/x-raw,format=BGR,width=640,height=480 ! appsink` |
 
 ---
 
@@ -226,7 +192,7 @@ The manager keeps the last 20 log files per pipeline and rotates older ones.
    - `data: false`: subprocess died or hasn't produced a frame within `alive_threshold`. Look at the log file.
    - `data: true` but `hz` still zero: QoS mismatch on the subscriber side (consumer expects RELIABLE but the pipeline is BEST_EFFORT, or vice versa).
 
-4. **Encoding auto-detect log line**. On first frame you should see:
+4. **Encoding auto-detect log line**. On first frame the log shows:
    ```
    [INFO] Image encoding: mono8 (auto-detected)
    ```

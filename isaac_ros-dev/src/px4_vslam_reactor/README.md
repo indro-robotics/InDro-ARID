@@ -61,9 +61,9 @@ Loaded directly by the node at startup from its own share dir. No launch-file wi
 | `quat_delta_theta` | rad | Reset-alignment rotation tolerance (default about 5°). |
 | `displacement_delta` | m | Reset-alignment translation tolerance. |
 
-**To change a value:** edit the YAML, rebuild (or just re-source install if built with `--symlink-install`), restart the launch. On startup the reactor logs `Loaded reactor_conf.yaml (8 tunables)`.
+**To change a value:** edit the YAML, rebuild (or re-source install if built with `--symlink-install`), restart the launch. On startup the reactor logs `Loaded reactor_conf.yaml (8 tunables)`.
 
-**If the YAML is missing or malformed:** the node warns or errors and falls back to hardcoded defaults (matching the original values), so it still starts.
+**If the YAML is missing or malformed:** the node warns or errors and falls back to hardcoded defaults, so it still starts.
 
 ---
 

@@ -3,9 +3,7 @@
 # Usage: ./setup.sh [--help]
 set -euo pipefail
 
-###############################################################################
-# COLOURS & OUTPUT HELPERS
-###############################################################################
+# Output helpers
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[1;34m'; BOLD='\033[1m'; NC='\033[0m'
 
@@ -19,9 +17,7 @@ err()  { echo -e "  ${RED}[ERROR]${NC} $*" >&2; }
 STEPS_RUN=()
 STEPS_SKIPPED=()
 
-###############################################################################
-# ERROR TRAP
-###############################################################################
+# Error trap
 failure() {
     err "======================================================"
     err "SETUP FAILED in step: ${CURRENT_STEP}"
@@ -32,9 +28,7 @@ failure() {
 }
 trap 'failure ${LINENO}' ERR
 
-###############################################################################
-# CONSTANTS
-###############################################################################
+# Constants
 USERNAME="jetson"
 HOME_DIR="/home/${USERNAME}"
 BASHRC_FILE="${HOME_DIR}/.bashrc"
@@ -54,9 +48,7 @@ RSLIDAR_LIDAR_IP="192.168.1.200"
 RSLIDAR_DISPATCHER="/etc/NetworkManager/dispatcher.d/90-rslidar"
 RSLIDAR_SYSCTL="/etc/sysctl.d/99-rslidar.conf"
 
-###############################################################################
-# LOGGING
-###############################################################################
+# Logging
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="${SCRIPT_DIR}/log"
 mkdir -p "${LOG_DIR}"
@@ -64,9 +56,7 @@ LOG_FILE="${LOG_DIR}/setup_log_$(date +%Y%m%d_%H%M%S).log"
 exec > >(tee -a "${LOG_FILE}") 2>&1
 echo "Logging to ${LOG_FILE}"
 
-###############################################################################
-# ARGUMENT PARSING
-###############################################################################
+# Argument parsing
 parse_args() {
     for arg in "$@"; do
         case "$arg" in
@@ -80,9 +70,7 @@ parse_args() {
     done
 }
 
-###############################################################################
-# SANITY CHECKS
-###############################################################################
+# Sanity checks
 preflight() {
     step "Sanity checks"
 
@@ -98,9 +86,7 @@ preflight() {
     ok "Sanity checks passed"
 }
 
-###############################################################################
-# POWER & PACKAGE HOLDS
-###############################################################################
+# Power mode and package holds
 setup_power() {
     step "Power mode & package holds"
 
@@ -120,9 +106,7 @@ setup_power() {
     ok "Max power mode set, critical packages held"
 }
 
-###############################################################################
-# APT REPOSITORIES
-###############################################################################
+# APT repositories
 setup_repos() {
     step "APT repositories"
 
@@ -172,9 +156,7 @@ $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
     STEPS_RUN+=("repos")
 }
 
-###############################################################################
-# APT PACKAGES
-###############################################################################
+# APT packages
 setup_apt_packages() {
     step "APT packages"
 
@@ -196,18 +178,7 @@ setup_apt_packages() {
     ok "APT packages installed"
 }
 
-###############################################################################
-# PX4 BUILD DEPENDENCIES
-# Split into two probes because the ARM GCC toolchain and the Python build
-# deps fail independently: the GCC binary survives package wipes that
-# remove kconfiglib/jinja2/etc., so the previous "GCC present ⇒ setup
-# complete" heuristic produced builds that failed at the kconfig stage.
-#
-#   - Python deps: always reconcile against Tools/setup/requirements.txt
-#     (idempotent, fast, no prompt).
-#   - ARM toolchain: only prompt for the full ubuntu.sh run if
-#     arm-none-eabi-gcc is missing (heavy install, downloads tarball).
-###############################################################################
+# PX4 build dependencies: ensure kconfiglib Python deps are present, then ensure arm-none-eabi-gcc.
 setup_px4_deps() {
     step "PX4 build dependencies"
 
@@ -217,7 +188,7 @@ setup_px4_deps() {
         return
     fi
 
-    # ── Python deps (idempotent) ──────────────────────────────────────────
+    # Python deps (idempotent)
     local req="${PX4_DIR}/Tools/setup/requirements.txt"
     if [[ -f "${req}" ]]; then
         if python3 -c 'import kconfiglib' >/dev/null 2>&1; then
@@ -231,7 +202,7 @@ setup_px4_deps() {
         warn "${req} not found; cannot reconcile Python deps"
     fi
 
-    # ── ARM toolchain (heavy; only on demand) ─────────────────────────────
+    # ARM toolchain (heavy; only on demand)
     if command -v arm-none-eabi-gcc >/dev/null 2>&1; then
         skip "ARM toolchain already present (arm-none-eabi-gcc)"
         STEPS_RUN+=("px4_deps")
@@ -254,9 +225,7 @@ setup_px4_deps() {
     fi
 }
 
-###############################################################################
-# GIT CONFIG & SUBMODULES
-###############################################################################
+# Git config and submodules
 setup_git() {
     step "Git config & submodules"
 
@@ -274,9 +243,7 @@ setup_git() {
     STEPS_RUN+=("git")
 }
 
-###############################################################################
-# ISAAC ROS DOCKER PATCHES
-###############################################################################
+# Isaac ROS Docker patches
 setup_docker_patches() {
     step "Isaac ROS Docker patches"
 
@@ -303,11 +270,8 @@ setup_docker_patches() {
     ok "Docker patches applied and protected"
 }
 
-###############################################################################
-# CONFIG FILE PROTECTION (skip-worktree)
-# Per-deployment configs (camera serials, calibrations, etc.) get skip-worktree
-# so local edits don't show in git status and can't be pushed.
-###############################################################################
+# Config file protection (skip-worktree). Per-deployment configs (camera serials,
+# calibrations) get skip-worktree so local edits don't show in git status and can't be pushed.
 setup_skip_worktree() {
     step "Protecting per-deployment config files"
 
@@ -326,7 +290,7 @@ setup_skip_worktree() {
             ok "Protected: ${rel_dir}"
             (( protected++ )) || true
         else
-            warn "No tracked files in ${rel_dir} — skipped"
+            warn "No tracked files in ${rel_dir} - skipped"
         fi
     done
 
@@ -334,11 +298,8 @@ setup_skip_worktree() {
     ok "${protected} config directories protected"
 }
 
-###############################################################################
-# .BASHRC
-# Rewrites the ARID block on every run so alias/export changes propagate
+# .bashrc: rewrites the ARID block on every run so alias/export changes propagate
 # without leaving stale duplicates.
-###############################################################################
 setup_bashrc() {
     step ".bashrc environment"
 
@@ -402,9 +363,7 @@ EOF
     ok ".bashrc updated"
 }
 
-###############################################################################
-# SUDOERS / UDEV / POLKIT / GROUPS
-###############################################################################
+# Sudoers, udev, polkit, groups
 setup_permissions() {
     step "Sudoers, udev, polkit, groups"
 
@@ -450,9 +409,7 @@ EOF
     STEPS_RUN+=("permissions")
 }
 
-###############################################################################
-# UHUBCTL
-###############################################################################
+# uhubctl
 setup_uhubctl() {
     step "uhubctl"
 
@@ -477,9 +434,7 @@ setup_uhubctl() {
     ok "uhubctl installed"
 }
 
-###############################################################################
-# RSAIRY LIDAR SYSCTL  (UDP receive buffer)
-###############################################################################
+# RSAIRY LiDAR sysctl (UDP receive buffer)
 setup_lidar_sysctl() {
     step "RSAIRY LiDAR sysctl (UDP rmem)"
 
@@ -495,9 +450,7 @@ EOF
     ok "sysctl: net.core.rmem_max=net.core.rmem_default=25 MiB"
 }
 
-###############################################################################
-# RSAIRY LIDAR NETWORK  (NetworkManager + dispatcher)
-###############################################################################
+# RSAIRY LiDAR network (NetworkManager + dispatcher)
 setup_lidar_network() {
     step "RSAIRY LiDAR network (NetworkManager)"
 
@@ -567,22 +520,20 @@ EOL
 
     # Live sniff overwrites fallback values when a LiDAR is reachable.
     if ip link show "${RSLIDAR_NIC}" 2>/dev/null | grep -qE 'LOWER_UP'; then
-        ok "carrier on ${RSLIDAR_NIC} is UP — running config_lidar to auto-detect actual LiDAR IPs..."
+        ok "carrier on ${RSLIDAR_NIC} is UP - running config_lidar to auto-detect actual LiDAR IPs"
         if sudo bash "${WORKSPACES}/scripts/config_lidar.sh"; then
-            ok "config_lidar succeeded — rslidar configured against discovered LiDAR"
+            ok "config_lidar succeeded: rslidar configured against discovered LiDAR"
         else
             warn "config_lidar didn't detect a LiDAR. Fallback values remain active."
             warn "Once the LiDAR is plugged in and powered, run 'config_lidar' manually."
         fi
     else
-        warn "no carrier on ${RSLIDAR_NIC} — skipping auto-detect."
+        warn "no carrier on ${RSLIDAR_NIC} - skipping auto-detect."
         warn "After the LiDAR is plugged in and powered, run 'config_lidar' to auto-configure."
     fi
 }
 
-###############################################################################
-# SYSTEMD SERVICES
-###############################################################################
+# systemd services
 setup_systemd() {
     step "systemd services"
 
@@ -602,9 +553,7 @@ setup_systemd() {
     ok "Services enabled and daemon reloaded"
 }
 
-###############################################################################
-# PYTHON PACKAGES
-###############################################################################
+# Python packages
 # --break-system-packages: required on PEP 668 systems, unknown to pip < 23.0.1.
 PIP_BREAK_FLAG=""
 if python3 -m pip install --help 2>/dev/null | grep -q -- '--break-system-packages'; then
@@ -630,9 +579,7 @@ ensure_pip_pkg() {
     fi
 }
 
-###############################################################################
-# ROS2 LOCAL WORKSPACE
-###############################################################################
+# ROS2 local workspace
 setup_ros_workspace() {
     step "ROS2 local workspace"
 
@@ -662,9 +609,7 @@ setup_ros_workspace() {
     ok "ROS2 local workspace built"
 }
 
-###############################################################################
-# DOCKER  (each sub-step is state-detected and idempotent)
-###############################################################################
+# Docker (each sub-step is state-detected and idempotent)
 setup_docker() {
     step "Docker"
 
@@ -708,9 +653,7 @@ setup_docker() {
     STEPS_RUN+=("docker")
 }
 
-###############################################################################
-# FRONT REALSENSE SERIAL  (best-effort; depends only on the camera being plugged in)
-###############################################################################
+# Front RealSense serial (best-effort; depends only on the camera being plugged in)
 setup_realsense() {
     step "Front RealSense serial → vslam_config.yaml"
 
@@ -730,9 +673,7 @@ setup_realsense() {
     fi
 }
 
-###############################################################################
-# SUMMARY
-###############################################################################
+# Summary
 print_summary() {
     echo ""
     echo -e "${BOLD}======================================${NC}"
@@ -755,9 +696,7 @@ print_summary() {
     echo -e "${BOLD}======================================${NC}"
 }
 
-###############################################################################
-# REBOOT PROMPT
-###############################################################################
+# Reboot prompt
 prompt_reboot() {
     echo ""
     echo -e "${YELLOW}${BOLD}A reboot is required for all changes to take effect.${NC}"
@@ -769,9 +708,7 @@ prompt_reboot() {
     fi
 }
 
-###############################################################################
-# MAIN
-###############################################################################
+# Main
 main() {
     parse_args "$@"
     preflight

@@ -23,7 +23,7 @@
 #                     starts when the subprocess is launched (acts as a startup grace
 #                     period). Omitted → defaults to 5.0s.
 #   reliable     : QoS for image_raw + camera_info. Default (omitted / "" / false) is
-#                  sensor_data QoS (BEST_EFFORT, VOLATILE, depth 5) — standard for image
+#                  sensor_data QoS (BEST_EFFORT, VOLATILE, depth 5): standard for image
 #                  streams, drops frames over lossy links rather than stalling the
 #                  publisher. Set `reliable: true` for streams that cannot tolerate frame
 #                  drops (low-rate scanners, metadata-critical pipelines).

@@ -54,26 +54,31 @@ def _parse_reliable(raw):
     return False
 
 
-####################################################################################################
-# GST CAMERA MANAGER ###############################################################################
 class GstCameraManager(Node):
+    """Supervises gst_cam_node subprocesses, one per pipeline declared in pipelines.yaml.
+
+    Owns per-pipeline Popen handles, camera_info subscriptions used as frame-flow
+    proxies, a 2 Hz watchdog publishing latched /alive Bool topics, and SetBool/Trigger
+    services for enable/disable/status.
+    """
+
     def __init__(self):
         super().__init__('gst_camera_manager')
 
-        self.pipelines         = {}   # name -> dict (gst_pipeline, calibration, topic, frame_id, encoding, alive_threshold, reliable)
-        self.processes         = {}   # name -> Popen or None
-        self.log_files         = {}   # name -> open file handle or None
-        self.alive_pubs        = {}   # name -> Publisher<Bool>
-        self.alive_state       = {}   # name -> bool (last published alive value; kept in sync with _publish_alive)
-        self.alive_thresholds  = {}   # name -> float seconds
-        self.reliable_flags    = {}   # name -> bool (parsed from YAML `reliable`)
-        self.last_frame_time   = {}   # name -> rclpy.time.Time (set on each camera_info callback)
-        self.info_subs         = {}   # name -> Subscription<CameraInfo>
-        self.srv_handles       = {}   # name -> service handles (keep alive)
+        self.pipelines         = {}
+        self.processes         = {}
+        self.log_files         = {}
+        self.alive_pubs        = {}
+        self.alive_state       = {}
+        self.alive_thresholds  = {}
+        self.reliable_flags    = {}
+        self.last_frame_time   = {}
+        self.info_subs         = {}
+        self.srv_handles       = {}
         self.process_lock      = Lock()
 
         self.launch_env = os.environ.copy()
-        # Aravis is built from source — ensure the GStreamer plugin is always found
+        # Aravis is built from source; ensure the GStreamer plugin is always found
         # regardless of whether GST_PLUGIN_PATH is set in the calling shell.
         aravis_gst = '/usr/local/lib/aarch64-linux-gnu/gstreamer-1.0'
         existing = self.launch_env.get('GST_PLUGIN_PATH', '')
@@ -92,9 +97,8 @@ class GstCameraManager(Node):
         self._create_services()
         self._create_watchdog()
 
-        self.get_logger().info('GstCameraManager ready — %d pipeline(s) registered' % len(self.pipelines))
+        self.get_logger().info('GstCameraManager ready: %d pipeline(s) registered' % len(self.pipelines))
 
-    ################################################################################################
     def _load_config(self, config_path):
         try:
             with open(config_path, 'r') as f:
@@ -114,7 +118,6 @@ class GstCameraManager(Node):
         except Exception as e:
             self.get_logger().error('Failed to load config: %s' % str(e))
 
-    ################################################################################################
     def _create_publishers(self):
         for name in self.pipelines:
             pub = self.create_publisher(Bool, 'gst_camera_manager/%s/alive' % name, ALIVE_QOS)
@@ -123,7 +126,6 @@ class GstCameraManager(Node):
             msg.data = False
             pub.publish(msg)
 
-    ################################################################################################
     def _publish_alive(self, name, alive):
         try:
             msg = Bool()
@@ -133,7 +135,6 @@ class GstCameraManager(Node):
         except Exception:
             pass
 
-    ################################################################################################
     def _create_info_subscriptions(self):
         # Subscribe to each pipeline's camera_info topic. The subscription persists for the
         # node's lifetime; it sits idle until the subprocess starts publishing and is the
@@ -152,12 +153,10 @@ class GstCameraManager(Node):
             )
             self.info_subs[name] = sub
 
-    ################################################################################################
     def _on_camera_info(self, name, _msg):
-        # Single-key dict write — atomic under the GIL, no lock needed.
+        # Single-key dict write: atomic under the GIL, no lock needed.
         self.last_frame_time[name] = self.get_clock().now()
 
-    ################################################################################################
     def _create_services(self):
         for name in self.pipelines:
             cbg_ctrl   = MutuallyExclusiveCallbackGroup()
@@ -187,12 +186,10 @@ class GstCameraManager(Node):
             Trigger, 'gst_camera_manager/stop_all',
             self._handle_stop_all_srv, callback_group=cbg_stop)
 
-    ################################################################################################
     def _create_watchdog(self):
         cbg = MutuallyExclusiveCallbackGroup()
         self.watchdog_timer = self.create_timer(WATCHDOG_PERIOD, self._watchdog_tick, callback_group=cbg)
 
-    ################################################################################################
     def _watchdog_tick(self):
         now = self.get_clock().now()
         with self.process_lock:
@@ -213,7 +210,7 @@ class GstCameraManager(Node):
                 threshold = self.alive_thresholds.get(name, DEFAULT_ALIVE_THRESHOLD)
                 last = self.last_frame_time.get(name)
                 if last is None:
-                    continue  # not yet set — grace period is initialized at enable time
+                    continue  # not yet set; grace period is initialized at enable time
                 elapsed = (now - last).nanoseconds / 1e9
                 currently_alive = elapsed <= threshold
                 if currently_alive != self.alive_state.get(name, False):
@@ -222,10 +219,9 @@ class GstCameraManager(Node):
                         self.get_logger().info('Pipeline %s: frames resumed' % name)
                     else:
                         self.get_logger().warn(
-                            'Pipeline %s: stalled — %.2fs since last frame (threshold %.2fs)' % (
+                            'Pipeline %s: stalled, %.2fs since last frame (threshold %.2fs)' % (
                                 name, elapsed, threshold))
 
-    ################################################################################################
     def _build_command(self, name):
         info      = self.pipelines[name]
         pipeline  = info['gst_pipeline'].replace('\n', ' ')
@@ -248,14 +244,13 @@ class GstCameraManager(Node):
             ' -p frame_id:="%s"'
             ' -p camera_info_path:="%s"'
         ) % (pipeline_escaped, topic, frame_id, calib_url)
-        # Only emit `encoding` when set — empty quoted string collapses through
+        # Only emit `encoding` when set: empty quoted string collapses through
         # the shell and ROS 2's arg parser rejects bare `-p encoding:=`.
         if encoding:
             cmd += ' -p encoding:="%s"' % encoding
         cmd += ' -p compress:=%s -p reliable:=%s' % (compress, reliable)
         return cmd
 
-    ################################################################################################
     def _open_log(self, name):
         log_dir = self.log_root / name
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -269,7 +264,6 @@ class GstCameraManager(Node):
         self.get_logger().info('Logging %s -> %s' % (name, log_path))
         return f
 
-    ################################################################################################
     def _close_log(self, name):
         f = self.log_files.get(name)
         if f is not None:
@@ -279,12 +273,10 @@ class GstCameraManager(Node):
                 pass
             self.log_files[name] = None
 
-    ################################################################################################
     def _is_running(self, name):
         proc = self.processes.get(name)
         return proc is not None and proc.poll() is None
 
-    ################################################################################################
     def _handle_status_srv(self, request, response, name):
         with self.process_lock:
             if self._is_running(name):
@@ -295,7 +287,6 @@ class GstCameraManager(Node):
                 response.message = '%s STOPPED' % name
         return response
 
-    ################################################################################################
     def _handle_status_all_srv(self, request, response):
         lines = []
         with self.process_lock:
@@ -308,7 +299,6 @@ class GstCameraManager(Node):
         response.message = '\n' + '\n'.join(lines)
         return response
 
-    ################################################################################################
     def _handle_stop_all_srv(self, request, response):
         stopped = []
         for name in list(self.pipelines.keys()):
@@ -319,7 +309,6 @@ class GstCameraManager(Node):
         response.message = 'stopped: %s' % (', '.join(stopped) if stopped else 'nothing running')
         return response
 
-    ################################################################################################
     def _handle_pipeline_srv(self, request, response, name):
         if request.data:
             response.success, response.message = self._enable_pipeline(name)
@@ -327,7 +316,6 @@ class GstCameraManager(Node):
             response.success, response.message = self._disable_pipeline(name)
         return response
 
-    ################################################################################################
     def _enable_pipeline(self, name):
         with self.process_lock:
             proc = self.processes[name]
@@ -362,7 +350,6 @@ class GstCameraManager(Node):
                 self.get_logger().error('Failed to start %s: %s' % (name, str(e)))
                 return False, str(e)
 
-    ################################################################################################
     def _disable_pipeline(self, name):
         with self.process_lock:
             proc = self.processes[name]
@@ -394,15 +381,12 @@ class GstCameraManager(Node):
                 self.get_logger().error('Failed to stop %s: %s' % (name, str(e)))
                 return False, str(e)
 
-    ################################################################################################
     def shutdown_all(self):
-        self.get_logger().info('GstCameraManager shutting down — stopping all pipelines')
+        self.get_logger().info('GstCameraManager shutting down: stopping all pipelines')
         for name in list(self.pipelines.keys()):
             self._disable_pipeline(name)
 
 
-####################################################################################################
-# MAIN #############################################################################################
 def main(args=None):
     rclpy.init(args=args)
     node = GstCameraManager()

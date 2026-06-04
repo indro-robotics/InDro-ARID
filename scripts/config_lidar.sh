@@ -8,21 +8,21 @@ set -u
 
 NIC="enP8p1s0"
 SNIFF_SECS=10
-ROBOSENSE_OUI="40:2c:76"          # hint only — not a hard filter
+ROBOSENSE_OUI="40:2c:76"          # hint only, not a hard filter
 DISPATCHER="/etc/NetworkManager/dispatcher.d/90-rslidar"
 WORKSPACES="${WORKSPACES:-/home/jetson/workspaces}"
 LIDAR_STATE_DIR="${WORKSPACES}/.lidar"
 DETECTED_CONF="${LIDAR_STATE_DIR}/rslidar_detected.conf"
 STATE_OWNER="${SUDO_USER:-jetson}"
 
-# ───────────────── output helpers ─────────────────
+# Output helpers
 if [[ -t 1 ]]; then
     BLUE='\033[1;34m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 else
     BLUE=''; GREEN=''; YELLOW=''; RED=''; CYAN=''; BOLD=''; NC=''
 fi
 hdr()  { echo -e "\n${BLUE}${BOLD}================================================================================${NC}"; echo -e "${BLUE}${BOLD}$*${NC}"; echo -e "${BLUE}${BOLD}================================================================================${NC}"; }
-step() { echo -e "\n${BLUE}${BOLD}── $* ──${NC}"; }
+step() { echo -e "\n${BLUE}${BOLD}-- $* --${NC}"; }
 what() { echo -e "${CYAN}WHAT:${NC}    $*"; }
 why()  { echo -e "${CYAN}WHY:${NC}     $*"; }
 raw()  { echo -e "${CYAN}RAW:${NC}"; echo "$1" | sed 's/^/         /'; }
@@ -32,7 +32,7 @@ fail() { echo -e "${RED}RESULT:  [FAIL]  $*${NC}"; }
 fix()  { echo -e "${CYAN}FIX:${NC}     $*"; }
 note() { echo -e "         $*"; }
 
-# ───────────────── must run as root ─────────────────
+# Must run as root
 if [[ $EUID -ne 0 ]]; then
     fail "config_lidar.sh must run as root (uses tcpdump promisc + writes /etc files)."
     fix  "sudo $0     # or:  config_lidar    (the alias prepends sudo)"
@@ -47,7 +47,6 @@ echo "OUI:      ${ROBOSENSE_OUI}:xx:xx:xx (RoboSense)"
 echo "Sniff:    ${SNIFF_SECS} s on ${NIC}"
 echo "Output:   ${DETECTED_CONF}"
 
-# ───────────────── 1. carrier check ─────────────────
 step "1. Carrier check on ${NIC}"
 what     "Verify the cable is plugged in and the link partner is electrically alive."
 why      "Without carrier there's no possible traffic to sniff."
@@ -60,9 +59,8 @@ if ! ip link show "${NIC}" 2>/dev/null | grep -qE 'LOWER_UP'; then
     exit 1
 fi
 SPEED=$(ethtool "${NIC}" 2>/dev/null | awk -F: '/Speed:/ {gsub(/^[ \t]+/,"",$2); print $2}')
-ok "carrier UP — ${SPEED:-?}"
+ok "carrier UP - ${SPEED:-?}"
 
-# ───────────────── 2. passive sniff ─────────────────
 step "2. Passive sniff (${SNIFF_SECS} s) on ${NIC}"
 what     "Capture packets with -nn -e and filter post-hoc for the RoboSense OUI."
 why      "Any RoboSense LiDAR either ARPs for its configured host (giving both IPs cleanly) or unicasts MSOP/DIFOP UDP packets (giving source + destination). One sniff reveals which."
@@ -80,12 +78,11 @@ note "total interesting packets captured: ${LINE_COUNT}"
 note "lines matching RoboSense OUI (${ROBOSENSE_OUI}): ${ROBO_LINES}"
 
 if [[ "${LINE_COUNT}" -eq 0 ]]; then
-    fail "nothing seen on ${NIC} in ${SNIFF_SECS} s — no ARP, no UDP on LiDAR ports"
+    fail "nothing seen on ${NIC} in ${SNIFF_SECS} s: no ARP, no UDP on LiDAR ports"
     note "LiDAR is off, cable not reaching it, or destination ports are reconfigured to non-standard values."
     exit 1
 fi
 
-# ───────────────── 3. extract IPs ─────────────────
 step "3. Extract LiDAR IP, MAC, and the host IP it wants"
 what     "Prefer ARP lines (cleanest), fall back to UDP src/dst extraction."
 why      "ARP gives 'tell <LiDAR_IP>' and 'who-has <HOST_IP>' in one line. UDP gives 'SRC_IP.PORT > DST_IP.PORT'."
@@ -96,7 +93,7 @@ HOST_IP=""
 MATCH_HOW=""
 
 # Search order prefers RoboSense OUI but falls back to any source on LiDAR
-# ports — catches re-MACed units and non-default OUIs.
+# ports, catching re-MACed units and non-default OUIs.
 extract_from_arp() {
     # Sets LIDAR_MAC / LIDAR_IP / HOST_IP. arg: grep pattern or "." for all.
     local pat="$1"
@@ -132,7 +129,7 @@ raw "$(head -3 "${CAP}")"
 if [[ -z "${LIDAR_IP}" || -z "${HOST_IP}" ]]; then
     fail "traffic present but couldn't extract LiDAR/host IPs"
     note "neither ARP-resolve nor UDP-with-IPs found in the capture."
-    note "LiDAR may be emitting only PTP (L2 only) — RSView setup needed to get it ARPing/unicasting."
+    note "LiDAR may be emitting only PTP (L2 only); RSView setup needed to get it ARPing/unicasting."
     exit 1
 fi
 
@@ -143,13 +140,12 @@ note "LiDAR IP:  ${LIDAR_IP}"
 note "Host IP:   ${HOST_IP}     (the IP the LiDAR ARPs/unicasts to)"
 note "Subnet:    ${SUBNET}"
 
-# ───────────────── 4. reconfigure NM 'rslidar' connection ─────────────────
 step "4. Reconfigure NetworkManager 'rslidar' connection in place"
 what     "Update ipv4.addresses + ipv4.routes on the existing connection profile."
 why      "The LiDAR ARPs for the host IP; without that address on ${NIC} the request cannot be resolved. ipv4.routes is also required because NetworkManager sets noprefixroute on manual addresses."
 
 if ! nmcli -t -f NAME connection show 2>/dev/null | grep -qxF "rslidar"; then
-    warn "NM connection 'rslidar' does not exist yet — creating it"
+    warn "NM connection 'rslidar' does not exist yet; creating it"
     nmcli connection add type ethernet con-name rslidar ifname "${NIC}" \
         ipv4.method manual \
         ipv4.addresses "${HOST_IP}/24" \
@@ -165,7 +161,6 @@ else
     ok "modified 'rslidar' to ${HOST_IP}/24 + route ${SUBNET}"
 fi
 
-# ───────────────── 5. rewrite dispatcher ─────────────────
 step "5. Rewrite ${DISPATCHER}"
 what     "Replace the dispatcher's hardcoded LiDAR IP + source IP with the discovered values."
 why      "Otherwise on the next link-up the dispatcher will arping the wrong IP, time out, and drop to DHCP fallback."
@@ -199,7 +194,6 @@ chmod 755 "${DISPATCHER}"
 chown root:root "${DISPATCHER}"
 ok "dispatcher rewritten"
 
-# ───────────────── 6. bring up rslidar ─────────────────
 step "6. Bring up rslidar"
 what     "Deactivate first if running, then reactivate so NM applies the new IP + route."
 
@@ -207,7 +201,7 @@ nmcli connection down rslidar >/dev/null 2>&1 || true
 if nmcli connection up rslidar >/dev/null 2>&1; then
     ok "rslidar activated"
 else
-    fail "couldn't activate rslidar — check 'nmcli connection show'"
+    fail "couldn't activate rslidar: check 'nmcli connection show'"
     exit 1
 fi
 
@@ -216,7 +210,6 @@ note "current state:"
 note "  ip:    $(ip -4 -o addr show "${NIC}" 2>/dev/null | awk '{print $4}')"
 note "  route: $(ip -4 route show | awk -v ifc="${NIC}" '$0 ~ "dev " ifc {print; exit}')"
 
-# ───────────────── 7. verify LiDAR is reachable ─────────────────
 step "7. Verify LiDAR responds at ${LIDAR_IP}"
 what     "ARP-probe the LiDAR. With the new host IP in place, it should respond within ~100 ms."
 
@@ -228,7 +221,6 @@ else
     note "the LiDAR may still be cold-booting; try again in 10-15 s or check power"
 fi
 
-# ───────────────── 8. persist discovery ─────────────────
 step "8. Persist discovery to ${DETECTED_CONF}"
 what     "Write the discovered values so other tooling (setup.sh, diag scripts) can read them."
 why      "Local-to-workspace, gitignored. Owned by ${STATE_OWNER} so it stays editable without sudo."
@@ -250,7 +242,6 @@ chmod 644 "${DETECTED_CONF}"
 chown "${STATE_OWNER}:${STATE_OWNER}" "${DETECTED_CONF}" 2>/dev/null || true
 ok "wrote ${DETECTED_CONF}"
 
-# ───────────────── summary ─────────────────
 hdr "Summary"
 echo "  LiDAR detected at:   ${LIDAR_IP}  (MAC ${LIDAR_MAC})"
 echo "  Host configured as:  ${HOST_IP}/24"

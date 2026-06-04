@@ -6,7 +6,7 @@
 
 set -u
 
-# ───────────────── output helpers ─────────────────
+# Output helpers
 if [[ -t 1 ]]; then
     BLUE='\033[1;34m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 else
@@ -66,7 +66,7 @@ _cleanup_on_exit() {
 trap _cleanup_on_exit EXIT
 
 hdr()  { echo -e "\n${BLUE}${BOLD}================================================================================${NC}"; echo -e "${BLUE}${BOLD}$*${NC}"; echo -e "${BLUE}${BOLD}================================================================================${NC}"; }
-step() { echo -e "\n${BLUE}${BOLD}── $* ──${NC}"; }
+step() { echo -e "\n${BLUE}${BOLD}-- $* --${NC}"; }
 what() { echo -e "${CYAN}WHAT:${NC}    $*"; }
 why()  { echo -e "${CYAN}WHY:${NC}     $*"; }
 raw()  { echo -e "${CYAN}RAW:${NC}";  echo "$1" | sed 's/^/         /'; }
@@ -84,9 +84,9 @@ if [[ -z "${ROS_DISTRO:-}" ]]; then
 fi
 export ROS_DOMAIN_ID=23
 
-# ───────────────── helpers ─────────────────
+# Helpers
 # `bash -ic` (interactive) is reserved for tests that genuinely need .bashrc to be
-# sourced — currently only Section 1 (alias-existence check). Service calls and
+# sourced (currently only Section 1, the alias-existence check). Service calls and
 # topic echoes go through ros2 directly so they don't enable job control on the
 # child. Interactive bash calls tcsetpgrp() to claim the terminal foreground and
 # does NOT restore it on exit, which leaves the parent script in a background
@@ -118,8 +118,7 @@ echo "ROS_DISTRO:         ${ROS_DISTRO:-(missing!)}"
 echo "ROS_DOMAIN_ID:      ${ROS_DOMAIN_ID}"
 echo "AMENT_PREFIX_PATH:  $(echo "${AMENT_PREFIX_PATH:-}" | tr ':' '\n' | grep local_ws/install | head -2 | tr '\n' ' ')"
 
-# ─────────────────────────────────────────────────────────────────────────────
-hdr "Section 0 — Host systemd services"
+hdr "Section 0: Host systemd services"
 step "Required services should be active"
 what     "Three services are required: arid_description, gst_camera_manager, rslidar_coordinator."
 why      "arid_description publishes /robot_description + TF static. The two managers expose SetBool/Trigger services that everything else depends on."
@@ -135,8 +134,7 @@ for svc in arid_description.service gst_camera_manager.service rslidar_coordinat
     fi
 done
 
-# ─────────────────────────────────────────────────────────────────────────────
-hdr "Section 1 — Alias resolution"
+hdr "Section 1: Alias resolution"
 step "All host-side aliases must be defined"
 what     "Confirm each managed alias in the ARID block is loaded in an interactive shell."
 why      "Aliases are how the operator drives the rig. A missing alias means setup.sh didn't run, or the bashrc block was overwritten."
@@ -152,14 +150,13 @@ ALIAS_DUMP=$(ialias "alias")
 for a in "${EXPECTED_ALIASES[@]}"; do
     LINE=$(echo "${ALIAS_DUMP}" | grep -E "^alias $a=" | head -1)
     if [[ -n "${LINE}" ]]; then
-        pass "$a → $(echo "${LINE}" | sed -E "s/^alias $a='?(.*)'?$/\1/")"
+        pass "$a -> $(echo "${LINE}" | sed -E "s/^alias $a='?(.*)'?$/\1/")"
     else
         fail "alias $a missing"
     fi
 done
 
-# ─────────────────────────────────────────────────────────────────────────────
-hdr "Section 2 — Non-invasive checks for build/dep aliases"
+hdr "Section 2: Non-invasive checks for build/dep aliases"
 step "Verify each destructive-ish alias points at a real, runnable target"
 what     "reset_usb / rosdep_local / colcon_local / clean_local are not invoked here. Verify the underlying targets exist and are executable."
 why      "These four aliases are slow or destructive (clean_local wipes build/install/log). A smoke test should not trigger them, but reachability of the target must still be verified."
@@ -185,8 +182,7 @@ else
     fail "colcon clean plugin missing (apt install python3-colcon-clean)"
 fi
 
-# ─────────────────────────────────────────────────────────────────────────────
-hdr "Section 3 — foxglove_bridge"
+hdr "Section 3: foxglove_bridge"
 step "foxglove_bridge must be listening on TCP 8765"
 what     "If no process is bound to 8765, launch the bridge via the alias and wait up to 5 s for the socket to open."
 why      "Foxglove Studio connects via ws://<host>:8765. No socket = no Foxglove."
@@ -196,10 +192,10 @@ if [[ -n "${PORT_OUT}" ]]; then
     raw "${PORT_OUT}"
     pass "port 8765 already listening (bridge was running)"
 else
-    note "no bridge running — launching via the foxglove_bridge alias (will be cleaned up in Section 6)"
+    note "no bridge running; launching via the foxglove_bridge alias (will be cleaned up in Section 6)"
     # setsid puts the launch in its own process group so Section 6 can killpg the whole tree.
-    # Detach into its own session via setsid; PID tracking is intentionally not
-    # used here — $! would point at the setsid wrapper which exits immediately,
+    # Detach into its own session via setsid. PID tracking is intentionally not
+    # used here: $! would point at the setsid wrapper which exits immediately,
     # so cleanup locates the bridge by port lookup instead.
     setsid bash -ic 'foxglove_bridge' >/tmp/foxglove_bridge.log 2>&1 < /dev/null &
     BRIDGE_LAUNCHED_BY_US=1
@@ -215,12 +211,11 @@ else
     if [[ -n "${LAUNCHED}" ]]; then
         pass "bridge launched, port 8765 listening"
     else
-        fail "bridge did not come up on 8765 within 5 s — see /tmp/foxglove_bridge.log"
+        fail "bridge did not come up on 8765 within 5 s; see /tmp/foxglove_bridge.log"
     fi
 fi
 
-# ─────────────────────────────────────────────────────────────────────────────
-hdr "Section 4 — cam_down lifecycle (CSI IMX219, sensor-id=0)"
+hdr "Section 4: cam_down lifecycle (CSI IMX219, sensor-id=0)"
 
 # 4a. clean stopped state
 step "4a. Force initial STOPPED state"
@@ -298,14 +293,14 @@ fi
 # 4g. rate
 step "4g. /cam_down/image_raw rate over 5 s"
 what     "Count message separators ('---') from 'topic echo --no-arr' over a 5-second window."
-why      "Pipeline is configured for 20 fps (delivered ~16 Hz). Accept >= 6 Hz (~40% of delivered) as pass. Below that there's something wrong upstream (Argus dropping, ISP backpressure, etc.)."
+why      "Pipeline is configured for 20 fps (delivered ~16 Hz). Accept >= 6 Hz (~40% of delivered) as pass. Below that there's something wrong upstream (Argus dropping or ISP backpressure)."
 COUNT=$(count_msgs /cam_down/image_raw 5)
 HZ=$(awk "BEGIN {printf \"%.1f\", $COUNT/5}")
 raw "messages: ${COUNT}    over: 5 s    rate: ${HZ} Hz"
 if [[ "${COUNT}" -ge 30 ]]; then
-    pass "rate ${HZ} Hz (${COUNT} msgs / 5 s) — healthy"
+    pass "rate ${HZ} Hz (${COUNT} msgs / 5 s): healthy"
 elif [[ "${COUNT}" -ge 1 ]]; then
-    fail "rate only ${HZ} Hz — below 6 Hz threshold"
+    fail "rate only ${HZ} Hz: below 6 Hz threshold"
     note "check journalctl for the per-pipeline log under share/gst_camera_manager/logs/cam_down/"
 else
     fail "no image_raw messages received in 5 s"
@@ -338,8 +333,7 @@ else
     fail "cam_down did not stop"
 fi
 
-# ─────────────────────────────────────────────────────────────────────────────
-hdr "Section 5 — rslidar lifecycle (RSAIRY)"
+hdr "Section 5: rslidar lifecycle (RSAIRY)"
 note "Note: cloud-data flow depends on whether the physical LiDAR is reachable."
 note "      Software-side lifecycle is exercised regardless of hardware."
 
@@ -398,13 +392,13 @@ done
 
 # 5e_alive. /rslidar_coordinator/alive read
 step "5e. /rslidar_coordinator/alive (read latched Bool via rslidar_alive alias)"
-what     "Read latched /rslidar_coordinator/alive — same QoS as cam_down_alive (RELIABLE/TRANSIENT_LOCAL/depth 1)."
+what     "Read latched /rslidar_coordinator/alive with the same QoS as cam_down_alive (RELIABLE/TRANSIENT_LOCAL/depth 1)."
 why      "Mirrors the cam_down_alive check. With LiDAR off, watchdog will report 'data: false' after the 5s startup-grace window."
 ALIVE_OUT=$(_latched_bool /rslidar_coordinator/alive)
 raw "${ALIVE_OUT}"
 ALIVE_VAL=$(echo "${ALIVE_OUT}" | grep -oE 'data: (true|false)' | head -1)
 case "${ALIVE_VAL}" in
-    "data: true")  pass "alive == true (watchdog confirms cloud flow — LiDAR is reachable!)" ;;
+    "data: true")  pass "alive == true (watchdog confirms cloud flow; LiDAR is reachable)" ;;
     "data: false") pass "alive == false (latched topic readable; LiDAR not flowing data, which matches reality)" ;;
     *)             fail "alive topic unreadable in 10 s (DDS discovery problem?)" ;;
 esac
@@ -412,14 +406,14 @@ esac
 # 5f. cloud data flow (informational)
 step "5f. Cloud-data flow on /rslidar_points (hardware-dependent)"
 what     "Count messages over 6 s (RSAIRY nominal ~10 Hz)."
-why      "Tests whether the LiDAR is physically reachable. SKIP (not FAIL) if zero — that's a hardware issue, not a software defect."
+why      "Tests whether the LiDAR is physically reachable. SKIP (not FAIL) if zero: that's a hardware issue, not a software defect."
 COUNT=$(count_msgs /rslidar_points 6)
 HZ=$(awk "BEGIN {printf \"%.1f\", $COUNT/6}")
 raw "messages: ${COUNT}    over: 6 s    rate: ${HZ} Hz"
 if [[ "${COUNT}" -ge 1 ]]; then
-    pass "cloud flowing at ~${HZ} Hz (${COUNT} msgs / 6 s) — LiDAR reachable"
+    pass "cloud flowing at ~${HZ} Hz (${COUNT} msgs / 6 s): LiDAR reachable"
 else
-    skip "no cloud messages — LiDAR likely powered off / unreachable. Run 'lidar_diag' to debug network/hardware."
+    skip "no cloud messages; LiDAR likely powered off / unreachable. Run 'lidar_diag' to debug network/hardware."
 fi
 
 # 5g. restart
@@ -434,14 +428,14 @@ STATUS=$(_trigger /rslidar_coordinator/status)
 raw "${STATUS}"
 NEW_PID=$(echo "${STATUS}" | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)
 if echo "${STATUS}" | grep -q 'RUNNING' && [[ -n "${NEW_PID}" ]] && [[ "${NEW_PID}" != "${OLD_PID}" ]]; then
-    pass "restart produced a new pid (${OLD_PID} → ${NEW_PID})"
+    pass "restart produced a new pid (${OLD_PID} -> ${NEW_PID})"
 else
     fail "restart did not produce a new pid (was ${OLD_PID}, now ${NEW_PID:-unknown})"
 fi
 
 # 5h. stop
-step "5h. rslidar_stop should terminate cleanly (coordinator now waits for the whole process group)"
-note     "(With the process-group fix in place, rslidar_stop only returns once the SDK binary is genuinely gone — even if it was busy in MSOPTIMEOUT retries.)"
+step "5h. rslidar_stop should terminate cleanly (coordinator waits for the whole process group)"
+note     "rslidar_stop returns only once the SDK binary is gone, even if it was busy in MSOPTIMEOUT retries."
 _setbool /rslidar_coordinator/enable false >/dev/null
 STATUS=$(_trigger /rslidar_coordinator/status)
 raw "${STATUS}"
@@ -452,8 +446,7 @@ else
     fail "rslidar did not stop"
 fi
 
-# ─────────────────────────────────────────────────────────────────────────────
-hdr "Section 6 — Final cleanup"
+hdr "Section 6: Final cleanup"
 
 if [[ -n "${BRIDGE_LAUNCHED_BY_US}" ]]; then
     step "Stop foxglove_bridge launched by this test"
@@ -472,7 +465,7 @@ fi
 
 step "Both pipelines should be stopped, no leaked subprocesses"
 what     "After stop, no gst_cam_node or rslidar_sdk_node processes should remain."
-why      "Process leaks indicate a bug in the subprocess-termination logic of either manager (signal not propagated to child, missing killpg, etc.)."
+why      "Process leaks indicate a bug in the subprocess-termination logic of either manager (signal not propagated to child, missing killpg)."
 LEAK=$(pgrep -af 'gst_cam_node|rslidar_sdk_node' 2>/dev/null | grep -v 'bash -c\|pgrep' || true)
 if [[ -z "${LEAK}" ]]; then
     pass "no managed subprocesses running"
@@ -481,7 +474,6 @@ else
     echo "${LEAK}" | sed 's/^/         /'
 fi
 
-# ─────────────────────────────────────────────────────────────────────────────
 hdr "Summary"
 echo ""
 echo -e "  ${GREEN}Passed:${NC}   ${PASS}"
