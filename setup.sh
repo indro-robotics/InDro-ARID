@@ -165,7 +165,7 @@ setup_apt_packages() {
         software-properties-common \
         ca-certificates curl gnupg \
         libusb-1.0-0-dev pkgconf gpiod \
-        iputils-arping \
+        iputils-arping tcpdump arp-scan \
         pva-allow-2 \
         python3-colcon-clean \
         ros-humble-camera-info-manager \
