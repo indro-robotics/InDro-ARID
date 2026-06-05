@@ -83,11 +83,13 @@ class GstCameraManager(Node):
         self.log_root   = pkg_share / 'logs'
         self.calib_root = pkg_share / 'config' / 'calibrations'
 
-        config_path = pkg_share / 'config' / 'pipelines.yaml'
-        self._load_config(config_path)
+        # Cached so /gst_camera_manager/refresh can re-read the same file at runtime.
+        self.config_path = pkg_share / 'config' / 'pipelines.yaml'
+        self._load_config(self.config_path)
         self._create_publishers()
         self._create_info_subscriptions()
-        self._create_services()
+        self._create_per_pipeline_services()
+        self._create_manager_services()
         self._create_watchdog()
 
         self.get_logger().info('GstCameraManager ready: %d pipeline(s) registered' % len(self.pipelines))
@@ -150,7 +152,10 @@ class GstCameraManager(Node):
         # Single-key dict write: atomic under the GIL, no lock needed.
         self.last_frame_time[name] = self.get_clock().now()
 
-    def _create_services(self):
+    def _create_per_pipeline_services(self):
+        # Per-pipeline control + status services. Recreated by /gst_camera_manager/refresh
+        # after the YAML is re-read; manager-level services (status_all, stop_all, refresh)
+        # are NOT touched.
         for name in self.pipelines:
             cbg_ctrl   = MutuallyExclusiveCallbackGroup()
             cbg_status = MutuallyExclusiveCallbackGroup()
@@ -169,6 +174,7 @@ class GstCameraManager(Node):
             )
             self.srv_handles[name] = (ctrl_srv, status_srv)
 
+    def _create_manager_services(self):
         cbg_all = MutuallyExclusiveCallbackGroup()
         self.status_all_srv = self.create_service(
             Trigger, 'gst_camera_manager/status_all',
@@ -178,6 +184,16 @@ class GstCameraManager(Node):
         self.stop_all_srv = self.create_service(
             Trigger, 'gst_camera_manager/stop_all',
             self._handle_stop_all_srv, callback_group=cbg_stop)
+
+        # Reload pipelines.yaml at runtime without restarting the service. Stops any running
+        # pipelines first (the gst_cam_node publisher's QoS is fixed at subprocess launch, so
+        # there's no way to apply YAML changes to a live subprocess in-place), then rebuilds
+        # the per-pipeline entities from the new YAML. Operator-facing: `ros2 service call
+        # /gst_camera_manager/refresh std_srvs/srv/Trigger`.
+        cbg_refresh = MutuallyExclusiveCallbackGroup()
+        self.refresh_srv = self.create_service(
+            Trigger, 'gst_camera_manager/refresh',
+            self._handle_refresh_srv, callback_group=cbg_refresh)
 
     def _create_watchdog(self):
         cbg = MutuallyExclusiveCallbackGroup()
@@ -300,6 +316,67 @@ class GstCameraManager(Node):
                 stopped.append(name)
         response.success = True
         response.message = 'stopped: %s' % (', '.join(stopped) if stopped else 'nothing running')
+        return response
+
+    def _destroy_per_pipeline_entities(self, name):
+        # Destroy a pipeline's alive publisher, camera_info subscription, and control + status
+        # services. Caller must ensure the subprocess is stopped first. Pop-with-default so a
+        # partially-registered pipeline (e.g. half-initialised after a failed first load) cleans
+        # up without raising.
+        pub = self.alive_pubs.pop(name, None)
+        if pub is not None:
+            try: self.destroy_publisher(pub)
+            except Exception: pass
+        sub = self.info_subs.pop(name, None)
+        if sub is not None:
+            try: self.destroy_subscription(sub)
+            except Exception: pass
+        for srv in self.srv_handles.pop(name, ()):
+            try: self.destroy_service(srv)
+            except Exception: pass
+
+    def _handle_refresh_srv(self, request, response):
+        # Phase 1: stop any running pipelines. _disable_pipeline acquires process_lock per
+        # call; this phase MUST NOT hold the lock itself or _disable_pipeline would deadlock
+        # (Python's threading.Lock is not reentrant).
+        stopped = []
+        for name in list(self.pipelines.keys()):
+            if self._is_running(name):
+                self._disable_pipeline(name)
+                stopped.append(name)
+
+        # Phase 2: destroy per-pipeline ROS entities + clear per-pipeline state. Holding the
+        # lock prevents the watchdog from observing a half-cleared state mid-tick.
+        with self.process_lock:
+            old_names = set(self.pipelines.keys())
+            for name in list(old_names):
+                self._destroy_per_pipeline_entities(name)
+            self.pipelines.clear()
+            self.processes.clear()
+            self.log_files.clear()
+            self.alive_state.clear()
+            self.alive_thresholds.clear()
+            self.reliable_flags.clear()
+            self.last_frame_time.clear()
+
+        # Phase 3: re-read YAML and rebuild per-pipeline entities. Manager-level services
+        # (status_all, stop_all, refresh) and the watchdog are untouched.
+        self._load_config(self.config_path)
+        self._create_publishers()
+        self._create_info_subscriptions()
+        self._create_per_pipeline_services()
+
+        new_names = set(self.pipelines.keys())
+        added   = sorted(new_names - old_names)
+        removed = sorted(old_names - new_names)
+
+        parts = ['%d pipeline(s) registered' % len(new_names)]
+        if stopped: parts.append('stopped: %s' % ', '.join(stopped))
+        if added:   parts.append('added: %s'   % ', '.join(added))
+        if removed: parts.append('removed: %s' % ', '.join(removed))
+        response.success = True
+        response.message = '; '.join(parts)
+        self.get_logger().info('refresh: %s' % response.message)
         return response
 
     def _handle_pipeline_srv(self, request, response, name):

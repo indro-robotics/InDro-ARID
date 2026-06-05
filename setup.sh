@@ -36,7 +36,7 @@ PRE=0
 PRE_HOST=""; PRE_PASS=""
 PRE_WIFI=""; PRE_WIFI_SSID=""; PRE_WIFI_PASS=""
 PRE_NOMACHINE=""; PRE_PX4=""
-PRE_REALSENSE=""; PRE_VERIFY=""; PRE_BUILD_ISAAC=""; PRE_REBOOT=""
+PRE_REALSENSE=""; PRE_VERIFY=""; PRE_SMOKE=""; PRE_BUILD_ISAAC=""; PRE_REBOOT=""
 
 # Error trap
 failure() {
@@ -327,72 +327,122 @@ setup_skip_worktree() {
 setup_bashrc() {
     step ".bashrc environment"
 
-    # Strip the marker block AND any stray managed lines outside it (hand-edits).
-    # Patterns below must stay in sync with the heredoc.
-    sed -i \
-        -e '/# BEGIN ARID SETUP/,/# END ARID SETUP/d' \
-        -e '/^[[:space:]]*source[[:space:]].*local_ws\/install\/setup\.bash/d' \
-        -e '/^[[:space:]]*export[[:space:]]\+ROS_DOMAIN_ID=/d' \
-        -e '/^[[:space:]]*export[[:space:]]\+WORKSPACES=/d' \
-        -e '/^[[:space:]]*export[[:space:]]\+LOCAL_WS=/d' \
-        -e '/^[[:space:]]*export[[:space:]]\+ISAAC_ROS_WS=/d' \
-        -e '/^[[:space:]]*alias[[:space:]]\+\(run_isaac\|build_isaac\|start_isaac\|stop_isaac\|isaac_bash\)=/d' \
-        -e '/^[[:space:]]*alias[[:space:]]\+\(reset_usb\|colcon_local\|clean_local\|rosdep_local\|foxglove_bridge\)=/d' \
-        -e '/^[[:space:]]*alias[[:space:]]\+cam_down_\(start\|stop\|status\|alive\)=/d' \
-        -e '/^[[:space:]]*alias[[:space:]]\+rslidar_\(start\|stop\|status\|alive\|restart\)=/d' \
-        -e '/^[[:space:]]*alias[[:space:]]\+\(lidar_diag\|local_test\|config_lidar\|config_realsense\|wifi\|ver_cv_cams\|update_submods\)=/d' \
-        -e '/^[[:space:]]*alias[[:space:]]\+\(initialize\|deinitialize\)=/d' \
-        "$BASHRC_FILE"
+    # Precondition: the resume-prompt shim MUST exist in the repo before we wire bashrc to
+    # source it. If it's missing, refuse to rewrite - degrading silently here would leave
+    # the operator with a bashrc that points at a non-existent file, and the post-reboot
+    # resume prompt would never fire with no diagnostic.
+    local shim="${SCRIPT_DIR}/scripts/arid_resume_prompt.sh"
+    if [[ ! -r "${shim}" ]]; then
+        err "Resume-prompt shim missing at ${shim} - re-pull the repo before re-running setup."
+        return 1
+    fi
 
-    cat >> "$BASHRC_FILE" << EOF
+    # Atomic rewrite under a lock so concurrent setup runs cannot race. The block is rewritten
+    # via a temp file + mv so a concurrent shell sourcing ~/.bashrc never sees a half-written
+    # state. flock has a 30 s timeout so a stuck lock surfaces an error instead of hanging.
+    local lockfile="${HOME_DIR}/.arid_bashrc.lock"
+    local tmpfile="${BASHRC_FILE}.arid.new.$$"
+    (
+        flock -w 30 -x 9 || { err "another setup_bashrc is in progress (timed out after 30 s)"; exit 1; }
+
+        # Copy current bashrc to the working temp file, then strip the ARID block AND any
+        # stray managed lines outside it (hand-edits). After this point all edits target
+        # tmpfile, leaving BASHRC_FILE intact for concurrent readers until the final atomic mv.
+        cp -- "$BASHRC_FILE" "$tmpfile"
+        sed -i \
+            -e '/# BEGIN ARID SETUP/,/# END ARID SETUP/d' \
+            -e '/^[[:space:]]*source[[:space:]].*local_ws\/install\/setup\.bash/d' \
+            -e '/^[[:space:]]*export[[:space:]]\+ROS_DOMAIN_ID=/d' \
+            -e '/^[[:space:]]*export[[:space:]]\+WORKSPACES=/d' \
+            -e '/^[[:space:]]*export[[:space:]]\+LOCAL_WS=/d' \
+            -e '/^[[:space:]]*export[[:space:]]\+ISAAC_ROS_WS=/d' \
+            -e '/^[[:space:]]*alias[[:space:]]\+\(run_isaac\|build_isaac\|start_isaac\|stop_isaac\|isaac_bash\)=/d' \
+            -e '/^[[:space:]]*alias[[:space:]]\+\(reset_usb\|colcon_local\|clean_local\|rosdep_local\|foxglove_bridge\)=/d' \
+            -e '/^[[:space:]]*alias[[:space:]]\+cam_down_\(start\|stop\|status\|alive\)=/d' \
+            -e '/^[[:space:]]*alias[[:space:]]\+rslidar_\(start\|stop\|status\|alive\|restart\)=/d' \
+            -e '/^[[:space:]]*alias[[:space:]]\+\(lidar_diag\|local_test\|config_lidar\|config_realsense\|wifi\|ver_cv_cams\|update_submods\)=/d' \
+            -e '/^[[:space:]]*alias[[:space:]]\+\(initialize\|deinitialize\)=/d' \
+            "$tmpfile"
+
+        # IMPORTANT: the heredoc delimiter is QUOTED ('ARIDRC') so bash performs NO expansion
+        # on the body - no parameter expansion, no command substitution, no backticks, no
+        # arithmetic. Everything between the open and close markers is byte-literal. Setup-
+        # time substitution is done via @@TOKEN@@ markers in a sed pass after the heredoc.
+        #
+        # To inject a new setup-time value here:
+        #   1. Add an @@TOKEN@@ marker inside the heredoc body, AND
+        #   2. Add a matching `sed -i "s|@@TOKEN@@|...|g"` line below.
+        # NEVER change the delimiter to unquoted EOF - the previous unquoted form was the
+        # source of bashrc-mid-line corruption (heredoc with unescaped backticks command-
+        # substituted setup.sh --resume at write time and wrote its stdout into bashrc).
+        cat >> "$tmpfile" << 'ARIDRC'
 # BEGIN ARID SETUP
 if [ -d /tmp/.X11-unix ]; then
-    sock=\$(ls /tmp/.X11-unix/X* 2>/dev/null | head -n1)
-    if [ -n "\$sock" ]; then export DISPLAY=":\${sock##*/X}"; fi
+    sock=$(ls /tmp/.X11-unix/X* 2>/dev/null | head -n1)
+    if [ -n "$sock" ]; then export DISPLAY=":${sock##*/X}"; fi
 fi
 xhost +local: >/dev/null 2>&1 || true
 export ROS_DOMAIN_ID=23
-export WORKSPACES=${WORKSPACES}
-export LOCAL_WS=${LOCAL_WS}
-export ISAAC_ROS_WS=${ISAAC_ROS_WS}
-source ${LOCAL_WS}/install/setup.bash
-alias run_isaac='/bin/bash ${ISAAC_ROS_WS}/container_scripts/run_isaac_docker.sh'
-alias build_isaac='/bin/bash ${ISAAC_ROS_WS}/container_scripts/build_isaac_docker.sh'
-alias start_isaac='/bin/bash ${ISAAC_ROS_WS}/container_scripts/start_isaac_docker.sh'
+export WORKSPACES=@@WORKSPACES@@
+export LOCAL_WS=@@LOCAL_WS@@
+export ISAAC_ROS_WS=@@ISAAC_ROS_WS@@
+source @@LOCAL_WS@@/install/setup.bash
+alias run_isaac='/bin/bash @@ISAAC_ROS_WS@@/container_scripts/run_isaac_docker.sh'
+alias build_isaac='/bin/bash @@ISAAC_ROS_WS@@/container_scripts/build_isaac_docker.sh'
+alias start_isaac='/bin/bash @@ISAAC_ROS_WS@@/container_scripts/start_isaac_docker.sh'
 alias stop_isaac='docker stop isaac_ros_dev-aarch64-container'
-alias isaac_bash='/bin/bash ${ISAAC_ROS_WS}/container_scripts/isaac_bash.sh'
-alias reset_usb='/bin/bash ${WORKSPACES}/scripts/usb_reset.sh'
-alias rosdep_local='rosdep install --from-paths ${LOCAL_WS}/src/ --ignore-src -y'
-alias colcon_local='cd ${LOCAL_WS} && colcon build --symlink-install --base-paths src && source ./install/setup.bash'
-alias clean_local='cd ${LOCAL_WS} && colcon clean workspace --base-select build install log'
+alias isaac_bash='/bin/bash @@ISAAC_ROS_WS@@/container_scripts/isaac_bash.sh'
+alias reset_usb='/bin/bash @@WORKSPACES@@/scripts/usb_reset.sh'
+alias rosdep_local='rosdep install --from-paths @@LOCAL_WS@@/src/ --ignore-src -y'
+alias colcon_local='cd @@LOCAL_WS@@ && colcon build --symlink-install --base-paths src && source ./install/setup.bash'
+alias clean_local='cd @@LOCAL_WS@@ && colcon clean workspace --base-select build install log'
 alias foxglove_bridge='ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765'
 alias cam_down_start='ros2 service call /gst_camera_manager/cam_down std_srvs/srv/SetBool "{data: true}"'
 alias cam_down_stop='ros2 service call /gst_camera_manager/cam_down std_srvs/srv/SetBool "{data: false}"'
 alias cam_down_status='ros2 service call /gst_camera_manager/cam_down/status std_srvs/srv/Trigger "{}"'
 alias cam_down_alive='ros2 topic echo --once --qos-durability transient_local /gst_camera_manager/cam_down/alive'
+alias cam_refresh='ros2 service call /gst_camera_manager/refresh std_srvs/srv/Trigger'
 alias rslidar_start='ros2 service call /rslidar_coordinator/enable std_srvs/srv/SetBool "{data: true}"'
 alias rslidar_stop='ros2 service call /rslidar_coordinator/enable std_srvs/srv/SetBool "{data: false}"'
 alias rslidar_status='ros2 service call /rslidar_coordinator/status std_srvs/srv/Trigger "{}"'
 alias rslidar_alive='ros2 topic echo --once --qos-durability transient_local /rslidar_coordinator/alive'
 alias rslidar_restart='ros2 service call /rslidar_coordinator/restart std_srvs/srv/Trigger "{}"'
-alias lidar_diag='/bin/bash ${WORKSPACES}/scripts/lidar_diag.sh'
-alias local_test='/bin/bash ${WORKSPACES}/scripts/local_test.sh'
-alias config_lidar='sudo /bin/bash ${WORKSPACES}/scripts/config_lidar.sh'
-alias config_realsense='/bin/bash ${WORKSPACES}/scripts/config_realsense.sh'
-alias wifi='/bin/bash ${WORKSPACES}/scripts/wifi.sh'
-alias ver_cv_cams='/bin/bash ${WORKSPACES}/scripts/verify_cv_cams.sh'
-alias update_submods='/bin/bash ${WORKSPACES}/scripts/update_submods.sh'
-alias initialize='/bin/bash ${ISAAC_ROS_WS}/container_scripts/initialize.sh'
-alias deinitialize='/bin/bash ${ISAAC_ROS_WS}/container_scripts/deinitialize.sh'
-# Post-reboot resume hook: if setup.sh armed a resume flag before reboot, prompt to
-# continue (smoke test + camera verification). Only fires for interactive shells.
-if [[ \$- == *i* && -f "${HOME_DIR}/.arid_resume_setup" && -t 0 && -t 1 ]]; then
-    if /bin/bash "${WORKSPACES}/setup.sh" --resume; then
-        rm -f "${HOME_DIR}/.arid_resume_setup"
-    fi
-fi
+alias lidar_diag='/bin/bash @@WORKSPACES@@/scripts/lidar_diag.sh'
+alias local_test='/bin/bash @@WORKSPACES@@/scripts/local_test.sh'
+alias config_lidar='sudo /bin/bash @@WORKSPACES@@/scripts/config_lidar.sh'
+alias config_realsense='/bin/bash @@WORKSPACES@@/scripts/config_realsense.sh'
+alias wifi='/bin/bash @@WORKSPACES@@/scripts/wifi.sh'
+alias ver_cv_cams='/bin/bash @@WORKSPACES@@/scripts/verify_cv_cams.sh'
+alias update_submods='/bin/bash @@WORKSPACES@@/scripts/update_submods.sh'
+alias initialize='/bin/bash @@ISAAC_ROS_WS@@/container_scripts/initialize.sh'
+alias deinitialize='/bin/bash @@ISAAC_ROS_WS@@/container_scripts/deinitialize.sh'
+# Resume-after-reboot hook. The actual prompt logic lives in a dedicated script so this
+# bashrc block stays free of command substitution, $(...), backticks, and runtime $VAR.
+# A missing shim degrades silently (the [ -r ... ] guard); setup_bashrc fails loudly above
+# if the shim is missing at setup time.
+[ -r @@REPO_ROOT@@/scripts/arid_resume_prompt.sh ] && . @@REPO_ROOT@@/scripts/arid_resume_prompt.sh
 # END ARID SETUP
-EOF
+ARIDRC
+
+        # Token substitution pass. Each sed RHS is passed through _sed_rhs_escape() which
+        # neutralises sed's metacharacters (&, \, and the chosen | delimiter) so a future
+        # path that contains those characters cannot corrupt the rewrite.
+        _sed_rhs_escape() { printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'; }
+        sed -i "s|@@WORKSPACES@@|$(_sed_rhs_escape "${WORKSPACES}")|g"     "$tmpfile"
+        sed -i "s|@@LOCAL_WS@@|$(_sed_rhs_escape "${LOCAL_WS}")|g"         "$tmpfile"
+        sed -i "s|@@ISAAC_ROS_WS@@|$(_sed_rhs_escape "${ISAAC_ROS_WS}")|g" "$tmpfile"
+        sed -i "s|@@REPO_ROOT@@|$(_sed_rhs_escape "${SCRIPT_DIR}")|g"      "$tmpfile"
+
+        # Fail loud if any @@TOKEN@@ slipped through.
+        if grep -Eq '@@(WORKSPACES|LOCAL_WS|ISAAC_ROS_WS|REPO_ROOT)@@' "$tmpfile"; then
+            err "token substitution incomplete - stray @@TOKEN@@ in rewritten bashrc; aborting"
+            rm -f "$tmpfile"
+            exit 1
+        fi
+
+        # Atomic swap.
+        mv -- "$tmpfile" "$BASHRC_FILE"
+    ) 9>"${lockfile}" || { rm -f "$tmpfile"; return 1; }
 
     STEPS_RUN+=("bashrc")
     ok ".bashrc updated"
@@ -1169,10 +1219,10 @@ run_smoke_test() {
 # back so the next login does not prompt for a resume that never actually happened.
 prompt_reboot() {
     echo ""
-    echo -e "${YELLOW}${BOLD}A reboot is required for all changes to take effect.${NC}"
     local do_reboot="${PRE_REBOOT:-y}"
     if (( ! PRE )); then read -r -p "Reboot now? (y/n): " do_reboot || do_reboot="n"; fi
     if is_yes "$do_reboot"; then
+        echo -e "${YELLOW}${BOLD}Rebooting now.${NC}"
         touch "${HOME_DIR}/.arid_resume_setup"
         if ! sudo reboot; then
             warn "sudo reboot failed - rolling back the resume flag"
@@ -1180,6 +1230,7 @@ prompt_reboot() {
             return 1
         fi
     else
+        echo -e "${YELLOW}${BOLD}A reboot is required for all changes to take effect.${NC}"
         echo "Remember to reboot before using this system - the smoke test runs on the next post-reboot terminal."
     fi
 }
@@ -1241,7 +1292,7 @@ collect_answers() {
     if docker image inspect isaac_ros_dev-aarch64-container >/dev/null 2>&1; then
         read -r -p "  Rebuild the Isaac container? (y/n, Enter = skip): " a || a=""
     else
-        read -r -p "  Build the Isaac container? (y/n, Enter = skip; rebuild manually with 'build_isaac'): " a || a=""
+        read -r -p "  Build the Isaac container? (y/n, Enter = skip): " a || a=""
     fi
     if is_yes "$a"; then
         PRE_BUILD_ISAAC=yes
@@ -1250,10 +1301,37 @@ collect_answers() {
         PRE_BUILD_ISAAC=skip
     fi
 
+    # Run the local smoke test on the post-reboot resume? Default yes - it's the final
+    # validation that boot-time services + the ROS graph contract are healthy.
+    read -r -p "  Run smoke test on post-reboot resume? (y/n, Enter = y): " a || a=""
+    is_no "$a" && PRE_SMOKE=skip || PRE_SMOKE=yes
+
     read -r -p "  Reboot when done? (y/n, Enter = y): " a || a=""
     is_no "$a" && PRE_REBOOT=no || PRE_REBOOT=yes
 
     ok "Answers recorded - running unattended."
+
+    # Persist every questionnaire answer to disk so the post-reboot resume path can honour
+    # them just like the pre-reboot pipeline does. Without this, any PRE_* answered before
+    # the reboot would silently revert to the script's default in run_resume.
+    _persist_questionnaire
+}
+
+# Write every PRE_* answer to ${HOME_DIR}/.arid_questionnaire as KEY=value lines. Sourced
+# by run_resume() so the post-reboot half of the pipeline sees the same questionnaire state
+# the pre-reboot half had. Secrets (PRE_PASS, PRE_WIFI_PASS) are deliberately NOT persisted -
+# those gate first_boot / wifi steps which only ever run before the reboot. File mode 600.
+_persist_questionnaire() {
+    local f="${HOME_DIR}/.arid_questionnaire"
+    umask 077
+    {
+        echo "# Generated by setup.sh collect_answers - sourced by run_resume."
+        echo "PRE=1"
+        for var in PRE_HOST PRE_WIFI PRE_WIFI_SSID PRE_NOMACHINE PRE_PX4 \
+                   PRE_REALSENSE PRE_VERIFY PRE_SMOKE PRE_BUILD_ISAAC PRE_REBOOT; do
+            printf '%s=%q\n' "$var" "${!var-}"
+        done
+    } > "$f"
 }
 
 run_full_setup() {
@@ -1307,11 +1385,26 @@ run_resume() {
         return 1
     fi
 
-    step "Continuing setup where it left off - camera verification"
-    if bash "${WORKSPACES}/scripts/verify_cv_cams.sh"; then
-        ok "camera verification complete"
+    # Restore every PRE_* answer from the questionnaire file written by collect_answers.
+    # Without this, PRE_VERIFY (and any other post-reboot-relevant answer) silently reverts
+    # to the script's default. Missing file = pre-reboot questionnaire was not run (e.g. the
+    # resume was triggered manually) - leave PRE unset and run the default flow.
+    if [[ -r "${HOME_DIR}/.arid_questionnaire" ]]; then
+        # shellcheck disable=SC1090
+        set +u
+        source "${HOME_DIR}/.arid_questionnaire" || true
+        set -u
+    fi
+
+    if (( ${PRE:-0} )) && ! is_yes "${PRE_VERIFY:-}"; then
+        step "Continuing setup where it left off - camera verification skipped (per questionnaire)"
     else
-        warn "camera verification incomplete - run 'ver_cv_cams' to retry"
+        step "Continuing setup where it left off - camera verification"
+        if bash "${WORKSPACES}/scripts/verify_cv_cams.sh"; then
+            ok "camera verification complete"
+        else
+            warn "camera verification incomplete - run 'ver_cv_cams' to retry"
+        fi
     fi
 
     if [[ -f "${HOME_DIR}/.arid_pending_build_isaac" ]]; then
@@ -1364,8 +1457,23 @@ run_resume() {
         fi
     fi
 
+    # Honour the questionnaire's smoke-test answer. Default (PRE_SMOKE unset or anything
+    # other than "skip", e.g. a manually-triggered --resume with no questionnaire) is to run
+    # the smoke test - the legacy behaviour.
     local smoke_rc=0
-    run_smoke_test || smoke_rc=$?
+    if [[ "${PRE_SMOKE:-}" == "skip" ]]; then
+        step "Smoke test skipped (per questionnaire)"
+    else
+        run_smoke_test || smoke_rc=$?
+    fi
+
+    # Clear the persisted questionnaire only on a clean run. A non-zero smoke_rc leaves the
+    # file in place so a manually-retried resume sees the same answers without re-running the
+    # whole questionnaire.
+    if (( smoke_rc == 0 )); then
+        rm -f "${HOME_DIR}/.arid_questionnaire"
+    fi
+
     echo ""
     echo -e "${BOLD}Setup complete.${NC}"
     return "${smoke_rc}"
@@ -1386,14 +1494,13 @@ menu() {
         echo "  7) Wi-Fi connect"
         echo "  8) Camera calibration"
         echo "  9) Camera focus"
-        echo "  b) Build Isaac container"
-        echo "  c) Colcon-build container workspace"
-        echo "  u) Uninstall (undo setup.sh; keeps repo, hostname, password)"
-        echo -e "${BOLD}========================================${NC}"
+        echo "  10) Build Isaac container"
+        echo "  11) Colcon-build container workspace"
+        echo "  12) Uninstall"
         echo "  q) Quit"
+        echo -e "${BOLD}========================================${NC}"
         local choice
-        read -rn1 -p "  Select: " choice || choice="q"
-        echo ""
+        read -r -p "  Select: " choice || choice="q"
         case "${choice}" in
             1) run_full_setup; break ;;
             2) bash "${WORKSPACES}/scripts/local_test.sh"        || true ;;
@@ -1404,9 +1511,9 @@ menu() {
             7) bash "${WORKSPACES}/scripts/wifi.sh"              || true ;;
             8) calibrate_cameras                                 || true ;;
             9) camera_focus                                      || true ;;
-            b|B) build_isaac_step                                || true ;;
-            c|C) colcon_isaac_step                               || true ;;
-            u|U) setup_uninstall                                 || true ;;
+            10) build_isaac_step                                 || true ;;
+            11) colcon_isaac_step                                || true ;;
+            12) setup_uninstall                                  || true ;;
             q|Q) echo "  Quit."; break ;;
             *) warn "invalid selection: '${choice}'" ;;
         esac

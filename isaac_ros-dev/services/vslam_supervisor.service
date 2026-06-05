@@ -3,6 +3,11 @@ Description=VSLAM lifecycle supervisor (runs in the Isaac container)
 After=start_isaac_docker.service
 Requires=start_isaac_docker.service
 PartOf=start_isaac_docker.service
+# Cap restart loops: if 5 starts fail inside 60 s, give up. Without this the supervisor
+# would loop forever when the package is missing or misbuilt, filling the journal and
+# masking the real failure. These directives only take effect when placed in [Unit].
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 User=jetson
@@ -10,7 +15,9 @@ Type=simple
 # Wait for the container to come up, then launch the supervisor inside it. `bash -lc`
 # sources /etc/profile.d/arid_env.sh (ROS sourcing, ROS_DOMAIN_ID=23, install/setup.bash)
 # before launch resolves the package.
-ExecStartPre=/bin/bash -c 'until docker inspect -f "{{.State.Running}}" isaac_ros_dev-aarch64-container 2>/dev/null | grep -q true; do sleep 1; done'
+# Bounded poll: 60 s max. Without a bound, the loop runs until systemd's TimeoutStartSec
+# kills it (90 s default), producing a confusing "service stuck in activating" state.
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 60); do docker inspect -f "{{.State.Running}}" isaac_ros_dev-aarch64-container 2>/dev/null | grep -q true && exit 0; sleep 1; done; echo "container did not become running within 60 s" >&2; exit 1'
 ExecStart=/usr/bin/docker exec isaac_ros_dev-aarch64-container bash -lc 'ros2 launch vslam_supervisor vslam_supervisor.launch.py'
 # KillMode=mixed sends SIGTERM to the whole cgroup on stop, taking down the ros2 launch
 # parent and every child node together.
@@ -21,11 +28,6 @@ KillMode=mixed
 TimeoutStopSec=30
 Restart=on-failure
 RestartSec=5
-# Cap restart loops: if 5 starts fail inside 60 s, give up. Without this the supervisor
-# would loop forever when the package is missing or misbuilt, filling the journal and
-# masking the real failure.
-StartLimitIntervalSec=60
-StartLimitBurst=5
 
 [Install]
 WantedBy=multi-user.target

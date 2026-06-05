@@ -48,7 +48,7 @@ With no arguments, an interactive single-keypress menu opens:
 | **u** | Uninstall — stop and remove every systemd unit installed by setup.sh, the rslidar NM profiles + dispatcher + sysctl drop-in, the sudoers / polkit / udev rules, the ARID block in `~/.bashrc`, every setup.sh sentinel, the docker patches inside `isaac_ros_common`, and the Isaac container + image. Strict explicit confirmation at the prompt. Never runs as part of the full chain. The repo clone, hostname, password, group memberships, apt-mark holds, ROS 2 Humble, JetPack, and the Docker engine itself are left in place. |
 | **q** | Quit |
 
-`--full` front-loads a questionnaire (hostname, password, Wi-Fi, NoMachine, PX4 toolchain, RealSense assignment, camera verification, Isaac build, reboot) and then runs every step without further prompts. `--resume` is invoked automatically by a hook in the host `.bashrc` on the next interactive shell after `setup.sh` armed `~/.arid_resume_setup` (i.e. after a reboot): it waits for boot-enabled units, runs camera verification, picks up a queued Isaac container build, and finishes with the smoke test.
+`--full` front-loads a questionnaire (hostname, password, Wi-Fi, NoMachine, PX4 toolchain, RealSense assignment, camera verification, Isaac build, smoke test, reboot) and then runs every step without further prompts. `--resume` is invoked automatically by a hook in the host `.bashrc` on the next interactive shell after `setup.sh` armed `~/.arid_resume_setup` (i.e. after a reboot): it waits for boot-enabled units, runs camera verification, picks up a queued Isaac container build, and finishes with the smoke test.
 
 All output is logged to `log/setup_log_<timestamp>.log`.
 
@@ -439,6 +439,7 @@ CSI camera (`cam_down`, supervised by `gst_camera_manager`):
 | `cam_down_stop` | `SetBool(false)` on `/gst_camera_manager/cam_down`. |
 | `cam_down_status` | Trigger `/gst_camera_manager/cam_down/status`. |
 | `cam_down_alive` | Read the latched `/gst_camera_manager/cam_down/alive` Bool (TRANSIENT_LOCAL). |
+| `cam_refresh` | Re-read `gst_camera_manager/config/pipelines.yaml` at runtime. Stops any running pipelines first (publisher QoS is fixed at subprocess launch and can't change in place), clears per-pipeline state, then reloads from YAML. Manager-level services and the watchdog are untouched. Use after editing `pipelines.yaml` to avoid restarting `gst_camera_manager.service`. |
 
 RSAIRY LiDAR (supervised by `rslidar_coordinator`):
 

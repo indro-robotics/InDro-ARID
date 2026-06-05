@@ -10,7 +10,10 @@ Type=simple
 # devices can change after reboots/driver updates, causing the cached spec to reference
 # devices that no longer exist (e.g. /dev/nvidia-modeset) and breaking container start.
 ExecStartPre=+/usr/bin/nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
-ExecStartPre=/bin/bash -c 'until docker info > /dev/null 2>&1; do sleep 1; done'
+# Bounded poll: 60 s max. Without a bound, the loop runs until systemd's TimeoutStartSec
+# kills it (90 s default), producing a confusing "service stuck in activating" state.
+# Explicit failure within the bound is easier to diagnose.
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 60); do docker info >/dev/null 2>&1 && exit 0; sleep 1; done; echo "docker daemon did not come up within 60 s" >&2; exit 1'
 ExecStart=/bin/bash -c "/home/jetson/workspaces/isaac_ros-dev/container_scripts/start_isaac_docker.sh"
 Restart=on-failure
 RestartSec=5
