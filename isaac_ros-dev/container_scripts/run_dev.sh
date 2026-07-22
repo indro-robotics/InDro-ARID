@@ -228,6 +228,7 @@ DOCKER_ARGS+=("-e DISPLAY")
 DOCKER_ARGS+=("-e NVIDIA_VISIBLE_DEVICES=all")
 DOCKER_ARGS+=("-e NVIDIA_DRIVER_CAPABILITIES=all")
 DOCKER_ARGS+=("-e ROS_DOMAIN_ID")
+DOCKER_ARGS+=("-e ROS_LOCALHOST_ONLY=1")
 DOCKER_ARGS+=("-e USER")
 DOCKER_ARGS+=("-e ISAAC_ROS_WS=/workspaces/isaac_ros-dev")
 DOCKER_ARGS+=("-e HOST_USER_UID=`id -u`")
@@ -298,7 +299,13 @@ if [[ $VERBOSE -eq 1 ]]; then
     set -x
 fi
 
-docker run -it \
+# Create the container DETACHED with a non-exiting main process. The main process
+# must never quit on its own: an interactive /bin/bash as PID 1 hits EOF when started
+# headless / at boot (`docker start` with no stdin attached) and the container exits.
+# `sleep infinity` keeps the container up until it is explicitly stopped. Interactive
+# shells are obtained via `docker exec` below (and via the isaac_bash alias), never
+# from the main process.
+docker run -d \
     --privileged \
     --network host \
     --ipc=host \
@@ -310,4 +317,15 @@ docker run -it \
     --entrypoint /usr/local/bin/scripts/workspace-entrypoint.sh \
     --workdir /workspaces/isaac_ros-dev \
     $BASE_NAME \
-    /bin/bash
+    sleep infinity
+
+# When run from a terminal, drop the caller into an interactive shell (preserves the
+# old run_dev experience). When run non-interactively (provisioning / boot), just
+# leave the container running in the background.
+if [ -t 0 ] && [ -t 1 ]; then
+    for _ in $(seq 1 60); do
+        if docker exec "$CONTAINER_NAME" id admin >/dev/null 2>&1; then break; fi
+        sleep 0.5
+    done
+    docker exec -i -t -u admin --workdir /workspaces/isaac_ros-dev "$CONTAINER_NAME" /bin/bash "$@"
+fi

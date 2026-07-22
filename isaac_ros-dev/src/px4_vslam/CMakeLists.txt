@@ -9,6 +9,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(px4_msgs REQUIRED)
@@ -18,7 +19,7 @@ find_package(isaac_ros_visual_slam REQUIRED)
 find_package(isaac_ros_visual_slam_interfaces REQUIRED)
 
 add_executable(vio_transform src/vio_transform.cpp)
-ament_target_dependencies(vio_transform rclcpp sensor_msgs nav_msgs px4_msgs tf2 tf2_ros isaac_ros_visual_slam_interfaces)
+ament_target_dependencies(vio_transform rclcpp sensor_msgs std_msgs nav_msgs px4_msgs tf2 tf2_ros isaac_ros_visual_slam_interfaces)
 
 target_include_directories(vio_transform PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

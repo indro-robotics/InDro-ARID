@@ -1,6 +1,6 @@
 # reset_ark_usb
 
-ROS 2 node that exposes a service to hardware-reset the USB ports on the **ARK PAB Orin carrier board**. Internally wraps a systemd unit (`reset_usb.service`) that shells out to `uhubctl` to cycle the USB hub.
+ROS 2 node that exposes a service to hardware-reset the USB ports on the **ARK PAB Orin carrier board**. The node wraps a systemd unit (`reset_usb.service`) that shells out to `uhubctl` to cycle the USB hub.
 
 ---
 
@@ -19,7 +19,7 @@ ros2 service call /reset_usb std_srvs/srv/Trigger "{}"
           uhubctl  →  USB hub power-cycled
 ```
 
-The node is intentionally thin — it's the glue between a ROS service and the privileged `systemctl` call. The actual USB reset logic lives in `scripts/usb_reset.sh` at the workspace root.
+The node is intentionally thin: it is the glue between a ROS service and the privileged `systemctl` call. The actual USB reset logic lives in `scripts/usb_reset.sh` at the workspace root.
 
 ---
 
@@ -29,8 +29,7 @@ The node is intentionally thin — it's the glue between a ROS service and the p
 |---|---|---|---|
 | `/reset_usb` | `std_srvs/srv/Trigger` | *(empty)* | `success: bool`, `message: string` |
 
-- On success: `message` contains `systemctl` stdout (typically empty).
-- On failure: `message` contains `systemctl` stderr.
+On success, `message` contains `systemctl` stdout (typically empty). On failure, `message` contains `systemctl` stderr.
 
 ### CLI usage
 
@@ -60,16 +59,16 @@ rclpy.spin_until_future_complete(self, future)
 
 ## Prerequisites
 
-These are set up by the workspace-level `setup.sh` — included here for reference / portability.
+These are set up by the workspace-level `setup.sh`. Listed here for reference and portability.
 
-1. **`reset_usb.service` installed + enabled** (`local_ws/services/reset_usb.service`).
-2. **Sudoers rule** allowing the `jetson` user to run `systemctl start reset_usb.service` without a password prompt (otherwise the subprocess call hangs waiting for input).
+1. **`reset_usb.service` installed (started on demand via `systemctl start`; not enabled at boot)** (`local_ws/services/reset_usb.service`).
+2. **Sudoers rule** allowing the `jetson` user to run `systemctl start reset_usb.service` without a password prompt. Otherwise the subprocess call hangs waiting for input.
 3. **`uhubctl`** installed on the host, with the PAB carrier's USB hub accessible to it.
-4. **ARK PAB Orin carrier** — the hub topology / port numbering in `scripts/usb_reset.sh` is specific to this board. Other carriers will need their own reset script.
+4. **ARK PAB Orin carrier**. The hub topology and port numbering in `scripts/usb_reset.sh` is specific to this board. Other carriers need their own reset script.
 
 ---
 
-## Build & run
+## Build and run
 
 ```bash
 cd ~/workspaces/local_ws
@@ -78,7 +77,7 @@ source install/setup.bash
 ros2 run reset_ark_usb reset_usb_service
 ```
 
-Or let the `usb_ros_reset.service` systemd unit start it automatically on boot (installed by `setup.sh`).
+The `usb_ros_reset.service` systemd unit also starts this node automatically on boot (installed by `setup.sh`).
 
 ---
 
@@ -86,10 +85,10 @@ Or let the `usb_ros_reset.service` systemd unit start it automatically on boot (
 
 | Symptom | Likely cause |
 |---|---|
-| Service call hangs forever | Sudoers rule missing — `systemctl` prompting for password invisibly. |
+| Service call hangs forever | Sudoers rule missing. `systemctl` prompting for password invisibly. |
 | `success: false` with `sudo: a password is required` | Same as above. |
-| `success: false` with `Unit reset_usb.service not found` | `reset_usb.service` not installed — re-run `setup.sh`. |
-| Ports don't actually reset | `uhubctl` can't see the hub — check `uhubctl -l` lists the PAB hub; permissions / kernel modules. |
+| `success: false` with `Unit reset_usb.service not found` | `reset_usb.service` not installed. Re-run `setup.sh`. |
+| Ports don't actually reset | `uhubctl` can't see the hub. Check that `uhubctl -l` lists the PAB hub, then check permissions and kernel modules. |
 
 ---
 

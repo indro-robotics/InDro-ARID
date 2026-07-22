@@ -12,4 +12,6 @@ workspaces/log/
 
 # Ignore camera calibration venv and output (auto-recreated by camera_calibrate.sh)
 local_ws/auxiliary/camera_calibration/calib_env/
+local_ws/auxiliary/camera_calibration/camera_calibration_auto/calib_env/
+local_ws/auxiliary/camera_calibration/camera_calibrations/*/*_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_*.yaml
 local_ws/auxiliary/camera_calibration/*_calibration.yaml

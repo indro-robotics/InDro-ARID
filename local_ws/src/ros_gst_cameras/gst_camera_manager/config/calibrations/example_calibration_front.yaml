@@ -1,0 +1,30 @@
+# Placeholder calibration for the front IMX219 (cam_front) at 1920x1080.
+# Replace with real values from `camera_calibrate.sh front` (see local_ws/auxiliary/camera_calibration/).
+# fx / fy and the principal point below are first-order placeholders (sensor width in pixels);
+# distortion is zeroed. The real calibration overwrites all of this.
+image_width: 1920
+image_height: 1080
+camera_name: cam_front
+camera_matrix:
+  rows: 3
+  cols: 3
+  data: [1920.0,    0.0,  960.0,
+            0.0, 1920.0,  540.0,
+            0.0,    0.0,    1.0]
+distortion_model: plumb_bob
+distortion_coefficients:
+  rows: 1
+  cols: 5
+  data: [0.0, 0.0, 0.0, 0.0, 0.0]
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data: [1.0, 0.0, 0.0,
+         0.0, 1.0, 0.0,
+         0.0, 0.0, 1.0]
+projection_matrix:
+  rows: 3
+  cols: 4
+  data: [1920.0,    0.0,  960.0,  0.0,
+            0.0, 1920.0,  540.0,  0.0,
+            0.0,    0.0,    1.0,  0.0]

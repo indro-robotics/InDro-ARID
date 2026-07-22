@@ -1,35 +1,40 @@
 # camera_calibration
 
-Wrapper around ROS 2's `camera_calibration` tool for running the GUI calibrator against any image topic on the drone.
+The CSI camera calibration launcher, wrapping ROS 2's `camera_calibration` GUI tool and isolating itself in a local `calib_env/` venv pinned to `numpy<2` (ROS 2 Humble's `cv_bridge` is compiled against NumPy 1.x and breaks with NumPy 2.x). The GUI renders over a **NoMachine remote display**: the calibrator runs on the Jetson and streams back to the workstation.
 
-Built to work over a **NoMachine remote display** — the calibrator GUI renders on the Jetson and streams back to the workstation. The script auto-detects the `DISPLAY` socket under `/tmp/.X11-unix/` so you don't need to export `DISPLAY` manually after SSH / NoMachine connects.
+## `camera_calibration_auto/camera_calibrate.sh`
 
-It also isolates itself in a local venv (`calib_env/`) pinned to `numpy<2`, because ROS 2 Humble's `cv_bridge` is compiled against NumPy 1.x and breaks with NumPy 2.x.
-
-## Usage
-
-With no arguments, the script queries the ROS graph for every live `sensor_msgs/msg/Image` topic and presents an interactive numbered menu — pick the camera you want to calibrate:
+This is the calibrator wired into `setup.sh` (menu option 6). It targets the two CSI pipelines, `cam_front` and `cam_down`, driving the selected one through the live `gst_camera_manager` service. Pick the camera with a `front|down` argument:
 
 ```bash
-./camera_calibrate.sh
-# [calib] Select an image topic to calibrate (or Ctrl-C to abort):
-# 1) /cam_down/image_raw
-# [calib] > 1
+./camera_calibration_auto/camera_calibrate.sh front   # front IMX219 (sensor-id 0)
+./camera_calibration_auto/camera_calibrate.sh down    # down  IMX219 (sensor-id 1)
 ```
 
-`CAMERA_NS` is auto-derived from the selected topic (strips the trailing segment, e.g. `/cam_down/image_raw` → `/cam_down`).
+For the selected camera the script:
 
-**Scripted / non-interactive** — set `IMAGE_TOPIC` explicitly and the menu is skipped:
+- brings the pipeline up via the `gst_camera_manager` service (starting the systemd unit if needed), waits for frames, runs the interactive calibrator, then stops the camera on exit;
+- on completion, saves the result to the calibration store (`camera_calibrations/cam_front/` or `camera_calibrations/cam_down/`, timestamped record + current `cam_front.yaml` / `cam_down.yaml`) **and** applies it to the live pipeline calibration file (`ros_gst_cameras/gst_camera_manager/config/calibrations/cam_front.yaml` or `cam_down.yaml`), so it takes effect on the next pipeline restart;
+- gates on an actually-attached NoMachine viewer before starting the camera, so it never opens a calibrator window into a dead/headless session. It waits up to `NM_WAIT_S` seconds (default 180) for a NoMachine connection, then skips calibration cleanly.
+
+The `front|down` argument is required; running the script with no argument (or an unknown one) prints a usage message and exits.
+
+Interactive: prompts for a custom board (columns / rows in squares + square size in mm) and converts to interior corners = squares - 1. Enter or `n` uses the included default board at `../calibration_pattern/calib_pattern.pdf` (10x7 squares / 50 mm).
+
+Env overrides (skip the prompt; useful for automation):
 
 ```bash
-SIZE=9x7 SQUARE=0.030 IMAGE_TOPIC=/cam_down/image_raw \
-    ./camera_calibrate.sh
+SIZE=9x6 SQUARE=0.050 ROS_DOMAIN_ID=23 NM_WAIT_S=180 \
+    ./camera_calibration_auto/camera_calibrate.sh down
 ```
 
-Click **Save** in the GUI before closing — the script extracts `ost.yaml` and writes it next to itself as `<topic_slug>_calibration.yaml` (e.g. `cam_down_image_raw_calibration.yaml`). Re-calibrating the same topic overwrites the previous file.
+After the first successful run, set `calibration: "cam_front"` / `calibration: "cam_down"` in the matching entry of `pipelines.yaml` (both ship empty) so the pipeline loads the new intrinsics.
+
+Prompts are driven through the controlling terminal (`/dev/tty`) rather than plain `read -p`, because `setup.sh` runs everything under `exec > >(tee -a ...)`, where a `read -p` prompt block-buffers in the tee pipe and never reaches the operator.
 
 ## Files
 
-- `camera_calibrate.sh` — the launcher.
-- `calib_env/` — auto-created venv (gitignored).
-- `*_calibration.yaml` — saved calibrations, one per topic slug (gitignored).
+- `camera_calibration_auto/camera_calibrate.sh`: the `front|down` CSI calibrator wired into `setup.sh`; applies to the live gst store.
+- `calibration_pattern/calib_pattern.pdf`: the included 10x7-square / 50 mm checkerboard.
+- `camera_calibrations/`: per-camera calibration store (the current `<name>.yaml` stays tracked, timestamped records are gitignored).
+- `calib_env/`: auto-created venv (gitignored).

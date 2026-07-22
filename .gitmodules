@@ -34,6 +34,3 @@
 	path = isaac_ros-dev/src/isaac_ros_image_pipeline
 	url = https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_image_pipeline.git
 	branch = release-3.2
-[submodule "local_ws/src/foxglove-sdk"]
-	path = local_ws/src/foxglove-sdk
-	url = https://github.com/foxglove/foxglove-sdk.git

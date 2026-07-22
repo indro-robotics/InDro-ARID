@@ -1,13 +1,15 @@
-# Placeholder calibration for LUCID Phoenix PHXET124S-MC — full sensor 4096x3000
-# Replace with real values from ros2 run camera_calibration cameracalibrator
-image_width: 4096
-image_height: 3000
-camera_name: phoenix_4k
+# Placeholder calibration for the downward IMX219 (cam_down) at 1920x1080.
+# Replace with real values from `camera_calibrate.sh` (see local_ws/auxiliary/camera_calibration/).
+# fx / fy and the principal point below are first-order placeholders (sensor width in pixels);
+# distortion is zeroed. The real calibration overwrites all of this.
+image_width: 1920
+image_height: 1080
+camera_name: cam_down
 camera_matrix:
   rows: 3
   cols: 3
-  data: [4096.0, 0.0, 2048.0,
-            0.0, 4096.0, 1500.0,
+  data: [1920.0,    0.0,  960.0,
+            0.0, 1920.0,  540.0,
             0.0,    0.0,    1.0]
 distortion_model: plumb_bob
 distortion_coefficients:
@@ -23,6 +25,6 @@ rectification_matrix:
 projection_matrix:
   rows: 3
   cols: 4
-  data: [4096.0, 0.0, 2048.0, 0.0,
-            0.0, 4096.0, 1500.0, 0.0,
-            0.0,    0.0,    1.0, 0.0]
+  data: [1920.0,    0.0,  960.0,  0.0,
+            0.0, 1920.0,  540.0,  0.0,
+            0.0,    0.0,    1.0,  0.0]

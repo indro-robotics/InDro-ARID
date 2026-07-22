@@ -1,6 +1,7 @@
 import os
 
 import launch
+from ament_index_python.packages import get_package_share_directory
 from launch.actions import (DeclareLaunchArgument, ExecuteProcess, LogInfo,
                             RegisterEventHandler)
 from launch.event_handlers import OnProcessExit
@@ -53,13 +54,26 @@ def generate_launch_description():
         executable='vio_transform'
     )
 
+    vslam_reactor_config = os.path.join(
+        get_package_share_directory('px4_vslam_reactor'),
+        'config', 'px4_vslam_reactor.yaml')
+
     vslam_reactor_node = Node(
         package='px4_vslam_reactor',
         executable='vslam_reactor_node',
         name='vslam_reactor',
-        output='screen'
+        output='screen',
+        parameters=[vslam_reactor_config]
     )
 
+    # NOTE on the RealSense claim race: sibling RealSenseNodeFactory instances
+    # cross-probe every attached D455 during enumeration; a collision yields
+    # RS2_USB_STATUS_BUSY -> "failed to set power state" -> that factory
+    # permanently gives up. A launch-time stagger (8 s / 16 s TimerAction
+    # LoadComposableNodes) proved insufficient and was reverted; recovery is
+    # now handled by arid_supervisor's vslam_enable gate, which requires 3
+    # distinct "RealSense Node Is Up!" tags and runs one teardown + /reset_usb
+    # + respawn cycle if a camera wedges.
     vslam_container = ComposableNodeContainer(
         name='vslam_container',
         namespace='',
@@ -67,6 +81,11 @@ def generate_launch_description():
         executable='component_container_mt',
         output='screen',
         env=env,
+        # The D455 sensors close serially (~15-20 s for 3 stereo + RGB); the launch
+        # default grace SIGKILLs mid-close, leaving the device dirty for the next init.
+        # Match the supervisor's 25 s SIGINT grace so the close completes cleanly.
+        sigterm_timeout='25.0',
+        sigkill_timeout='10.0',
         composable_node_descriptions=[
             ComposableNode(
                 package='realsense2_camera',

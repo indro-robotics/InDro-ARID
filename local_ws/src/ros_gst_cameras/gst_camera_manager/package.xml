@@ -3,7 +3,7 @@
 <package format="3">
   <name>gst_camera_manager</name>
   <version>0.0.1</version>
-  <description>YAML-driven GStreamer camera pipeline manager — node_manager analog for gst_cam_node pipelines.</description>
+  <description>YAML-driven GStreamer camera pipeline manager: a node_manager analog for gst_cam_node pipelines.</description>
   <maintainer email="calvin.rubens@indrorobotics.com">Calvin-InDro</maintainer>
   <license>MIT</license>
 

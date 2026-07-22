@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>arid_supervisor</name>
+  <version>0.0.1</version>
+  <description>Always-on supervisor for the ARID VSLAM stack. Hosts a SetBool service to start/stop px4_vslam as a managed subprocess with a camera-proven bringup gate and a landed-state safety interlock.</description>
+  <maintainer email="calvin.rubens@indrorobotics.com">Calvin-InDro</maintainer>
+  <license>Apache License 2.0</license>
+
+  <depend>rclpy</depend>
+  <depend>std_srvs</depend>
+  <depend>px4_msgs</depend>
+
+  <exec_depend>ros2launch</exec_depend>
+  <exec_depend>px4_vslam</exec_depend>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

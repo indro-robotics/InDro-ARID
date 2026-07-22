@@ -5,6 +5,7 @@
 #include <px4_msgs/msg/sensor_combined.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <sensor_msgs/msg/imu.hpp>
+#include <std_msgs/msg/u_int8.hpp>
 #include "isaac_ros_visual_slam_interfaces/msg/visual_slam_status.hpp"
 
 class VioTransform : public rclcpp::Node
@@ -29,6 +30,12 @@ explicit VioTransform() : Node("vio_transform")
 	_vslam_status_sub = this->create_subscription<isaac_ros_visual_slam_interfaces::msg::VisualSlamStatus>("/visual_slam/status", qos,
 						std::bind(&VioTransform::statusCallback, this, std::placeholders::_1));
 
+	// Reset epoch from the reactor; forwarded into VehicleOdometry.reset_counter so EKF2 re-anchors
+	// on a re-seat instead of gating the jump. Transient-local latches a late-published value.
+	_reset_epoch_sub = this->create_subscription<std_msgs::msg::UInt8>("/reactor/vio_reset_epoch",
+						rclcpp::QoS(1).reliable().transient_local(),
+						std::bind(&VioTransform::resetEpochCallback, this, std::placeholders::_1));
+
 	// FC IMU subscription
 	// _fc_imu_sub = this->create_subscription<px4_msgs::msg::SensorCombined>("/fmu/out/sensor_combined", qos,
 	// 					std::bind(&VioTransform::sensorCombinedCallback, this, std::placeholders::_1));
@@ -38,6 +45,7 @@ private:
 	// Subscription callbacks
 	void odometryCallback(const nav_msgs::msg::Odometry::UniquePtr msg);
 	void statusCallback(const isaac_ros_visual_slam_interfaces::msg::VisualSlamStatus::UniquePtr msg);
+	void resetEpochCallback(const std_msgs::msg::UInt8::UniquePtr msg);
 	void sensorCombinedCallback(const px4_msgs::msg::SensorCombined::UniquePtr msg);
 
 	// Publishers
@@ -47,8 +55,10 @@ private:
 	// Subscribers
 	rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr _vslam_odom_sub;
 	rclcpp::Subscription<isaac_ros_visual_slam_interfaces::msg::VisualSlamStatus>::SharedPtr _vslam_status_sub;
+	rclcpp::Subscription<std_msgs::msg::UInt8>::SharedPtr _reset_epoch_sub;
 	// rclcpp::Subscription<px4_msgs::msg::SensorCombined>::SharedPtr _fc_imu_sub;
 	uint8_t _vslam_state = 0;
+	uint8_t _reset_epoch = 0;
 };
 
 // This will be added back to test with new ISAAC Visual Slam. JP6.0 VIO buggy. Add pubs/subs back.
@@ -88,6 +98,15 @@ void VioTransform::statusCallback(const isaac_ros_visual_slam_interfaces::msg::V
 	}
 
 	_vslam_state = msg->vo_state;
+}
+
+void VioTransform::resetEpochCallback(const std_msgs::msg::UInt8::UniquePtr msg)
+{
+	if (msg->data != _reset_epoch) {
+		RCLCPP_INFO(get_logger(), "[VioTransform] EV reset epoch: %u", msg->data);
+	}
+
+	_reset_epoch = msg->data;
 }
 
 void VioTransform::odometryCallback(const nav_msgs::msg::Odometry::UniquePtr msg)
@@ -151,7 +170,7 @@ void VioTransform::odometryCallback(const nav_msgs::msg::Odometry::UniquePtr msg
 	vio.velocity_variance[1] = velocity_variance.getY();
 	vio.velocity_variance[2] = velocity_variance.getZ();
 
-	vio.reset_counter = 0;
+	vio.reset_counter = _reset_epoch;
 	vio.quality = _vslam_state;
 
 	_vio_pub->publish(vio);

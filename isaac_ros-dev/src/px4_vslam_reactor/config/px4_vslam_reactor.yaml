@@ -1,0 +1,31 @@
+# px4_vslam_reactor tunable parameters.
+# Loaded by px4_vslam/launch/vslam.launch.py; applied to the vslam_reactor node. Defaults are
+# also declared in the node, so it runs if this file is absent. Angular gates are entered in
+# degrees here and converted to radians in the node.
+/**:
+  ros__parameters:
+
+    vslam_stabilization_time: 1.0    # s, settle time before trusting a fresh VSLAM solution
+    lin_vel_gate: 5.0                # m/s, reject odometry above this linear velocity (was 15.0 - too loose;
+                                     #      analyzed flight peaked ~0.82 m/s, so 5.0 leaves headroom)
+    ang_vel_gate_dps: 200.0          # deg/s, reject odometry above this angular velocity (was 900.0)
+    VO_rate_lim: 0.5                 # s, min interval between set-pose corrections
+    VO_pos_delta_lim: 0.4            # m, max position jump accepted in one correction
+    sync_cache_sz: 300               # message_filters sync cache depth
+
+    # Set-origin settle / alignment (dedicated; separate from the jump gate above).
+    # After injecting the origin, keep injecting the stream (no re-seat) until EKF2 converges onto
+    # it, then stream normally. "Aligned" = yaw error AND 3D position error both under tolerance.
+    align_yaw_deg: 2.0               # deg, yaw-only tolerance to declare EKF2 settled onto the origin
+    align_pos_m: 0.10                # m, 3D position tolerance to declare EKF2 settled onto the origin
+    set_origin_settle_time: 10.0     # s, keep injecting this long for EKF2 to converge before re-injecting
+
+    # Freshness gate for SetSlamPose: skip stale (pre-reboot) PX4 samples so a re-seat is never
+    # anchored on FMU-down odometry. Caller retries each frame until a fresh sample arrives.
+    set_pose_max_odom_age: 0.010     # s, max age of the cached PX4 odom sample used to seed a re-seat
+
+    # FMU stamp skew clamp: if |now - FMU stamp| exceeds this, the map->px4 TF and
+    # /reactor/drone_odom|drone_pose for that message are re-stamped with node time so uXRCE
+    # timesync excursions cannot poison tf2 buffers. Skew-vs-now, not monotonicity: a future
+    # rogue stamp is still monotonic. Normal-path stamps stay untouched.
+    fmu_stamp_max_skew_s: 0.5        # s, max |now - FMU stamp| before re-stamping with node clock

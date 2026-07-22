@@ -1,6 +1,16 @@
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
+# apt ros-humble-librealsense2 (2.57.x, V4L2 backend) must never shadow the RSUSB 2.55.1 build at
+# /usr/local (Dockerfile.realsense layer): a wrapper linked against it fails bringup with
+# set_xu/UVCIOC_CTRL_QUERY "No such device". Pin it uninstallable (blocks rosdep-without-skip-keys,
+# whose extra_rosdeps maps librealsense2 -> ros-humble-librealsense2) and purge any inherited copy.
+RUN printf 'Package: ros-humble-librealsense2*\nPin: release *\nPin-Priority: -1\n' \
+        > /etc/apt/preferences.d/99-arid-no-apt-librealsense \
+ && if dpkg -l ros-humble-librealsense2 2>/dev/null | grep -q '^ii'; then \
+        apt-get purge -y 'ros-humble-librealsense2*'; \
+    fi
+
 # Install dependencies
 RUN apt-get update && apt-get install -y \
     nano \
@@ -13,17 +23,20 @@ RUN apt-get update && apt-get install -y \
     libgstreamer-plugins-base1.0-dev \
     ros-humble-camera-ros \
     ros-humble-magic-enum \
-    ros-humble-librealsense2 \
     ros-humble-foxglove-msgs \
     ros-humble-apriltag-msgs \
     ros-humble-tf-transformations \
     ros-humble-isaac-ros-image-proc \
     ros-humble-isaac-ros-h264-decoder \
     ros-humble-ament-cmake-clang-format \
-    ros-humble-apriltag-msgs \
  && rm -rf /var/lib/apt/lists/*
 
 RUN pip3 install --ignore-installed transforms3d
+
+# Global ROS env for every container process (interactive shells, docker exec, supervisor children).
+# ROS_LOCALHOST_ONLY confines DDS to loopback + shared memory -> kills off-box/ZeroTier discovery leak.
+ENV ROS_DOMAIN_ID=23 \
+    ROS_LOCALHOST_ONLY=1
 
 # Core ARID env & aliases
 COPY scripts/arid_env.sh /etc/profile.d/arid_env.sh
