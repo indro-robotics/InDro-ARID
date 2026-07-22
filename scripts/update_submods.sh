@@ -26,7 +26,6 @@ info() { echo -e "  ${YELLOW}>>>${NC} $*"; }
 # Format: "path:branch"
 LIVE_SUBMODULES=(
     "isaac_ros-dev/src/px4_msgs:release/1.15"
-    "local_ws/src/px4_msgs:release/1.15"
     "local_ws/auxiliary/PX4-Autopilot:PX4-InDro"
 )
 

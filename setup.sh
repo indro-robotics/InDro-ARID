@@ -290,6 +290,11 @@ setup_git() {
     "${WORKSPACES}/scripts/update_submods.sh"
     ok "Submodules synced and verified against pinned commits"
 
+    # Root run_logs view. Symlink, not a dir: the container mounts only isaac_ros-dev,
+    # so a physical root dir would be invisible in-container. Relative target.
+    ln -sfn isaac_ros-dev/run_logs "${WORKSPACES}/run_logs"
+    ok "run_logs symlink at the workspaces root"
+
     STEPS_RUN+=("git")
 }
 

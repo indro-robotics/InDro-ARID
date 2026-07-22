@@ -4,8 +4,7 @@ Always-on lifecycle owner for the ARID VSLAM stack. A single long-lived ROS 2 no
 started at boot by `arid_supervisor.service` inside the Isaac container, that starts and
 stops `px4_vslam` as a managed subprocess behind a landed-state safety interlock and a
 camera-proven bringup gate. Every operator entry point (the `initialize` and `deinitialize`
-scripts, and manual `ros2 service call`) drives the stack through this node, so all callers
-inherit the same protection.
+scripts, and manual `ros2 service call`) drives the stack through this node.
 
 The node never controls the drone and never fuses state. It owns process lifecycle only.
 
@@ -16,7 +15,7 @@ Hosted under the `arid_supervisor` node namespace.
 | Service | Type | Purpose |
 | --- | --- | --- |
 | `~/vslam_enable` | `std_srvs/SetBool` | `true` runs the camera-proven vslam bringup gate; `false` tears vslam down (landed-gated). |
-| `~/status` | `std_srvs/Trigger` | Side-effect-free health query: `success` = vslam running; message adds freshest land state. |
+| `~/status` | `std_srvs/Trigger` | `success` = vslam running; message adds freshest land state. |
 
 The node also subscribes to `/fmu/out/vehicle_land_detected` to drive the land interlock.
 
@@ -26,7 +25,7 @@ Per-run subprocess output is written to
 ## Camera-proven vslam bringup
 
 `vslam_enable=true` returns `success=true` only once all 3 RealSense (front/left/right) are
-actually up. The gate lives in the handler so no caller can skip it. Healthy bringup blocks
+up. The gate lives in the handler so no caller can skip it. Healthy bringup blocks
 the caller about 15 s; a double failure blocks up to about 3 min.
 
 Pre-check: count RealSense devices (VID `8086`, one of the D43X PIDs, matched via the
@@ -51,9 +50,9 @@ the last WARN/ERROR lines. Callers relay this message unchanged.
 
 `/reset_usb` is invoked as a `ros2 service call` subprocess, not an rclpy client call: this
 node spins under the default single-threaded executor, so a synchronous client call from
-inside a service callback would deadlock. On ARID `/reset_usb` (`reset_ark_usb` -> `uhubctl`
-+ GPIO85) power-cycles the ARK PAB USB hub the RealSense cameras sit on, so it is only ever
-issued here, during pre-mission bringup with the drone disarmed on the ground.
+inside a service callback would deadlock. `/reset_usb` (`reset_ark_usb`) power-cycles the
+ARK PAB USB hub the RealSense cameras sit on and pulses the FMU reset line (GPIO85), so it
+is only ever issued here, during pre-mission bringup with the drone disarmed on the ground.
 
 ## Idempotency and reentrancy
 
@@ -64,17 +63,15 @@ no-op is logged so it stays visible to post-run forensics.
 `vslam_enable=false` with nothing running is a `success=true` no-op.
 
 Double-spawn is impossible. Every callback runs in the node's default mutually-exclusive
-callback group under the single-threaded executor, so a second `enable(true)` cannot
-interleave with an in-flight bringup: it queues on the executor and lands in the
-already-running no-op once the first returns. An internal lock preserves this guarantee even
-if the executor model changes. If bringup aborts on an unexpected exception, the unproven
+callback group under the single-threaded executor, so a second `enable(true)` queues behind
+an in-flight bringup and lands in the already-running no-op. An internal lock preserves this
+even if the executor model changes. If bringup aborts on an unexpected exception, the unproven
 stack is stopped (and tracking dropped if even that fails) so the next call cannot falsely
 no-op as already running.
 
 Legacy stacks are refused. A vslam graph not owned by this supervisor (a direct
 `ros2 launch px4_vslam vslam.launch.py`) is detected pre-spawn via the graph node list and
-refused with the colliding node names, because spawning over it only fails later mid-gate on
-node and camera collisions. A freshly-crashed foreign stack can linger until its DDS lease
+refused with the colliding node names. A freshly-crashed foreign stack can linger until its DDS lease
 expires; the refusal message says to wait about 10 s and retry.
 
 ## Interlock
@@ -103,11 +100,10 @@ INFO lines (idempotent no-ops, gate results) would otherwise sit unflushed for m
 blind journal forensics.
 
 `ExecStop` uses `pkill -TERM -f 'arid_supervisor_node|arid_supervisor[.]launch[.]py'`. The
-pattern targets both the launch parent and the node binary and nothing else. Two lessons are
-baked into it. A broad bare `arid_supervisor` pattern also matches unrelated cmdlines in the
-shared host PID namespace (a shell running `systemctl restart arid_supervisor.service`),
-killing the invoking shell. Matching the launch file alone was proven insufficient on
-2026-07-08: killing the launch parent orphaned the node, leaving duplicate DDS service
+pattern targets both the launch parent and the node binary and nothing else. A broad bare
+`arid_supervisor` pattern also matches unrelated cmdlines in the shared host PID namespace (a
+shell running `systemctl restart arid_supervisor.service`), killing the invoking shell. Matching the launch file alone is insufficient:
+killing the launch parent orphans the node and leaves duplicate DDS service
 servers, so the node must receive the signal directly. `TimeoutStopSec` is 30 s so a
 many-node rclpy graph drains before the next start collides on address-in-use.
 
@@ -125,11 +121,11 @@ sudo systemctl status arid_supervisor.service
 ## Deployment
 
 After pulling these changes onto another system, do all of the following before the
-supervisor behaves as documented.
+supervisor behaves as documented:
 
 Rebuild the workspace so the new node and script entry points are installed. The build uses
-symlink-install, so Python source edits take effect on a supervisor restart without a
-rebuild, but any new file, changed `setup.py`, or changed launch graph needs the build:
+symlink-install, so Python source edits take effect on a supervisor restart, but any new
+file, changed `setup.py`, or changed launch graph needs the build:
 
 ```bash
 colcon_isaac
@@ -146,7 +142,7 @@ sudo systemctl restart arid_supervisor.service
 ```
 
 Propagate `arid_env.sh`. `container_scripts/arid_env.sh` is the tracked source; `setup.sh`
-regenerates `src/isaac_ros_common/docker/scripts/arid_env.sh` from it, and `Dockerfile.arid`
+copies `src/isaac_ros_common/docker/scripts/arid_env.sh` from it, and `Dockerfile.arid`
 bakes that into the image at `/etc/profile.d/arid_env.sh`. A running container keeps the baked
 copy until the image is rebuilt, so either rebuild the container image or copy the updated
 file into the live container.

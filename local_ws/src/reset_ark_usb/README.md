@@ -1,6 +1,8 @@
 # reset_ark_usb
 
-ROS 2 node that exposes a service to hardware-reset the USB ports on the **ARK PAB Orin carrier board**. The node wraps a systemd unit (`reset_usb.service`) that shells out to `uhubctl` to cycle the USB hub.
+ROS 2 node that exposes a service to hardware-reset the USB ports on the **ARK PAB Orin carrier board**. The node wraps a systemd unit (`reset_usb.service`) that shells out to `uhubctl` to power-cycle the USB hub (port 1-2) and pulses the FMU reset line (`gpiochip0` line 85).
+
+`/reset_usb` also resets the flight controller. Never call it in flight.
 
 ---
 
@@ -16,10 +18,11 @@ ros2 service call /reset_usb std_srvs/srv/Trigger "{}"
       reset_usb.service (systemd)
              │  runs scripts/usb_reset.sh
              ▼
-          uhubctl  →  USB hub power-cycled
+          uhubctl  →  USB hub power-cycled (port 1-2)
+          gpioset  →  FMU reset line pulsed (gpiochip0 line 85)
 ```
 
-The node is intentionally thin: it is the glue between a ROS service and the privileged `systemctl` call. The actual USB reset logic lives in `scripts/usb_reset.sh` at the workspace root.
+The node is glue; the actual reset logic lives in `scripts/usb_reset.sh` at the workspace root.
 
 ---
 
@@ -52,19 +55,21 @@ client = self.create_client(Trigger, '/reset_usb')
 client.wait_for_service(timeout_sec=5.0)
 future = client.call_async(Trigger.Request())
 rclpy.spin_until_future_complete(self, future)
-# future.result().success, future.result().message
 ```
+
+The result carries `success` and `message`.
 
 ---
 
 ## Prerequisites
 
-These are set up by the workspace-level `setup.sh`. Listed here for reference and portability.
+These are set up by the workspace-level `setup.sh`.
 
-1. **`reset_usb.service` installed (started on demand via `systemctl start`; not enabled at boot)** (`local_ws/services/reset_usb.service`).
+1. **`reset_usb.service` installed (started on demand, not enabled at boot)** (`local_ws/services/reset_usb.service`).
 2. **Sudoers rule** allowing the `jetson` user to run `systemctl start reset_usb.service` without a password prompt. Otherwise the subprocess call hangs waiting for input.
 3. **`uhubctl`** installed on the host, with the PAB carrier's USB hub accessible to it.
-4. **ARK PAB Orin carrier**. The hub topology and port numbering in `scripts/usb_reset.sh` is specific to this board. Other carriers need their own reset script.
+4. **`gpioset`** (libgpiod tools) installed, for the FMU reset-line pulse.
+5. **ARK PAB Orin carrier**. The hub topology, port numbering, and reset-line GPIO in `scripts/usb_reset.sh` are specific to this board. Other carriers need their own reset script.
 
 ---
 

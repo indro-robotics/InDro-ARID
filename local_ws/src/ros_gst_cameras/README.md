@@ -28,23 +28,23 @@ At startup the manager reads `gst_camera_manager/config/pipelines.yaml` and crea
 | Service | Type | What it does |
 |---|---|---|
 | `/gst_camera_manager/<name>` | `std_srvs/SetBool` | Per-pipeline start (`data: true`) or stop (`data: false`). |
-| `/gst_camera_manager/<name>/status` | `std_srvs/Trigger` | Per-pipeline state. Returns `RUNNING (pid=…)` or `STOPPED`. |
+| `/gst_camera_manager/<name>/status` | `std_srvs/Trigger` | Per-pipeline state. Returns `RUNNING (pid=N)` or `STOPPED`. |
 | `/gst_camera_manager/status_all` | `std_srvs/Trigger` | Multi-line summary of every pipeline's state, one line per pipeline. |
-| `/gst_camera_manager/stop_all` | `std_srvs/Trigger` | Kills every currently-running pipeline. No-op for stopped pipelines. |
-| `/gst_camera_manager/refresh` | `std_srvs/Trigger` | Stops running pipelines, re-reads `pipelines.yaml`, and rebuilds the per-pipeline entities at runtime (no service restart). |
+| `/gst_camera_manager/stop_all` | `std_srvs/Trigger` | Kills every running pipeline. |
+| `/gst_camera_manager/refresh` | `std_srvs/Trigger` | Stops running pipelines, re-reads `pipelines.yaml`, and rebuilds the per-pipeline entities. No service restart. |
 
 `<name>` matches the keys in `pipelines.yaml`. Currently: `cam_front` and `cam_down`.
 
 #### Examples
 
-Start or stop the `cam_down` pipeline by setting `data: true` to start or `data: false` to stop:
+Start or stop the `cam_down` pipeline:
 
 ```bash
 ros2 service call /gst_camera_manager/cam_down std_srvs/srv/SetBool "{data: true}"
 ros2 service call /gst_camera_manager/cam_down std_srvs/srv/SetBool "{data: false}"
 ```
 
-The `cam_front` pipeline exposes the same service under its own name:
+Same service for `cam_front`:
 
 ```bash
 ros2 service call /gst_camera_manager/cam_front std_srvs/srv/SetBool "{data: true}"
@@ -59,19 +59,19 @@ ros2 service call /gst_camera_manager/cam_down/status std_srvs/srv/Trigger "{}"
 
 The response returns `success=True, message='cam_down RUNNING (pid=N)'` when the pipeline is up, and `success=False, message='cam_down STOPPED'` when it isn't.
 
-Summary across every pipeline (handy for ground-station UIs that render a panel of camera states without polling each `/<name>/status` individually):
+Summary across every pipeline:
 
 ```bash
 ros2 service call /gst_camera_manager/status_all std_srvs/srv/Trigger "{}"
 ```
 
-Kill every running pipeline in one call. Equivalent to `SetBool false` on each one individually:
+Kill every running pipeline in one call:
 
 ```bash
 ros2 service call /gst_camera_manager/stop_all std_srvs/srv/Trigger "{}"
 ```
 
-Re-read `pipelines.yaml` at runtime without restarting the service (stops any running pipelines first, then rebuilds the per-pipeline entities from the new YAML):
+Re-read `pipelines.yaml` without restarting the service:
 
 ```bash
 ros2 service call /gst_camera_manager/refresh std_srvs/srv/Trigger "{}"
@@ -92,10 +92,10 @@ The same topics exist for `cam_front` (`/cam_front/image_raw`, `/cam_front/image
 ### Liveness (latched)
 Each pipeline publishes `/gst_camera_manager/<name>/alive` (`std_msgs/Bool`, TRANSIENT_LOCAL). The watchdog runs at 2 Hz and flips alive to `false` in either of these cases:
 
-1. **Process died**: the subprocess exited. Logs "Pipeline crashed" with the exit code.
-2. **Stalled**: the subprocess is still running but no `camera_info` message has arrived within the pipeline's configured `alive_threshold` seconds. Logs "Pipeline stalled" with the observed gap.
+1. **Process died**: the subprocess exited. Logs `Pipeline crashed` with the exit code.
+2. **Stalled**: the subprocess is still running but no `camera_info` message has arrived within the pipeline's configured `alive_threshold` seconds. Logs `Pipeline <name>: stalled` with the observed gap.
 
-Once frames resume, alive flips back to `true` automatically (logs "frames resumed"). The timer starts when the subprocess is launched, so the first `alive_threshold` seconds after start act as a startup grace period.
+Once frames resume, alive flips back to `true` (logs `Pipeline <name>: frames resumed`). The timer starts when the subprocess is launched, so the first `alive_threshold` seconds act as a startup grace period.
 
 ---
 
@@ -110,9 +110,9 @@ Header comments in [`config/pipelines.yaml`](gst_camera_manager/config/pipelines
 | `topic` | Root of the published topics: `/<topic>/image_raw`, `/<topic>/image_raw/compressed`, `/<topic>/camera_info`. |
 | `frame_id` | TF frame stamped onto every `Image` and `CameraInfo`. |
 | `encoding` | Override for `sensor_msgs/Image.encoding`. Leave `""` to auto-detect from the `cv::Mat::type()` returned by OpenCV (see table below). Set explicitly (e.g. `"rgb8"`, `"bayer_rggb8"`) to override. |
-| `compress` | `true` publishes raw plus JPEG compressed via `image_transport` (lazy: the compressed encoder only runs when a subscriber exists). `false` publishes raw only. |
+| `compress` | `true` publishes raw plus JPEG compressed via `image_transport` (encoder runs only when a subscriber exists). `false` publishes raw only. |
 | `alive_threshold` | Seconds (float) without a `camera_info` message before the pipeline is marked not-alive. Starts ticking when the subprocess launches. Omitted defaults to `5.0`. |
-| `reliable` | QoS selector for `image_raw` and `camera_info`. Omitted, `""`, or `false` selects **sensor_data QoS** (BEST_EFFORT, VOLATILE, depth 5). This is the ROS 2 convention for image streams; drops frames on lossy links rather than stalling the publisher. `true` selects RELIABLE. Use that for low-rate or frame-critical streams where loss is unacceptable. |
+| `reliable` | QoS selector for `image_raw` and `camera_info`. Omitted, `""`, or `false` selects **sensor_data QoS** (BEST_EFFORT, VOLATILE, depth 5), the ROS 2 convention for image streams: drops frames on lossy links rather than stalling the publisher. `true` selects RELIABLE, for low-rate or frame-critical streams where loss is unacceptable. |
 
 ### Encoding auto-detect
 
@@ -128,7 +128,7 @@ Header comments in [`config/pipelines.yaml`](gst_camera_manager/config/pipelines
 | `CV_16UC4` | `bgra16` |
 | anything else | `""` (warns and publishes unlabeled; set `encoding:` in YAML to override) |
 
-Resolution happens once on the first frame and is cached. The log line tells you which path was taken:
+Resolution happens once on the first frame and is cached. The log line shows which path was taken:
 ```
 [INFO] Image encoding: mono8 (auto-detected)
 [INFO] Image encoding: bgr8 (override)
@@ -136,14 +136,14 @@ Resolution happens once on the first frame and is cached. The log line tells you
 
 ### Calibration
 
-Calibration YAMLs in `config/calibrations/` use the standard `camera_calibration_parsers` format produced by `ros2 run camera_calibration cameracalibrator`. If `camera_info_path` is empty or the file is missing, the node still publishes a sensible default `CameraInfo`:
+Calibration YAMLs in `config/calibrations/` use the standard `camera_calibration_parsers` format. Recalibrate with `camera_calibrate.sh front|down` (`local_ws/auxiliary/camera_calibration/`), which runs the calibrator and writes the result to `config/calibrations/<cam>.yaml`. If `calibration` is empty or the file is missing, the node still publishes a sensible default `CameraInfo`:
 
 - `width`, `height` from the first frame
 - `distortion_model: "plumb_bob"`, `d = [0, 0, 0, 0, 0]`
 - `fx = fy = width`, `cx = width/2`, `cy = height/2`
 - Identity rectification, intrinsic padded into projection matrix
 
-This keeps subscribers that expect synchronized `image_raw` and `camera_info` pairs functional even before calibration is done.
+This keeps subscribers that expect synchronized `image_raw` and `camera_info` pairs working before calibration.
 
 ---
 
@@ -169,20 +169,25 @@ Rebuild (`colcon build --packages-select gst_camera_manager`) or restart the man
 
 ### Currently defined pipelines
 
-- **`cam_front`**: CSI camera (sensor-id 0) via `nvarguscamerasrc` at 1920×1080 at 15 fps, NV12 to GRAY8 via `nvvidconv`. The sensor is IR-sensitive; the pipeline drops to mono (GRAY8) so the stream is directly usable for IR-aware computer-vision tasks (feature tracking, motion detection, fiducial decoding) without per-channel filtering. Frame ID: `top_visual_link`.
+- **`cam_front`**: CSI camera (sensor-id 0) via `nvarguscamerasrc` at 1920×1080 at 15 fps, NV12 to GRAY8 via `nvvidconv`. The sensor is IR-sensitive; mono output is directly usable for IR-aware computer vision. Frame ID: `top_visual_link`.
 - **`cam_down`**: CSI camera (sensor-id 1) via `nvarguscamerasrc` at 1920×1080 at 15 fps, NV12 to GRAY8 via `nvvidconv`. Same IR-sensitive mono rationale as `cam_front`. Frame ID: `bottom_visual_link`.
 
 ---
 
 ## Auto-start on boot
 
-`gst_camera_manager.service` (installed by `setup.sh`) launches the manager node on boot under the `multi-user.target`. Pipelines remain off until explicitly started via SetBool. The service runs only the supervisor; pipeline subprocesses are spawned on demand.
+`gst_camera_manager.service` (installed by `setup.sh`) launches the manager node on boot under the `multi-user.target`. Pipelines remain off until explicitly started via SetBool. The service runs only the supervisor; pipeline subprocesses spawn on demand.
 
 ---
 
 ## Logs
 
-Per-pipeline stdout/stderr goes to:
+Manager stdout (pipeline registration, crash/stall/resume warnings, refresh) is teed by the systemd unit to:
+```
+~/workspaces/isaac_ros-dev/run_logs/gst_camera_manager/gst_camera_manager.log
+```
+
+Per-pipeline `gst_cam_node` GStreamer output goes to:
 ```
 ~/workspaces/local_ws/install/gst_camera_manager/share/gst_camera_manager/logs/<pipeline_name>/<pipeline_name>_<timestamp>.log
 ```
@@ -217,12 +222,12 @@ The manager keeps the last 20 log files per pipeline and rotates older ones.
 
 ### Pipeline crashes immediately on start
 
-Check the log file. Almost always one of:
+The manager log shows `Pipeline crashed` with the exit code; the per-pipeline log has the GStreamer error. Almost always one of:
 - GStreamer element missing (plugin not installed).
 - Camera busy or in use by another process. Use `sudo fuser /dev/video0` to see owners.
 - Permission issue on the camera device.
 
-### "Pipeline stalled" warnings in the manager log
+### `Pipeline <name>: stalled` warnings in the manager log
 
 Frames arrived but stopped. Could be:
 - Camera disconnected or driver wedged. Restart the pipeline: `SetBool false` then `true`.
