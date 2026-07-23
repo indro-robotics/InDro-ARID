@@ -86,10 +86,8 @@ echo "Syncing all submodules to pinned commits..."
 git submodule update --init --recursive
 echo ""
 
-# 'git submodule update' only checks out a submodule when its HEAD differs from the pin. If a
-# submodule's working tree was emptied while HEAD already matches the pin (files deleted /
-# staged for deletion), the checkout is a no-op and the files are NOT restored. Restore any
-# submodule whose working tree has no real files. Populated submodules are left untouched.
+# 'git submodule update' is a no-op when HEAD already matches the pin, even if the working
+# tree was emptied: restore any submodule whose tree has no real files.
 echo "Ensuring submodule working trees are populated..."
 while IFS= read -r path; do
     [[ -d "$path" ]] || continue

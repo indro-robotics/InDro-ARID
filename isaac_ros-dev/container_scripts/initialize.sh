@@ -1,11 +1,9 @@
 #!/bin/bash
-# Start the VSLAM stack via the supervisor:
-#   /arid_supervisor/vslam_enable -> true
-# Idempotent. The supervisor itself is started at boot by arid_supervisor.service.
+# Start the VSLAM stack: /arid_supervisor/vslam_enable -> true. Idempotent.
 set -u
 
-# The camera-proven bringup gate blocks the enable call ~15 s (healthy) up to ~3 min
-# (double reset_usb recovery), so cap it generously and surface a wedged supervisor.
+# The bringup gate blocks ~15 s healthy, up to ~3 min worst; cap the call and surface a
+# stalled supervisor.
 CALL_TIMEOUT_S=300
 
 call() {
@@ -13,7 +11,7 @@ call() {
     out=$(timeout "${CALL_TIMEOUT_S}" ros2 service call "${svc}" std_srvs/srv/SetBool "{data: ${data}}" 2>&1)
     rc=$?
     if [ "${rc}" -eq 124 ]; then
-        echo "  ${svc}: no response within ${CALL_TIMEOUT_S}s (supervisor may be wedged)"
+        echo "  ${svc}: no response within ${CALL_TIMEOUT_S}s (supervisor may be stalled)"
         return 1
     fi
     if [ "${rc}" -ne 0 ]; then

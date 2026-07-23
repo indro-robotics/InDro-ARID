@@ -19,17 +19,19 @@ _supervisor_up() {
     return 1
 }
 
-alias reset_usb='_reset_usb_up && ros2 service call /reset_usb std_srvs/srv/Trigger "{}"'
+# Fallback: host unit direct via the mounted D-Bus socket when the ROS node is down.
+reset_usb() {
+    if _reset_usb_up 2>/dev/null; then
+        ros2 service call /reset_usb std_srvs/srv/Trigger "{}"
+    else
+        echo "falling back to systemctl start reset_usb.service"
+        systemctl start reset_usb.service
+    fi
+}
 
-# System / build. The container links ONLY the RSUSB 2.55.1 librealsense at /usr/local
-# (apt ros-humble-librealsense2 is purged + pinned uninstallable in Dockerfile.arid).
-# skip-keys librealsense2: the source realsense2_camera declares it, and rosdep resolving it
-# apt-installs ros-humble-librealsense2 (v4l2, no HW metadata), which then poisons overlay
-# builds. The workspace links the RSUSB build at /usr/local instead (see colcon_isaac pin).
+# Do not apt-install ros-humble-librealsense2; the image provides the camera driver.
+# The skip-keys and realsense2_DIR pin below keep rosdep and builds on it.
 alias rosdep_isaac='{ sudo apt update || true; } && rosdep install --from-paths ${ISAAC_ROS_WS}/src/ --ignore-src -y --skip-keys librealsense2'
-# -Drealsense2_DIR pin: force find_package(realsense2) to the RSUSB 2.55.1 build at /usr/local
-# even if apt ros-humble-librealsense2 (2.57, no metadata) ever sneaks in. Non-realsense
-# packages emit a harmless unused-variable warning.
 alias colcon_isaac='cd ${ISAAC_ROS_WS} && colcon build --symlink-install --base-paths src --cmake-args -DBUILD_TESTING=OFF -Drealsense2_DIR=/usr/local/lib/cmake/realsense2 && source ./install/setup.bash'
 alias clean_isaac='cd ${ISAAC_ROS_WS} && colcon clean workspace --base-select build install log'
 alias vslam='ros2 launch px4_vslam vslam.launch.py'
@@ -46,7 +48,7 @@ ARID container commands:
     initialize       Enable VSLAM via the supervisor (camera-proven, SetBool true)
     deinitialize     Disable VSLAM via the supervisor (refused unless drone is landed)
     status           Supervisor status - vslam running (true/false) + land state
-    vslam            Direct VSLAM launch - bypasses the supervisor (developer escape hatch)
+    vslam            Direct VSLAM launch - bypasses the supervisor (development use only)
     rosdep_isaac     Install rosdep deps for isaac_ros-dev
     colcon_isaac     Build isaac_ros-dev
     clean_isaac      Clean isaac_ros-dev

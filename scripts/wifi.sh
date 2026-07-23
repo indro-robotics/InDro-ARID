@@ -1,16 +1,8 @@
 #!/bin/bash
-# wifi.sh - interactive Wi-Fi connection via NetworkManager.
-#
-# Scans, lists visible networks (sorted by signal, deduped by SSID), prompts for selection
-# and password, then creates or updates the NM profile via `nmcli con add` / `con modify`
-# (no `nmcli dev wifi connect`). Safe from any session, including the drone's own hotspot:
-# NetworkManager handles the AP-to-STA transition via autoconnect priority (hotspot is `-1`;
-# new profiles default to `0`).
-#
-# Non-interactive: if ARID_WIFI_SSID is set, the scan and picker are skipped and the
-# profile is created directly.
-#
-# Run any time: `wifi` (alias) or `bash scripts/wifi.sh`.
+# wifi.sh - interactive Wi-Fi connection via NetworkManager (alias: wifi).
+# Profiles go through `nmcli con add` / `con modify`; safe from the drone's own hotspot
+# (autoconnect priority handles the AP-to-STA transition).
+# Non-interactive: set ARID_WIFI_SSID (+ ARID_WIFI_PASS) to skip the picker.
 
 set -uo pipefail
 
@@ -114,7 +106,6 @@ if (( ${#NETS[@]} == 0 )); then
     exit 1
 fi
 
-# Display.
 printf "\n  %-3s  %-32s  %-7s  %s\n" "#"  "SSID" "Signal" "Security"
 printf   "  %-3s  %-32s  %-7s  %s\n" "-"  "----" "------" "--------"
 for i in "${!NETS[@]}"; do

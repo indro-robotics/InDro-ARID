@@ -1,11 +1,8 @@
 #!/bin/bash
-# Stop the VSLAM stack via the supervisor:
-#   /arid_supervisor/vslam_enable -> false
-# Refused if the drone is not landed (supervisor checks /fmu/out/vehicle_land_detected).
+# Stop the VSLAM stack: /arid_supervisor/vslam_enable -> false. Refused unless landed.
 set -u
 
-# Teardown SIGINT-drains the vslam process group (nodes release their DDS shm), so give the
-# disable call a generous cap and surface a wedged supervisor rather than hanging forever.
+# Teardown drains the whole process group; cap the call and surface a stalled supervisor.
 CALL_TIMEOUT_S=300
 
 call() {
@@ -13,7 +10,7 @@ call() {
     out=$(timeout "${CALL_TIMEOUT_S}" ros2 service call "${svc}" std_srvs/srv/SetBool "{data: ${data}}" 2>&1)
     rc=$?
     if [ "${rc}" -eq 124 ]; then
-        echo "  ${svc}: no response within ${CALL_TIMEOUT_S}s (supervisor may be wedged)"
+        echo "  ${svc}: no response within ${CALL_TIMEOUT_S}s (supervisor may be stalled)"
         return 1
     fi
     if [ "${rc}" -ne 0 ]; then

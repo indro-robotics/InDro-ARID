@@ -1,17 +1,7 @@
 #!/bin/bash
-# colcon_isaac - rebuild the in-container isaac_ros-dev workspace with the VSLAM stack torn
-# down first, then bring the supervisor back on the fresh build.
-#
-# Sequence:
-#   1) deinitialize - stop the VSLAM stack via the supervisor. Safety-gated (refused unless the
-#      drone is landed), so it also blocks a build while airborne. Succeeds idempotently if the
-#      stack was never initialized (supervisor up, stack already down).
-#   2) colcon_isaac - build inside the container (the pure-build container alias).
-#   3) restart arid_supervisor.service - relaunch the supervisor on the freshly-built code so
-#      its enable-services are ready for the next `initialize`.
-#
-# The VSLAM stack is deliberately NOT auto-started: `initialize` is the operator's explicit,
-# safety-gated action. Assumes a bench/ground context.
+# colcon_isaac - deinitialize VSLAM, rebuild the in-container workspace, restart the supervisor.
+# deinitialize is safety-gated (refused unless landed), so it also blocks a build while airborne.
+# VSLAM is deliberately NOT auto-restarted: `initialize` is the operator's explicit action.
 set -uo pipefail
 
 WORKSPACES="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

@@ -229,6 +229,8 @@ DOCKER_ARGS+=("-e NVIDIA_VISIBLE_DEVICES=all")
 DOCKER_ARGS+=("-e NVIDIA_DRIVER_CAPABILITIES=all")
 DOCKER_ARGS+=("-e ROS_DOMAIN_ID")
 DOCKER_ARGS+=("-e ROS_LOCALHOST_ONLY=1")
+# Host D-Bus socket: in-container systemctl for host units (polkit authorizes uid 1000).
+DOCKER_ARGS+=("-v /run/dbus/system_bus_socket:/run/dbus/system_bus_socket")
 DOCKER_ARGS+=("-e USER")
 DOCKER_ARGS+=("-e ISAAC_ROS_WS=/workspaces/isaac_ros-dev")
 DOCKER_ARGS+=("-e HOST_USER_UID=`id -u`")
@@ -299,12 +301,8 @@ if [[ $VERBOSE -eq 1 ]]; then
     set -x
 fi
 
-# Create the container DETACHED with a non-exiting main process. The main process
-# must never quit on its own: an interactive /bin/bash as PID 1 hits EOF when started
-# headless / at boot (`docker start` with no stdin attached) and the container exits.
-# `sleep infinity` keeps the container up until it is explicitly stopped. Interactive
-# shells are obtained via `docker exec` below (and via the isaac_bash alias), never
-# from the main process.
+# Detached with `sleep infinity` as the main process: an interactive bash as PID 1 hits
+# EOF on headless `docker start` and the container exits. Shells come from `docker exec`.
 docker run -d \
     --privileged \
     --network host \
@@ -319,8 +317,7 @@ docker run -d \
     $BASE_NAME \
     sleep infinity
 
-# When run from a terminal, drop the caller into an interactive shell (preserves the
-# old run_dev experience). When run non-interactively (provisioning / boot), just
+# From a terminal: drop into an interactive shell. Non-interactive (provisioning/boot):
 # leave the container running in the background.
 if [ -t 0 ] && [ -t 1 ]; then
     for _ in $(seq 1 60); do

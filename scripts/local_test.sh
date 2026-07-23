@@ -18,17 +18,14 @@ FAIL=0
 SKIP=0
 RESULTS=()
 
-# Flags for resources started by this test (cleaned up in Section 7 + EXIT trap).
-# Each flag is cleared by the explicit cleanup once it confirms the resource is gone;
-# anything still set when the EXIT trap fires is therefore a leak from an aborted run.
+# Resources started by this test; anything still set when the EXIT trap fires is a leak
+# from an aborted run.
 BRIDGE_LAUNCHED_BY_US=""
 CAM_DOWN_STARTED_BY_US=""
 CAM_FRONT_STARTED_BY_US=""
 
-# Bridge cleanup is PID-tracking-free. `setsid bash &` returns the setsid
-# wrapper's PID via $!, but setsid forks the actual bash into a new session
-# and exits, so $! becomes stale within milliseconds. Locate the listener by
-# port at teardown time instead.
+# No PID tracking: setsid forks and exits, so $! goes stale within milliseconds.
+# Locate the listener by port at teardown instead.
 _kill_bridge_on_8765() {
     local holder parent
     for _ in 1 2 3 4 5; do
@@ -84,14 +81,9 @@ if [[ -z "${ROS_DISTRO:-}" ]]; then
 fi
 export ROS_DOMAIN_ID=23
 
-# Helpers
-# `bash -ic` (interactive) is reserved for tests that genuinely need .bashrc to be
-# sourced (currently only Section 1, the alias-existence check). Service calls and
-# topic echoes go through ros2 directly so they don't enable job control on the
-# child. Interactive bash calls tcsetpgrp() to claim the terminal foreground and
-# does NOT restore it on exit, which leaves the parent script in a background
-# PG: its next write to the TTY raises SIGTTOU and stops the script. Direct
-# ros2 invocations avoid that path entirely.
+# bash -ic is reserved for the alias check (needs .bashrc): interactive bash claims the
+# terminal foreground via tcsetpgrp and never restores it, so the parent's next TTY write
+# raises SIGTTOU and stops the script. Everything else calls ros2 directly.
 ialias() { bash -ic "$*" </dev/null 2>&1 | grep -v 'job control'; }
 
 # Direct ros2 wrappers (no interactive bash).
@@ -137,7 +129,7 @@ done
 hdr "Section 1: Alias resolution"
 step "All host-side aliases must be defined"
 what     "Confirm each managed alias in the ARID block is loaded in an interactive shell."
-why      "Aliases are how the operator drives the rig. A missing alias means setup.sh didn't run, or the bashrc block was overwritten."
+why      "Aliases are the operator's command interface. A missing alias means setup.sh didn't run, or the bashrc block was overwritten."
 
 EXPECTED_ALIASES=(
     reset_usb rosdep_local colcon_local clean_local
@@ -157,7 +149,7 @@ for a in "${EXPECTED_ALIASES[@]}"; do
 done
 
 hdr "Section 2: Non-invasive checks for build/dep aliases"
-step "Verify each destructive-ish alias points at a real, runnable target"
+step "Verify each destructive alias points at a real, runnable target"
 what     "reset_usb / rosdep_local / colcon_local / clean_local are not invoked here. Verify the underlying targets exist and are executable."
 why      "These four aliases are slow or destructive (clean_local wipes build/install/log). A smoke test should not trigger them, but reachability of the target must still be verified."
 
@@ -185,7 +177,7 @@ fi
 hdr "Section 3: foxglove_bridge"
 step "foxglove_bridge must be listening on TCP 8765"
 what     "If no process is bound to 8765, launch the bridge via the alias and wait up to 5 s for the socket to open."
-why      "Foxglove Studio connects via ws://<host>:8765. No socket = no Foxglove."
+why      "Foxglove Studio connects via ws://<host>:8765. Without a listening socket, Foxglove cannot connect."
 
 PORT_OUT=$(ss -tlnp 2>/dev/null | grep ':8765 ' || true)
 if [[ -n "${PORT_OUT}" ]]; then
@@ -193,10 +185,8 @@ if [[ -n "${PORT_OUT}" ]]; then
     pass "port 8765 already listening (bridge was running)"
 else
     note "no bridge running; launching via the foxglove_bridge alias (will be cleaned up in Section 7)"
-    # setsid puts the launch in its own process group so Section 7 can killpg the whole tree.
-    # Detach into its own session via setsid. PID tracking is intentionally not
-    # used here: $! would point at the setsid wrapper which exits immediately,
-    # so cleanup locates the bridge by port lookup instead.
+    # setsid: own process group for teardown; $! would point at the wrapper, so
+    # cleanup finds the bridge by port instead.
     setsid bash -ic 'foxglove_bridge' >/tmp/foxglove_bridge.log 2>&1 < /dev/null &
     BRIDGE_LAUNCHED_BY_US=1
     LAUNCHED=""
@@ -235,7 +225,7 @@ fi
 # 4b. start
 step "4b. cam_down_start should spawn the gst_cam_node subprocess"
 what     "SetBool(true) on /gst_camera_manager/cam_down. The manager forks gst_cam_node as a subprocess."
-why      "The whole pipeline depends on this subprocess. If it doesn't spawn, nothing else matters."
+why      "The whole pipeline depends on this subprocess. If it does not spawn, no subsequent check can pass."
 START_OUT=$(_setbool /gst_camera_manager/cam_down true)
 raw "${START_OUT}"
 CAM_DOWN_STARTED_BY_US=1   # cleared at 4i once explicit stop confirms STOPPED
@@ -293,7 +283,7 @@ fi
 # 4g. rate
 step "4g. /cam_down/image_raw rate over 5 s"
 what     "Count message separators ('---') from 'topic echo --no-arr' over a 5-second window."
-why      "Pipeline is configured for ~15 fps (delivered ~16 Hz). Accept >= 6 Hz (~40% of delivered) as pass. Below that there's something wrong upstream (Argus dropping or ISP backpressure)."
+why      "Pipeline is configured for ~15 fps (delivered ~16 Hz). Accept >= 6 Hz (~40% of delivered) as pass. Below that indicates an upstream fault (Argus dropping or ISP backpressure)."
 COUNT=$(count_msgs /cam_down/image_raw 5)
 HZ=$(awk "BEGIN {printf \"%.1f\", $COUNT/5}")
 raw "messages: ${COUNT}    over: 5 s    rate: ${HZ} Hz"
@@ -309,13 +299,13 @@ fi
 # 4h. /alive
 step "4h. /gst_camera_manager/cam_down/alive should be latched 'true'"
 what     "Read the latched Bool with QoS RELIABLE / TRANSIENT_LOCAL / depth 1. Up to 10 s for first-time discovery."
-why      "This is the manager's published verdict on whether frames are actually flowing. If status says RUNNING but alive says false, watchdog is seeing a stall."
+why      "This is the manager's published verdict on whether frames are actually flowing. If status reports RUNNING but alive reports false, the watchdog is detecting a stall."
 ALIVE_OUT=$(_latched_bool /gst_camera_manager/cam_down/alive)
 raw "${ALIVE_OUT}"
 ALIVE_VAL=$(echo "${ALIVE_OUT}" | grep -oE 'data: (true|false)' | head -1)
 case "${ALIVE_VAL}" in
     "data: true")  pass "alive == true (watchdog confirms frame flow)" ;;
-    "data: false") fail "alive == false (watchdog says stalled despite status RUNNING)" ;;
+    "data: false") fail "alive == false (watchdog reports stalled despite status RUNNING)" ;;
     *)             fail "alive topic unreadable in 10 s (DDS discovery problem?)" ;;
 esac
 
@@ -353,7 +343,7 @@ fi
 # 5b. start
 step "5b. cam_front_start should spawn the gst_cam_node subprocess"
 what     "SetBool(true) on /gst_camera_manager/cam_front. The manager forks gst_cam_node as a subprocess."
-why      "The whole pipeline depends on this subprocess. If it doesn't spawn, nothing else matters."
+why      "The whole pipeline depends on this subprocess. If it does not spawn, no subsequent check can pass."
 START_OUT=$(_setbool /gst_camera_manager/cam_front true)
 raw "${START_OUT}"
 CAM_FRONT_STARTED_BY_US=1   # cleared at 5i once explicit stop confirms STOPPED
@@ -411,7 +401,7 @@ fi
 # 5g. rate
 step "5g. /cam_front/image_raw rate over 5 s"
 what     "Count message separators ('---') from 'topic echo --no-arr' over a 5-second window."
-why      "Pipeline is configured for ~15 fps (delivered ~16 Hz). Accept >= 6 Hz (~40% of delivered) as pass. Below that there's something wrong upstream (Argus dropping or ISP backpressure)."
+why      "Pipeline is configured for ~15 fps (delivered ~16 Hz). Accept >= 6 Hz (~40% of delivered) as pass. Below that indicates an upstream fault (Argus dropping or ISP backpressure)."
 COUNT=$(count_msgs /cam_front/image_raw 5)
 HZ=$(awk "BEGIN {printf \"%.1f\", $COUNT/5}")
 raw "messages: ${COUNT}    over: 5 s    rate: ${HZ} Hz"
@@ -427,13 +417,13 @@ fi
 # 5h. /alive
 step "5h. /gst_camera_manager/cam_front/alive should be latched 'true'"
 what     "Read the latched Bool with QoS RELIABLE / TRANSIENT_LOCAL / depth 1. Up to 10 s for first-time discovery."
-why      "This is the manager's published verdict on whether frames are actually flowing. If status says RUNNING but alive says false, watchdog is seeing a stall."
+why      "This is the manager's published verdict on whether frames are actually flowing. If status reports RUNNING but alive reports false, the watchdog is detecting a stall."
 ALIVE_OUT=$(_latched_bool /gst_camera_manager/cam_front/alive)
 raw "${ALIVE_OUT}"
 ALIVE_VAL=$(echo "${ALIVE_OUT}" | grep -oE 'data: (true|false)' | head -1)
 case "${ALIVE_VAL}" in
     "data: true")  pass "alive == true (watchdog confirms frame flow)" ;;
-    "data: false") fail "alive == false (watchdog says stalled despite status RUNNING)" ;;
+    "data: false") fail "alive == false (watchdog reports stalled despite status RUNNING)" ;;
     *)             fail "alive topic unreadable in 10 s (DDS discovery problem?)" ;;
 esac
 
@@ -455,8 +445,7 @@ hdr "Section 6: Supervisor (optional, requires Isaac container)"
 step "Supervisor SetBool service on the ROS graph"
 what     "If the Isaac container is running, /arid_supervisor/vslam_enable must be on the graph."
 why      "This is the host-callable service that drives the VSLAM stack lifecycle. Container running but the service missing = arid_supervisor.service failed inside the container."
-# Distinguish "container not running" from "user lacks docker group membership" (which on
-# a fresh setup the user can hit before re-logging post-reboot).
+# Distinguish container-not-running from missing docker group membership.
 if ! docker ps >/dev/null 2>&1; then
     skip "docker ps failed (permission denied?) - supervisor check skipped"
     note "if jetson was just added to the docker group, log out and back in (or 'newgrp docker') and re-run"
@@ -464,8 +453,7 @@ elif ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q 'isaac_ros_dev-aarc
     skip "Isaac ROS container not running - supervisor check skipped"
     note "start the container with 'start_isaac' (or wait for boot autostart) and re-run this section"
 else
-    # Retry the supervisor lookup - the container may have just been started; ros2 launch inside
-    # it can need 30+ s to advertise the SetBool service on a cold cache.
+    # A cold container can need 30+ s to advertise the service; retry.
     SUP_SVCS=""
     for _ in 1 2 3 4 5 6; do
         SUP_SVCS=$(timeout 8 ros2 service list 2>/dev/null || true)
@@ -496,7 +484,7 @@ if [[ -n "${BRIDGE_LAUNCHED_BY_US}" ]]; then
     fi
 else
     step "foxglove_bridge"
-    note "bridge was already running before this test; leaving it alone."
+    note "bridge was already running before this test; leaving it in place."
 fi
 
 step "Both camera pipelines should be stopped, no leaked subprocesses"

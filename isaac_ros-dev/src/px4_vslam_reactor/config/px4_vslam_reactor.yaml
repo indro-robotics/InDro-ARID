@@ -29,3 +29,22 @@
     # timesync excursions cannot poison tf2 buffers. Skew-vs-now, not monotonicity: a future
     # rogue stamp is still monotonic. Normal-path stamps stay untouched.
     fmu_stamp_max_skew_s: 0.5        # s, max |now - FMU stamp| before re-stamping with node clock
+
+    # Cadence-health gate: withhold VO from EKF2 while cuVSLAM frame cadence is broken
+    # (camera-swap starvation makes smooth-but-stale poses that vo_state and the jump gate cannot
+    # see; fusing them feeds a lag -> failover -> reset cascade). Scope: severity reduction for
+    # degraded-cadence starvation BURSTS (stamp deltas are a lower bound on EKF2's arrival-silence
+    # view; pure arrival stalls and total outages are handled by EKF2's own 400 ms de-latch +
+    # clean re-anchor). Enforced in the fusion-active path for ALL settles (countdown pauses while
+    # gated; no init bypass - the settle-timeout re-inject can fire mid-flight). Jump detection
+    # stays live while gated (a genuine jump still re-seats + bumps the epoch); the withhold itself
+    # never bumps the reset epoch. Stamp gaps > 5 s are treated as stamp anomalies (reseed, never
+    # engage). Telemetry: /reactor/cadence_gate_count (engagements, latched) + /reactor/cadence_gated
+    # (live state, latched).
+    cadence_gate_s: 0.15             # s, VO header.stamp gap that engages (above benign-jitter p95; keep < 0.2 s EV_MAX_INTERVAL)
+    cadence_release_samples: 5       # consecutive nominal-cadence samples to release (~55 ms at 90 Hz, ~165 ms at 30 Hz)
+    set_pose_busy_timeout_s: 5.0     # s, clear vslam_busy if a SetSlamPose response never arrives (cuVSLAM died mid-call)
+    # NO timed release: a degraded stream stays withheld until cadence proves nominal. EKF2 coasts
+    # on flow+rng after its native 400 ms EV de-latch; if ALL horizontal aiding dies, PX4's own
+    # ladder ends in failsafe. /reactor/cadence_gated latches True for the whole withhold so
+    # prolonged gating is observable.

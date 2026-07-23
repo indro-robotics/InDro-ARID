@@ -24,8 +24,8 @@ from rclpy.qos import (QoSProfile,
 
 
 MAX_LOG_FILES = 20
-DEFAULT_ALIVE_THRESHOLD = 5.0   # seconds, used when a pipeline omits alive_threshold
-WATCHDOG_PERIOD = 0.5           # seconds, how often to check liveness
+DEFAULT_ALIVE_THRESHOLD = 5.0   # seconds
+WATCHDOG_PERIOD = 0.5           # seconds
 
 ALIVE_QOS = QoSProfile(
     reliability=QoSReliabilityPolicy.RELIABLE,
@@ -34,8 +34,7 @@ ALIVE_QOS = QoSProfile(
     depth=1
 )
 
-# QoS to use on camera_info subscription when the pipeline is configured with `reliable: true`.
-# Matches gst_cam_node's reliable-volatile publisher in that mode.
+# Must match gst_cam_node's publisher QoS when `reliable: true`.
 CAMERA_INFO_QOS_RELIABLE = QoSProfile(
     reliability=QoSReliabilityPolicy.RELIABLE,
     durability=QoSDurabilityPolicy.VOLATILE,
@@ -45,8 +44,7 @@ CAMERA_INFO_QOS_RELIABLE = QoSProfile(
 
 
 def _parse_reliable(raw):
-    """Normalize the YAML `reliable` field. Accepts bool, str ('true'/'false'/''),
-    or missing. Anything except truthy-true maps to False."""
+    """Normalize the YAML `reliable` field: bool, str, or missing; only true maps to True."""
     if isinstance(raw, bool):
         return raw
     if isinstance(raw, str):
@@ -55,12 +53,8 @@ def _parse_reliable(raw):
 
 
 class GstCameraManager(Node):
-    """Supervises gst_cam_node subprocesses, one per pipeline declared in pipelines.yaml.
-
-    Owns per-pipeline Popen handles, camera_info subscriptions used as frame-flow
-    proxies, a 2 Hz watchdog publishing latched /alive Bool topics, and SetBool/Trigger
-    services for enable/disable/status.
-    """
+    """Supervises one gst_cam_node subprocess per pipeline in pipelines.yaml:
+    start/stop services, latched /alive topics, 2 Hz liveness watchdog."""
 
     def __init__(self):
         super().__init__('gst_camera_manager')
@@ -83,7 +77,7 @@ class GstCameraManager(Node):
         self.log_root   = pkg_share / 'logs'
         self.calib_root = pkg_share / 'config' / 'calibrations'
 
-        # Cached so /gst_camera_manager/refresh can re-read the same file at runtime.
+        # Cached so /refresh can re-read the same file at runtime.
         self.config_path = pkg_share / 'config' / 'pipelines.yaml'
         self._load_config(self.config_path)
         self._create_publishers()
@@ -131,9 +125,7 @@ class GstCameraManager(Node):
             pass
 
     def _create_info_subscriptions(self):
-        # Subscribe to each pipeline's camera_info topic. The subscription persists for the
-        # node's lifetime; it sits idle until the subprocess starts publishing and is the
-        # signal the watchdog uses to prove frames are flowing.
+        # Persistent camera_info subscriptions: the watchdog's proof that frames are flowing.
         cbg = MutuallyExclusiveCallbackGroup()
         for name in self.pipelines:
             topic = self.pipelines[name].get('topic', name)
@@ -153,9 +145,7 @@ class GstCameraManager(Node):
         self.last_frame_time[name] = self.get_clock().now()
 
     def _create_per_pipeline_services(self):
-        # Per-pipeline control + status services. Recreated by /gst_camera_manager/refresh
-        # after the YAML is re-read; manager-level services (status_all, stop_all, refresh)
-        # are NOT touched.
+        # Recreated by /refresh; manager-level services are not.
         for name in self.pipelines:
             cbg_ctrl   = MutuallyExclusiveCallbackGroup()
             cbg_status = MutuallyExclusiveCallbackGroup()
@@ -185,11 +175,8 @@ class GstCameraManager(Node):
             Trigger, 'gst_camera_manager/stop_all',
             self._handle_stop_all_srv, callback_group=cbg_stop)
 
-        # Reload pipelines.yaml at runtime without restarting the service. Stops any running
-        # pipelines first (the gst_cam_node publisher's QoS is fixed at subprocess launch, so
-        # there's no way to apply YAML changes to a live subprocess in-place), then rebuilds
-        # the per-pipeline entities from the new YAML. Operator-facing: `ros2 service call
-        # /gst_camera_manager/refresh std_srvs/srv/Trigger`.
+        # refresh stops running pipelines first: subprocess QoS is fixed at launch,
+        # so YAML changes cannot apply to a live subprocess in-place.
         cbg_refresh = MutuallyExclusiveCallbackGroup()
         self.refresh_srv = self.create_service(
             Trigger, 'gst_camera_manager/refresh',
@@ -206,7 +193,6 @@ class GstCameraManager(Node):
                 if proc is None:
                     continue
 
-                # 1. Process-death check: subprocess exited → not alive, cleanup, log.
                 if proc.poll() is not None:
                     exit_code = proc.returncode
                     self.processes[name] = None
@@ -215,11 +201,10 @@ class GstCameraManager(Node):
                     self.get_logger().warn('Pipeline crashed: %s (exit=%d)' % (name, exit_code))
                     continue
 
-                # 2. Frame-flow check: no camera_info message within alive_threshold → stalled.
                 threshold = self.alive_thresholds.get(name, DEFAULT_ALIVE_THRESHOLD)
                 last = self.last_frame_time.get(name)
                 if last is None:
-                    continue  # not yet set; grace period is initialized at enable time
+                    continue  # grace period is seeded at enable time
                 elapsed = (now - last).nanoseconds / 1e9
                 currently_alive = elapsed <= threshold
                 if currently_alive != self.alive_state.get(name, False):
@@ -242,8 +227,7 @@ class GstCameraManager(Node):
         reliable  = 'true' if self.reliable_flags.get(name, False) else 'false'
         calib_url = 'file://' + str(self.calib_root / (calib + '.yaml'))
 
-        # Escape inner double-quotes so the shell doesn't split the pipeline string
-        # when it contains attribute strings like `format="GRAY8"` mid-pipeline.
+        # Escape inner double-quotes (format="GRAY8") so the shell keeps the pipeline one arg.
         pipeline_escaped = pipeline.replace('"', '\\"')
 
         cmd = (
@@ -253,8 +237,7 @@ class GstCameraManager(Node):
             ' -p frame_id:="%s"'
             ' -p camera_info_path:="%s"'
         ) % (pipeline_escaped, topic, frame_id, calib_url)
-        # Only emit `encoding` when set: empty quoted string collapses through
-        # the shell and ROS 2's arg parser rejects bare `-p encoding:=`.
+        # Omit `encoding` when empty: the quoted "" collapses and ROS rejects bare `-p encoding:=`.
         if encoding:
             cmd += ' -p encoding:="%s"' % encoding
         cmd += ' -p compress:=%s -p reliable:=%s' % (compress, reliable)
@@ -319,10 +302,8 @@ class GstCameraManager(Node):
         return response
 
     def _destroy_per_pipeline_entities(self, name):
-        # Destroy a pipeline's alive publisher, camera_info subscription, and control + status
-        # services. Caller must ensure the subprocess is stopped first. Pop-with-default so a
-        # partially-registered pipeline (e.g. half-initialised after a failed first load) cleans
-        # up without raising.
+        # Caller stops the subprocess first. Pop-with-default: a half-registered pipeline
+        # cleans up without raising.
         pub = self.alive_pubs.pop(name, None)
         if pub is not None:
             try: self.destroy_publisher(pub)
@@ -336,17 +317,15 @@ class GstCameraManager(Node):
             except Exception: pass
 
     def _handle_refresh_srv(self, request, response):
-        # Phase 1: stop any running pipelines. _disable_pipeline acquires process_lock per
-        # call; this phase MUST NOT hold the lock itself or _disable_pipeline would deadlock
-        # (Python's threading.Lock is not reentrant).
+        # Must not hold process_lock here: _disable_pipeline acquires it and the lock
+        # is not reentrant.
         stopped = []
         for name in list(self.pipelines.keys()):
             if self._is_running(name):
                 self._disable_pipeline(name)
                 stopped.append(name)
 
-        # Phase 2: destroy per-pipeline ROS entities + clear per-pipeline state. Holding the
-        # lock prevents the watchdog from observing a half-cleared state mid-tick.
+        # Hold the lock so the watchdog never observes half-cleared state mid-tick.
         with self.process_lock:
             old_names = set(self.pipelines.keys())
             for name in list(old_names):
@@ -359,8 +338,6 @@ class GstCameraManager(Node):
             self.reliable_flags.clear()
             self.last_frame_time.clear()
 
-        # Phase 3: re-read YAML and rebuild per-pipeline entities. Manager-level services
-        # (status_all, stop_all, refresh) and the watchdog are untouched.
         self._load_config(self.config_path)
         self._create_publishers()
         self._create_info_subscriptions()
@@ -408,8 +385,7 @@ class GstCameraManager(Node):
                     preexec_fn=os.setsid
                 )
                 self.processes[name] = proc
-                # Seed the frame timestamp so the first alive_threshold seconds after launch
-                # act as a grace period (watchdog won't mark as stalled during startup).
+                # Seed the timestamp: first alive_threshold seconds act as startup grace.
                 self.last_frame_time[name] = self.get_clock().now()
                 self._publish_alive(name, True)
                 msg = '%s started (pid=%d)' % (name, proc.pid)

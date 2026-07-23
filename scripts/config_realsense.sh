@@ -1,7 +1,6 @@
 #!/bin/bash
-# config_realsense.sh - pin the three RealSense cameras by serial to their front/left/right
-# mount positions in vslam_config.yaml, identified via a live feed per camera.
-# Downward + front IMX219 CSI feed verification lives in verify_cv_cams.sh (alias ver_cv_cams).
+# config_realsense.sh - pin the three RealSense serials to their front/left/right mounts
+# in vslam_config.yaml, identified via a live feed per camera.
 
 set -u
 
@@ -17,7 +16,7 @@ set +u
 [[ -f /opt/ros/humble/setup.bash ]] && source /opt/ros/humble/setup.bash 2>/dev/null || true
 set -u
 
-# Output helpers - same style as setup.sh.
+# Output helpers
 if [[ -t 1 ]]; then
     RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[1;34m'; BOLD='\033[1m'; NC='\033[0m'
 else
@@ -34,7 +33,7 @@ err()  { echo -e "  ${RED}[ERROR]${NC} $*" >&2; }
 TTY="/dev/tty"; { : > "${TTY}"; } 2>/dev/null || TTY="/dev/stderr"
 ask() { printf '%s' "$1" > "${TTY}"; IFS= read -r REPLY < "${TTY}" || REPLY=""; }
 
-# ── Shared capability: pyrealsense2 + cv2 + an X display (NoMachine) ──
+# Capability probes: pyrealsense2 + cv2 + an X display (NoMachine).
 HAVE_PYRS=0; HAVE_CV2=0; HAVE_DISP=0; FEED=0
 # Keep the import error: the usual failure is a native .so that can't load its deps, not a missing module.
 PYRS_ERR=$(python3 -c 'import pyrealsense2' 2>&1) && HAVE_PYRS=1 || true
@@ -43,13 +42,12 @@ CV2_ERR=$(python3 -c 'import cv2' 2>&1)           && HAVE_CV2=1 || true
 # User's real X authority, captured before we start swapping XAUTHORITY on retries.
 REAL_XAUTH="${XAUTHORITY:-$HOME/.Xauthority}"
 
-# An attached NoMachine viewer shows as an ESTABLISHED connection on the NX port; the virtual X
-# server (nxagent) keeps running after the viewer disconnects, so a live display is NOT proof anyone
-# is watching. Gate the feed step on this so we never open previews onto a display with no viewer.
+# Attached viewer = ESTABLISHED on the NX port; nxagent keeps running after disconnect,
+# so a live display is NOT proof anyone is watching.
 NX_PORT=4000
 nx_attached() { ss -tn state established 2>/dev/null | awk '{print $3}' | grep -q ":${NX_PORT}$"; }
 
-# Adaptive: pick the LIVE NoMachine X display - try $DISPLAY, then every X socket, use the first that accepts a connection.
+# Pick the live NoMachine X display: $DISPLAY first, then every X socket, first that accepts.
 ensure_display() {
     HAVE_DISP=0
     nx_attached || return 1
@@ -176,8 +174,7 @@ realsense_assign() {
         fi
     fi
 
-    # Enumerate serials. pyrealsense2 if present; else rs-enumerate-devices. The awk anchors
-    # "Serial Number" so "Asic Serial Number" is NOT matched (that double-counted 3 -> 6).
+    # The awk anchors "Serial Number" so "Asic Serial Number" is not double-counted.
     local -a SERIALS=()
     if (( HAVE_PYRS )); then
         mapfile -t SERIALS < <(python3 - <<'PY'

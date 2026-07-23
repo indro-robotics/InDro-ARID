@@ -18,3 +18,6 @@ local_ws/auxiliary/camera_calibration/*_calibration.yaml
 # run_logs: contents anywhere + the root convenience symlink
 **/run_logs/
 /run_logs
+
+# Isaac ROS CUDA/nitros cache
+isaac_ros-dev/.cache/

@@ -60,8 +60,7 @@
   <xacro:propeller name="rear_left"   x="${-propeller_span}" y="${propeller_span}"/>
   <xacro:propeller name="rear_right"  x="${-propeller_span}" y="${-propeller_span}"/>
 
-  <!-- Rotation-symmetric mount: left camera has NEGATIVE x / +y / yaw +pi/2, right camera
-       POSITIVE x / -y / yaw -pi/2. Magnitude (0.0175) is ARID-specific boom geometry. -->
+  <!-- Left/right mounts are rotation-symmetric: x sign flips with yaw, not mirrored. -->
   <xacro:realsense name="front" x="0.09875"  y="0.0175"   yaw="0"/>
   <xacro:realsense name="left"  x="-0.0175"  y="0.08875"  yaw="${pi/2}"/>
   <xacro:realsense name="right" x="0.0175"   y="-0.08875" yaw="${-pi/2}"/>

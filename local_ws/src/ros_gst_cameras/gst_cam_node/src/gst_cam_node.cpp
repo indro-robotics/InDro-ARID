@@ -11,10 +11,8 @@
 #include <string>
 
 /**
- * GstCamNode wraps an arbitrary GStreamer pipeline passed via the gst_pipeline parameter.
- * Publishes image_raw (and image_raw/compressed when compress:=true) under /<camera_topic>/,
- * plus camera_info synced to each frame (from the calibration file when provided, otherwise
- * a default built from the first frame's dimensions).
+ * Wraps the GStreamer pipeline given in gst_pipeline; publishes /<camera_topic>/image_raw
+ * (+ compressed when compress:=true) and camera_info synced to each frame.
  */
 class GstCamNode : public rclcpp::Node
 {
@@ -37,9 +35,7 @@ public:
     bool compress = this->get_parameter("compress").as_bool();
     bool reliable = this->get_parameter("reliable").as_bool();
 
-    // Default QoS is sensor_data (BEST_EFFORT, VOLATILE, KEEP_LAST, depth 5), the ROS 2
-    // convention for image streams. `reliable:=true` opts into RELIABLE for use cases that
-    // cannot tolerate frame drops (low-rate scanners, metadata-critical pipelines).
+    // Default sensor_data QoS; reliable:=true for streams that cannot drop frames.
     rclcpp::QoS image_qos = rclcpp::QoS(rclcpp::KeepLast(5)).durability_volatile();
     if (reliable) {
       image_qos.reliable();
@@ -56,8 +52,6 @@ public:
                     "/" + camera_topic + "/image_raw", image_qos);
     }
 
-    // camera_info: use the loaded calibration if provided, otherwise a default filled
-    // from the first frame's dimensions.
     camera_info_pub_ = this->create_publisher<sensor_msgs::msg::CameraInfo>(
                         "/" + camera_topic + "/camera_info", image_qos);
 
@@ -119,7 +113,7 @@ private:
 
       auto now = this->now();
 
-      // Resolve encoding on first frame: user override if provided, else auto-detect from cv::Mat::type().
+      // Resolved once on the first frame: override if set, else auto-detect.
       if (!encoding_resolved_) {
         active_encoding_ = encoding_.empty() ? detect_encoding(frame) : encoding_;
         if (active_encoding_.empty()) {
@@ -134,8 +128,6 @@ private:
         encoding_resolved_ = true;
       }
 
-      // Fill image message directly from cv::Mat: one copy into msg->data,
-      // then move ownership to the publisher.
       auto msg = std::make_unique<sensor_msgs::msg::Image>();
       msg->header.stamp    = now;
       msg->header.frame_id = frame_id_;
@@ -152,8 +144,7 @@ private:
         it_pub_.publish(*msg);
       }
 
-      // Publish camera_info with the same timestamp. Source: calibration if loaded,
-      // else a lazily-built default cached on the first frame's dimensions.
+      // camera_info stamp must match the image stamp: subscribers pair them.
       sensor_msgs::msg::CameraInfo cam_info;
       if (has_calibration_) {
         cam_info = camera_info_manager_->getCameraInfo();
@@ -172,8 +163,7 @@ private:
     cap.release();
   }
 
-  // Placeholder CameraInfo: zero distortion, identity rectification, fx = fy = width,
-  // principal point at the image centre.
+  // Placeholder: zero distortion, fx = fy = width, principal point at image centre.
   static sensor_msgs::msg::CameraInfo make_default_camera_info(int width, int height)
   {
     sensor_msgs::msg::CameraInfo info;
@@ -199,8 +189,7 @@ private:
     return info;
   }
 
-  // Returns "" when the cv::Mat type has no clean ROS encoding mapping; caller surfaces
-  // that to the subscriber rather than silently mislabeling.
+  // "" when the cv::Mat type has no clean ROS mapping: warn, never silently mislabel.
   static std::string detect_encoding(const cv::Mat & frame)
   {
     switch (frame.type()) {
@@ -220,13 +209,11 @@ private:
   bool encoding_resolved_{false};
   bool default_info_ready_{false};
   std::string frame_id_;
-  std::string encoding_;         // user-provided override (empty = auto-detect)
-  std::string active_encoding_;  // resolved at first frame, written to every message
-  sensor_msgs::msg::CameraInfo default_info_;  // built lazily on first frame when no calib
-  // compress=false: raw publisher only
-  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_pub_;
-  // compress=true: image_transport publishes both raw + compressed (lazy; no cost when unsubscribed)
-  image_transport::Publisher it_pub_;
+  std::string encoding_;         // override (empty = auto-detect)
+  std::string active_encoding_;  // resolved at first frame
+  sensor_msgs::msg::CameraInfo default_info_;
+  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_pub_;  // compress=false
+  image_transport::Publisher it_pub_;  // compress=true: raw + compressed (lazy encoder)
   rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_pub_;
   std::shared_ptr<camera_info_manager::CameraInfoManager> camera_info_manager_;
 };

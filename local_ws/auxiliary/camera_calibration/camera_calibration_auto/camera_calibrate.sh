@@ -1,27 +1,21 @@
 #!/bin/bash
-# Calibrate a CSI pipeline (cam_front or cam_down) with the ROS camera_calibration tool.
-#
-# Targets:
-#   front = front IMX219  (gst pipeline cam_front, sensor-id 0, topic /cam_front)
-#   down  = down  IMX219  (gst pipeline cam_down,  sensor-id 1, topic /cam_down)
-#
-# Host-side flow: brings the selected camera up via the gst_camera_manager service, runs the
-# interactive cameracalibrator, and on completion saves the result to the calibration
-# store AND applies it to the live pipeline calibration file (takes effect on the next
-# pipeline restart). Stops the camera when done.
+# Calibrate a CSI pipeline with the ROS camera_calibration tool.
 #
 # Usage:  camera_calibrate.sh front|down
 #
-# Interactive: prompts for a custom board (columns / rows in squares + square size in mm)
-# and converts to interior corners = squares - 1. Enter or 'n' uses the included default
-# board at ../calibration_pattern/calib_pattern.pdf.
+# Targets:
+#   front = cam_front (sensor-id 0, topic /cam_front)
+#   down  = cam_down  (sensor-id 1, topic /cam_down)
 #
-# Env overrides (skip the prompt; useful for automation):
-#   SIZE     checkerboard interior corners WxH   (default 9x6  -> 10x7 squares)
-#   SQUARE   square side length in metres        (default 0.050, 50 mm squares)
-#   ROS_DOMAIN_ID                                 (default 23)
+# Saves to the calibration store AND applies to the live pipeline calibration file
+# (takes effect on the next pipeline restart).
 #
-# The calibrator opens a GUI window - connect a NoMachine session first.
+# Env overrides (skip the board prompt):
+#   SIZE     interior corners WxH        (default 9x6 = 10x7 squares)
+#   SQUARE   square side in metres       (default 0.050)
+#   ROS_DOMAIN_ID                        (default 23)
+#
+# The calibrator opens a GUI window: connect a NoMachine session first.
 
 set -u
 ulimit -c 0 2>/dev/null || true   # no core files if a display probe's cv2/Qt aborts
@@ -38,28 +32,22 @@ warn() { echo -e "  ${YELLOW}[WARN]${NC} $*"; }
 err()  { echo -e "  ${RED}[ERROR]${NC} $*" >&2; }
 is_yes() { local a="${1//[^A-Za-z]/}"; case "${a,,}" in y|yes) return 0;; *) return 1;; esac; }
 
-# Target selection: pick the CSI pipeline, its topic/namespace, and where the result lands.
 case "${1:-}" in
     front|cam_front)  PIPE="cam_front"; TOPIC="/cam_front/image_raw"; NS="/cam_front"; STORE_DIR="${STORE}/cam_front"; STORE_FILE="cam_front.yaml"; LIVE="${GST_CALIB}/cam_front.yaml" ;;
     down|cam_down)    PIPE="cam_down";  TOPIC="/cam_down/image_raw";  NS="/cam_down";  STORE_DIR="${STORE}/cam_down";  STORE_FILE="cam_down.yaml";  LIVE="${GST_CALIB}/cam_down.yaml" ;;
     *) err "usage: $(basename "$0") front|down"; exit 2 ;;
 esac
 
-# setup.sh runs us under `exec > >(tee ...)`, where a `read -p` prompt block-buffers in the pipe
-# and never reaches the operator. Drive the prompt and reply through the controlling terminal instead.
+# Prompt via /dev/tty: under setup.sh's tee pipe, a `read -p` prompt never reaches the operator.
 TTY="/dev/tty"; { : > "${TTY}"; } 2>/dev/null || TTY="/dev/stderr"
 ask() { printf '%s' "$1" > "${TTY}"; IFS= read -r REPLY < "${TTY}" || REPLY=""; }
 
-# Calibration is interactive (board prompts + the GUI driven by mouse / keys). Refuse a
-# non-terminal invocation so a stray/backgrounded run cannot silently open a calibrator
-# window with no way to drive or close it.
+# Refuse non-terminal runs: a backgrounded calibrator window cannot be driven or closed.
 [[ -t 0 ]] || { err "calibration must be run from an interactive terminal"; exit 6; }
 
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-23}"
 
-# Board geometry. cameracalibrator's --size is INTERIOR CORNERS = (squares - 1) in each
-# dimension. SIZE/SQUARE from the environment win (override). Otherwise, offer a custom
-# board; Enter or 'n' uses the included default (10x7 squares / 50 mm = 9x6 corners).
+# cameracalibrator's --size is INTERIOR CORNERS = squares - 1 per dimension.
 if [[ -z "${SIZE:-}" || -z "${SQUARE:-}" ]] && [[ -t 0 ]]; then
     ans=""
     ask "Use a custom calibration board? (y/n, Enter = included 10x7-square / 50 mm board): "; ans="${REPLY}"
@@ -81,7 +69,7 @@ fi
 SIZE="${SIZE:-9x6}"; SQUARE="${SQUARE:-0.050}"
 echo "Calibrating ${PIPE}: pipeline '${PIPE}', topic ${TOPIC}, board ${SIZE} corners @ ${SQUARE} m"
 
-# venv with numpy < 2 (ROS 2 Humble cv_bridge is built against numpy 1.x).
+# numpy<2 venv: Humble cv_bridge breaks under numpy 2.x.
 if [[ ! -x "${VENV_DIR}/bin/python3" ]]; then
     echo "[calib] creating venv at ${VENV_DIR}"
     python3 -m venv "${VENV_DIR}" --system-site-packages
@@ -92,7 +80,7 @@ if [[ "${NUMPY_MAJOR}" -ge 2 || "${NUMPY_MAJOR}" -eq 0 ]]; then
     PYTHONNOUSERSITE=1 "${VENV_DIR}/bin/pip" install "numpy<2" -q
 fi
 
-# Display + NoMachine gate (throwaway X authority; ~/.Xauthority is never touched).
+# Temporary X authority: ~/.Xauthority is never modified.
 command -v python3 >/dev/null 2>&1 && python3 -c 'import cv2' >/dev/null 2>&1 \
     || { err "cv2 (OpenCV) not importable - the calibrator GUI needs it"; exit 1; }
 
@@ -152,7 +140,6 @@ ok "NoMachine connected - using display ${DISPLAY}"
 [[ -f /opt/ros/humble/setup.bash ]] || { err "ROS 2 Humble not found"; exit 1; }
 set +u; source /opt/ros/humble/setup.bash; set -u
 
-# Bring the camera up via the gst_camera_manager service; stop it on exit.
 ensure_manager() {
     ros2 service list 2>/dev/null | grep -q '^/gst_camera_manager/' && return 0
     if systemctl is-active --quiet gst_camera_manager.service 2>/dev/null; then
@@ -178,7 +165,7 @@ start_pipe()      { ros2 service call "/gst_camera_manager/${PIPE}" std_srvs/srv
 stop_pipe()       { ros2 service call "/gst_camera_manager/${PIPE}" std_srvs/srv/SetBool "{data: false}" >/dev/null 2>&1; STARTED=0; }
 wait_for_frames() { local n; for n in $(seq 1 "${1:-12}"); do timeout 2 ros2 topic echo --once "${TOPIC}" >/dev/null 2>&1 && return 0; done; return 1; }
 
-# Clean slate first so this run is the sole consumer of the Argus pipeline.
+# Stop first: this run must be the sole consumer of the Argus pipeline.
 stop_pipe; sleep 2
 echo "[calib] starting ${PIPE}..."
 start_pipe
@@ -190,7 +177,6 @@ if ! wait_for_frames 12; then
 fi
 ok "camera streaming"
 
-# Launch the interactive calibrator.
 rm -f /tmp/ost.yaml /tmp/calibrationdata.tar.gz
 printf '%s\n' "[calib] launching cameracalibrator - the window can take a while to open on the NoMachine display, please wait..." > "${TTY}"
 printf '%s\n' "[calib] when it appears: move the board through the frame, then Calibrate -> Commit" > "${TTY}"
@@ -208,7 +194,6 @@ if [[ ! -f /tmp/ost.yaml ]]; then
     exit 4
 fi
 
-# Save to the store + apply to the live calibration file.
 mkdir -p "${STORE_DIR}"
 ts=$(date +%Y%m%d_%H%M%S)
 cp /tmp/ost.yaml "${STORE_DIR}/${STORE_FILE%.yaml}_${ts}.yaml"

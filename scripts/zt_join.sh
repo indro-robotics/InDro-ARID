@@ -1,9 +1,8 @@
 #!/bin/bash
 # ZeroTier network join/switch (alias: zt_join).
 #
-# Single-network model: joining a network leaves every other joined network first,
-# so the module is always a member of exactly one. Re-joining an already-joined
-# network overwrites it (leave + join).
+# Single-network model: joining leaves every other network first; re-joining an
+# already-joined network is leave + join.
 #
 #   zt_join                  interactive: pick a joined network to switch to, or join a new one
 #   zt_join <network-id>     non-interactive join (16 hex chars)
@@ -98,8 +97,7 @@ report() {
     echo "  Authorize it on network ${target} in ZeroTier"
     echo "  Central (tick Auth; assign/auto-assign an IP)."
     echo "======================================================"
-    # Interactive authorize-wait: any key re-tests, 's' skips. Headless (no tty) keeps
-    # the old non-blocking behavior so a scripted run never hangs.
+    # Any key re-tests, 's' skips; headless stays non-blocking so a scripted run never hangs.
     if [[ ! -r /dev/tty ]]; then
         echo "No terminal - authorize in Central, then re-run 'zt_join' to verify."
         return 1

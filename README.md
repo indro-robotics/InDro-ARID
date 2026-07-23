@@ -13,9 +13,17 @@ End-to-end repo for provisioning, building, and operating a deployed ARID:
 - **Diagnostics**: `local_test` smoke test, `config_realsense` serial assignment, `ver_cv_cams` live feeds.
 - **Helpers**: `wifi`, `update_submods`, `zt_join`, Foxglove bridge (apt, port 8765).
 
-> **DDS containment: redundant.** `ROS_DOMAIN_ID=23` AND `ROS_LOCALHOST_ONLY=1`, set everywhere (bashrc, container env, every ROS unit, systemd `DefaultEnvironment` drop-in). Off-box viewing = Foxglove bridge (TCP 8765), never raw DDS. FMU pairing: `UXRCE_DDS_PTCFG=1`, firmware default in `4026_arid_quad_v1_2`; without it all `/fmu` topics silently vanish.
->
-> **librealsense = RSUSB 2.55.1 at `/usr/local` only.** apt `ros-humble-librealsense2` is purged + pinned out (host and container); `rosdep --skip-keys librealsense2`; builds pinned with `-Drealsense2_DIR`; colcon step self-heals a stray apt copy. Host serial detection uses the pip `pyrealsense2` wheel. (The apt V4L2 build drops HW metadata + multi-cam.)
+## Sensor configuration
+
+| Sensor | Fit |
+|---|---|
+| 3x RealSense D43X | front / left / right stereo (VSLAM) |
+| 2x IMX219 CSI | `cam_front` (front) + `cam_down` (downward) |
+| Optical flow + rangefinder | bottom pod |
+
+Variant note: `v1.2_rslidar` carries 1x front RealSense + 1x RSAIRY LiDAR + 1x downward IMX219 instead.
+
+> ROS 2 traffic is restricted to the drone: `ROS_DOMAIN_ID=23`, `ROS_LOCALHOST_ONLY=1`. Remote visualization via Foxglove: `ws://<device-ip>:8765`.
 
 ---
 
@@ -29,7 +37,7 @@ Bare invocation opens the interactive menu; `--full` runs the questionnaire then
 ./setup.sh --resume
 ```
 
-Every step is idempotent. Logs to `log/setup_log_*.log` (session-pinned across the resume reboot; smoke test: `smoke_test_log_*.log`; newest 10 kept).
+Every step is idempotent. Logs: `log/setup_log_*.log` (smoke test: `smoke_test_log_*.log`).
 
 | Option | Action |
 |---|---|
@@ -41,11 +49,9 @@ Every step is idempotent. Logs to `log/setup_log_*.log` (session-pinned across t
 | **6** | Camera calibration (front/down) |
 | **7** | Camera focus (front/down, via Foxglove) |
 | **8** | Build the Isaac container |
-| **9** | Colcon-build the container workspace + start `arid_supervisor.service` (container must be running) |
+| **9** | Colcon-build the container workspace + start `arid_supervisor.service` |
 | **10** | ZeroTier join/switch |
-| **11** | Uninstall (everything setup.sh installed; strict confirmation; repo/OS/Docker engine kept) |
-
-`--full` asks everything up front (hostname, password, Wi-Fi, NoMachine, ZeroTier, PX4 toolchain, RealSense, camera checks, Isaac build, smoke test, reboot).
+| **11** | Uninstall (repo, OS, Docker engine kept) |
 
 ### Steps (in order)
 
@@ -54,29 +60,29 @@ Every step is idempotent. Logs to `log/setup_log_*.log` (session-pinned across t
 | **preflight** | Not root; git present; submodules initialized. |
 | **collect_answers** | Questionnaire → `PRE_*` answers, persisted for the resume. |
 | **first_boot** | One-time hostname/password. |
-| **power** | nvpmodel max (non-interactive), apt-holds critical L4T packages. |
-| **disable_updates** | Kills unattended-upgrades + apt timers. |
-| **enable_clock_sync** | `systemd-timesyncd` on. |
-| **enable_user_linger** | systemd owns `/run/user/<uid>` at boot (headless NoMachine black-screen fix). |
+| **power** | Sets nvpmodel to maximum; apt-holds critical L4T packages. |
+| **disable_updates** | Disables unattended-upgrades and the apt timers. |
+| **enable_clock_sync** | Enables `systemd-timesyncd`. |
+| **enable_user_linger** | Enables user lingering so `/run/user/<uid>` is created at boot (headless NoMachine fix). |
 | **clean_nvidia_desktop** | Removes NVIDIA first-boot icons + L4T-README automount. |
 | **ensure_wifi** | Joins the questionnaire's network. |
 | **nomachine** | Detects install; prints manual hint if missing. |
 | **repos** | ROS / NVIDIA / Docker apt repos, CDI config. |
-| **apt** | Packages incl. foxglove bridge + net tools. NO apt librealsense (see blockquote). |
+| **apt** | Apt packages (Foxglove bridge, net tools). |
 | **zerotier** | Installs daemon, joins via `zt_join.sh --setup`. `ACCESS_DENIED` = authorize later. |
 | **px4_deps** | PX4 toolchain (skipped if `arm-none-eabi-gcc` present). |
 | **git** | Credential cache, script perms, `update_submods.sh` pin-verify. |
-| **docker_patches** | Injects `Dockerfile.arid` / `arid_env.sh` / `run_dev.sh` into `isaac_ros_common` (skip-worktree'd). |
-| **skip_worktree** | Protects per-deployment configs (serials, calibrations, tuning) from git status. |
+| **docker_patches** | Injects `Dockerfile.arid` / `arid_env.sh` / `run_dev.sh` into `isaac_ros_common`. |
+| **skip_worktree** | Hides per-deployment configs (serials, calibrations, tuning) from git status. |
 | **bashrc** | Rewrites the ARID block: env exports + the full alias set + `help` + resume hook. |
 | **permissions** | Sudoers (uhubctl, gpioset, systemctl, `usb_reset.sh`, `zerotier-cli`), udev, polkit, groups. |
 | **uhubctl** | Builds from source if missing. |
 | **ros_workspace** | Python deps, rosdep, colcon-builds `local_ws`. |
-| **docker** | Engine, NVIDIA runtime, docker group, buildx (each state-checked). |
+| **docker** | Engine, NVIDIA runtime, docker group, buildx. |
 | **systemd** | Installs + enables all units, installs the ROS-env `DefaultEnvironment` drop-in. |
 | **realsense** | `config_realsense.sh` → three serials into `vslam_config.yaml`. |
 | **verify_cameras** | Live front + down feeds (if opted in). |
-| **build_isaac** | Queued container build (survives the reboot). |
+| **build_isaac** | Container image build; queued across the reboot. |
 | **colcon_isaac** | Builds container workspace, restarts `arid_supervisor.service`. |
 | **print_summary / prompt_reboot** | Summary; arms `~/.arid_resume_setup` and reboots. |
 
@@ -113,13 +119,7 @@ SSH into the drone, edit everything there.
 ssh jetson@<device-ip>
 ```
 
-Open the repo in your editor. On first open VSCode prompts to install the workspace's recommended extensions on the drone.
-
-### What the workspace config does
-
-- **`.vscode/extensions.json`** drives the install-recommendations prompt.
-- **`.vscode/settings.json`**: Pylance extra paths (ROS + container interface installs), autopep8 (`--max-line-length=100`), uncrustify with the ROS ament style, `linux-gcc-arm64` C++17 IntelliSense, search excludes for `build/` `install/` `log/`, `*.xacro`→xml file associations.
-- **`.vscode/c_cpp_properties.json`**: `Linux` C/C++ IntelliSense config.
+On first open VSCode prompts to install the workspace's recommended extensions on the drone. `.vscode/` carries the extension list, Python/C++ lint + IntelliSense settings, and search excludes.
 
 ### VSCode Remote-SSH offline fix
 
@@ -195,13 +195,13 @@ Direct launch (bypasses the supervisor, in-container): `vslam` or `ros2 launch p
 
 **Before flying:** run `config_realsense` so all three serials are assigned.
 
-Reference: [`px4_vslam/README.md`](isaac_ros-dev/src/px4_vslam/README.md), [`px4_vslam_reactor/README.md`](isaac_ros-dev/src/px4_vslam_reactor/README.md), [`arid_supervisor/README.md`](isaac_ros-dev/src/arid_supervisor/README.md).
+Reference: [`px4_vslam/README.md`](isaac_ros-dev/src/px4_vslam/README.md), [`px4_vslam_reactor/README.md`](isaac_ros-dev/src/px4_vslam_reactor/README.md).
 
 ---
 
 ## PX4 firmware
 
-Fork at [`local_ws/auxiliary/PX4-Autopilot/`](local_ws/auxiliary/PX4-Autopilot/) (`PX4-InDro`). Airframe **`4026_arid_quad_v1_2`** = v1.1 + `UXRCE_DDS_PTCFG=1` default. Prebuilt: [`PX4_prebuilt/ARID_v1.2.px4`](local_ws/auxiliary/PX4_prebuilt/).
+Fork at [`local_ws/auxiliary/PX4-Autopilot/`](local_ws/auxiliary/PX4-Autopilot/) (`PX4-InDro`). Airframe **`4026_arid_quad_v1_2`**. Prebuilt: [`PX4_prebuilt/ARID_v1.2.px4`](local_ws/auxiliary/PX4_prebuilt/).
 
 Build to `build/ark_fmu-v6x_default/ark_fmu-v6x_default.px4`, or append `upload` to flash over USB with the FMU in bootloader mode:
 
@@ -210,6 +210,8 @@ cd local_ws/auxiliary/PX4-Autopilot
 make ark_fmu-v6x_default
 make ark_fmu-v6x_default upload
 ```
+
+Select the airframe (MAVLink shell):
 
 ```
 param set SYS_AUTOSTART 4026
@@ -227,7 +229,7 @@ reboot
 
 ## Foxglove
 
-apt `foxglove_bridge` on host + container. `foxglove_bridge` alias → port 8765 → connect Studio to `ws://<device-ip>:8765`.
+`foxglove_bridge` alias (host or container) → port 8765 → connect Studio to `ws://<device-ip>:8765`.
 
 ---
 
@@ -257,7 +259,7 @@ reset_usb
 ros2 service call /reset_usb std_srvs/srv/Trigger '{}'
 ```
 
-`uhubctl` power-cycles the ARK PAB USB hub and `gpioset` pulses the FMU reset line (GPIO 85), so `/reset_usb` also resets the flight controller: never call it in flight. Details: [`reset_ark_usb/README.md`](local_ws/src/reset_ark_usb/README.md).
+`/reset_usb` also pulses the FMU reset line: never call it in flight. Details: [`reset_ark_usb/README.md`](local_ws/src/reset_ark_usb/README.md).
 
 ---
 
@@ -314,11 +316,11 @@ cam_calibrate front
 
 | Submodule | Role |
 |---|---|
-| [`PX4-Autopilot`](local_ws/auxiliary/PX4-Autopilot/) | PX4 fork (`PX4-InDro`), ARID v1.2 airframe. |
+| [`PX4-Autopilot`](local_ws/auxiliary/PX4-Autopilot/) | PX4 fork (`PX4-InDro`), ARID airframe. |
 | [`px4_msgs`](isaac_ros-dev/src/px4_msgs/) | PX4 messages (`release/1.15`). Single submodule; `local_ws/src/px4_msgs` is a symlink to it. |
 | [`isaac_ros_common`](isaac_ros-dev/src/isaac_ros_common/) | Isaac base (Dockerfile chain; ARID-patched). |
 | [`isaac_ros_nitros`](isaac_ros-dev/src/isaac_ros_nitros/) | Zero-copy transport. |
 | [`isaac_ros_image_pipeline`](isaac_ros-dev/src/isaac_ros_image_pipeline/) | GPU image processing. |
 | [`isaac_ros_visual_slam`](isaac_ros-dev/src/isaac_ros_visual_slam/) | cuVSLAM backend. |
-| [`realsense-ros`](isaac_ros-dev/src/realsense-ros/) | RealSense driver (`4.51.1`). |
-| [`px4-ros2-interface-lib`](isaac_ros-dev/src/px4-ros2-interface-lib/) | Auterion PX4 SDK (`1.4.0`). |
+| [`realsense-ros`](isaac_ros-dev/src/realsense-ros/) | RealSense driver. |
+| [`px4-ros2-interface-lib`](isaac_ros-dev/src/px4-ros2-interface-lib/) | Auterion PX4 SDK. |
