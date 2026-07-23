@@ -41,6 +41,11 @@ warn() { echo -e "  ${YELLOW}[WARN]${NC} $*"; }
 err()  { echo -e "  ${RED}[ERROR]${NC} $*" >&2; }
 is_yes() { local a="${1//[^A-Za-z]/}"; case "${a,,}" in y|yes) return 0;; *) return 1;; esac; }
 
+# setup.sh runs us under `exec > >(tee ...)`, where a `read -p` prompt block-buffers in the pipe
+# and never reaches the operator. Drive the prompt and reply through the controlling terminal instead.
+TTY="/dev/tty"; { : > "${TTY}"; } 2>/dev/null || TTY="/dev/stderr"
+ask() { printf '%s' "$1" > "${TTY}"; IFS= read -r REPLY < "${TTY}" || REPLY=""; }
+
 # Calibration is interactive (board prompts + the GUI driven by mouse / keys). Refuse a
 # non-terminal invocation so a stray/backgrounded run cannot silently open a calibrator
 # window with no way to drive or close it.
@@ -53,12 +58,12 @@ export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-23}"
 # board; Enter or 'n' uses the included default (10x7 squares / 50 mm = 9x6 corners).
 if [[ -z "${SIZE:-}" || -z "${SQUARE:-}" ]] && [[ -t 0 ]]; then
     ans=""
-    read -r -p "Use a custom calibration board? (y/n, Enter = included 10x7-square / 50 mm board): " ans || ans=""
+    ask "Use a custom calibration board? (y/n, Enter = included 10x7-square / 50 mm board): "; ans="${REPLY}"
     if is_yes "${ans}"; then
         cols=""; rows=""; mm=""
-        read -r -p "  Columns (number of squares across): " cols || cols=""
-        read -r -p "  Rows (number of squares down): "      rows || rows=""
-        read -r -p "  Square size in mm: "                  mm   || mm=""
+        ask "  Columns (number of squares across): "; cols="${REPLY}"
+        ask "  Rows (number of squares down): ";      rows="${REPLY}"
+        ask "  Square size in mm: ";                  mm="${REPLY}"
         cols="${cols//[^0-9]/}"; rows="${rows//[^0-9]/}"; mm="${mm//[^0-9.]/}"
         if [[ "$cols" =~ ^[0-9]+$ && "$rows" =~ ^[0-9]+$ && "$mm" =~ ^[0-9]+(\.[0-9]+)?$ && "$cols" -ge 2 && "$rows" -ge 2 ]]; then
             SIZE="$((cols-1))x$((rows-1))"
@@ -128,10 +133,14 @@ display_ready() { nx_attached && find_ready_display; }
 if ! display_ready; then
     if [[ ! -t 0 ]]; then err "no NoMachine session and no terminal to prompt - connect NoMachine and rerun"; exit 5; fi
     warn "No NoMachine session connected."
-    echo "  The calibrator opens a GUI window - connect a NoMachine session to the drone."
+    _ip=$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -vE '^(127\.|169\.254\.|172\.(1[6-9]|2[0-9]|3[01])\.)' | head -1)
+    echo "  The calibrator opens a GUI window - connect a NoMachine session to ${USER}@${_ip:-this host}."
     echo "  Calibration starts automatically once you are connected. (press Enter to cancel)"
+    _nm_waited=0
     while ! display_ready; do
         if read -r -t 2 _ 2>/dev/null; then warn "calibration cancelled - no display"; exit 0; fi
+        _nm_waited=$((_nm_waited+2))
+        if (( _nm_waited >= ${NM_WAIT_S:-180} )); then warn "no NoMachine session after ${NM_WAIT_S:-180}s - skipping calibration"; exit 0; fi
     done
 fi
 ok "NoMachine connected - using display ${DISPLAY}"
@@ -179,8 +188,8 @@ ok "camera streaming"
 
 # Launch the interactive calibrator.
 rm -f /tmp/ost.yaml /tmp/calibrationdata.tar.gz
-echo "[calib] launching cameracalibrator - the window can take a while to open on the NoMachine display, please wait..."
-echo "[calib] when it appears: move the board through the frame, then Calibrate -> Commit"
+printf '%s\n' "[calib] launching cameracalibrator - the window can take a while to open on the NoMachine display, please wait..." > "${TTY}"
+printf '%s\n' "[calib] when it appears: move the board through the frame, then Calibrate -> Commit" > "${TTY}"
 PYTHONNOUSERSITE=1 "${VENV_DIR}/bin/python3" \
     /opt/ros/humble/lib/camera_calibration/cameracalibrator \
     --size "${SIZE}" --square "${SQUARE}" \

@@ -1,0 +1,33 @@
+[Unit]
+Description=ARID VSLAM supervisor (in the Isaac container)
+After=start_isaac_docker.service
+Requires=start_isaac_docker.service
+PartOf=start_isaac_docker.service
+# Cap restart loops so a missing/misbuilt package fails visibly. Only effective in [Unit].
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+User=jetson
+Type=simple
+# Bounded wait for the container; unbounded would remain in "activating" until TimeoutStartSec.
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 60); do docker inspect -f "{{.State.Running}}" isaac_ros_dev-aarch64-container 2>/dev/null | grep -q true && exit 0; sleep 1; done; echo "container did not become running within 60 s" >&2; exit 1'
+# -u admin (uid 1000): service calls share Fast-DDS shm with the host and dev shell; as root they hang.
+# bash -lc loads /etc/profile.d/arid_env.sh before launch resolves the package.
+# PYTHONUNBUFFERED=1: piped stdout is block-buffered; short INFO lines otherwise remain unflushed and never reach the journal.
+ExecStart=/usr/bin/docker exec -u admin -e PYTHONUNBUFFERED=1 isaac_ros_dev-aarch64-container bash -lc 'ros2 launch arid_supervisor arid_supervisor.launch.py'
+# systemd's own kill only reaches the host-side docker exec client, so pkill inside the container.
+# Pattern must hit BOTH the launch parent and the node: launch-only orphans the node (duplicate
+# DDS servers); a bare 'arid_supervisor' matches unrelated host cmdlines (shared PID namespace)
+# and kills the invoking shell.
+ExecStop=/usr/bin/docker exec isaac_ros_dev-aarch64-container pkill -TERM -f 'arid_supervisor_node|arid_supervisor[.]launch[.]py'
+# mixed: SIGTERM the whole cgroup so the launch wrapper is not orphaned.
+KillMode=mixed
+# 30 s lets the rclpy graph drain; less leaves leftover processes that collide on the next start (address in use).
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5
+
+[Install]
+# Not multi-user.target: attaching to the docker unit avoids a boot ordering cycle.
+WantedBy=start_isaac_docker.service

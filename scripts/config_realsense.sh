@@ -1,16 +1,16 @@
 #!/bin/bash
-# Auto-detect the single front RealSense serial via rs-enumerate-devices on the
-# host (provided by ros-humble-librealsense2), write it into vslam_config.yaml.
-# Assumes exactly one RealSense is connected (this drone's hardware constraint).
+# config_realsense.sh - detect the front RealSense serial and write it into vslam_config.yaml.
+# Serial query: pyrealsense2 wheel preferred, rs-enumerate-devices fallback.
+# Never apt-install librealsense on the host: the container stack links the RSUSB build at /usr/local.
+# Assumes exactly one RealSense is connected.
 
 set -u
 
 WORKSPACES="${WORKSPACES:-/home/jetson/workspaces}"
 VSLAM_CONFIG="${WORKSPACES}/isaac_ros-dev/src/px4_vslam/config/vslam_config.yaml"
 
-# rs-enumerate-devices lives in /opt/ros/humble/bin (apt ros-humble-librealsense2).
-# Source ROS if PATH doesn't already have it (e.g. invoked from setup.sh before
-# the user's interactive bash sources /opt/ros/humble/setup.bash).
+# Source ROS if PATH lacks rs-enumerate-devices (setup.sh invokes this before the
+# user's shell sources ROS).
 command -v rs-enumerate-devices >/dev/null 2>&1 \
     || { [[ -f /opt/ros/humble/setup.bash ]] && source /opt/ros/humble/setup.bash; }
 
@@ -65,22 +65,44 @@ else
     ok "1 RealSense on USB"
 fi
 
-step "3. rs-enumerate-devices on PATH"
-if ! command -v rs-enumerate-devices >/dev/null 2>&1; then
-    fail "rs-enumerate-devices not found"
-    fix  "sudo apt-get install ros-humble-librealsense2    # provides /opt/ros/humble/bin/rs-enumerate-devices"
+step "3. Serial-query tooling (pyrealsense2 preferred, rs-enumerate-devices fallback)"
+HAVE_PYRS=0
+python3 -c 'import pyrealsense2' >/dev/null 2>&1 && HAVE_PYRS=1
+if (( ! HAVE_PYRS )) && ! command -v rs-enumerate-devices >/dev/null 2>&1; then
+    what "Neither pyrealsense2 nor rs-enumerate-devices found; best-effort pip install of the self-contained pyrealsense2 wheel."
+    PIP_BREAK=""
+    python3 -m pip install --help 2>/dev/null | grep -q -- '--break-system-packages' && PIP_BREAK="--break-system-packages"
+    python3 -m pip install pyrealsense2 ${PIP_BREAK} >/dev/null 2>&1 || true
+    python3 -c 'import pyrealsense2' >/dev/null 2>&1 && HAVE_PYRS=1
+fi
+if (( HAVE_PYRS )); then
+    ok "pyrealsense2 importable"
+elif command -v rs-enumerate-devices >/dev/null 2>&1; then
+    ok "$(which rs-enumerate-devices)"
+else
+    fail "no serial-query tool available"
+    fix  "python3 -m pip install pyrealsense2    # self-contained wheel, no apt librealsense"
     exit 1
 fi
-ok "$(which rs-enumerate-devices)"
 
 step "4. Query RealSense serial"
-what     "rs-enumerate-devices; parse the first 'Serial Number' field (the librealsense ID, not the USB iSerial)."
+what     "First librealsense 'Serial Number' (the librealsense ID, not the USB iSerial)."
 why      "realsense2_camera matches on librealsense's Serial Number. lsusb's iSerial reports the ASIC serial instead, which won't match."
-SERIAL=$(rs-enumerate-devices 2>/dev/null \
-    | awk -F: '/Serial Number/ {gsub(/[ \t]/,"",$2); print $2; exit}')
+if (( HAVE_PYRS )); then
+    SERIAL=$(python3 - <<'PYRS' 2>/dev/null
+import pyrealsense2 as rs
+ctx = rs.context()
+devs = ctx.query_devices()
+print(devs[0].get_info(rs.camera_info.serial_number) if devs.size() else "")
+PYRS
+)
+else
+    SERIAL=$(rs-enumerate-devices 2>/dev/null \
+        | awk -F: '/Serial Number/ {gsub(/[ \t]/,"",$2); print $2; exit}')
+fi
 if [[ -z "${SERIAL}" ]]; then
-    fail "could not extract serial from rs-enumerate-devices output"
-    fix  "run 'isaac_bash' then 'rs-enumerate-devices' and inspect the output manually"
+    fail "could not extract a RealSense serial"
+    fix  "run 'isaac_bash' then 'rs-enumerate-devices' inside the container and inspect manually"
     exit 1
 fi
 if [[ ! "${SERIAL}" =~ ^[0-9]+$ ]]; then
@@ -94,14 +116,12 @@ what     "Replace the value on the serial_no: line; preserve indentation and any
 CURRENT=$(grep -E '^[[:space:]]*serial_no:' "${VSLAM_CONFIG}" | head -1)
 note "before: ${CURRENT}"
 
-# Preserve indentation and inline comment. Pattern: <indent>serial_no:<gap><value><optional space + # comment>
-# Replace only the value, keeping the comment.
+# Replace only the value, preserving indentation and any inline comment.
 sed -i -E "s|^([[:space:]]*serial_no:[[:space:]]*)\"[^\"]*\"(.*)$|\1\"${SERIAL}\"\2|" "${VSLAM_CONFIG}"
 
 NEW=$(grep -E '^[[:space:]]*serial_no:' "${VSLAM_CONFIG}" | head -1)
 note "after:  ${NEW}"
 
-# Verify the written value matches.
 WRITTEN=$(echo "${NEW}" | grep -oE '"[0-9]+"' | tr -d '"' | head -1)
 if [[ "${WRITTEN}" == "${SERIAL}" ]]; then
     ok "wrote serial ${SERIAL}"

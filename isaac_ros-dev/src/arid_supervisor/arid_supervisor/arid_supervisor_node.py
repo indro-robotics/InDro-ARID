@@ -1,0 +1,611 @@
+"""arid_supervisor - always-on lifecycle manager for the ARID VSLAM stack.
+
+Services (under /arid_supervisor):
+  ~/vslam_enable (std_srvs/SetBool)
+    true : camera-proven bringup - USB pre-check, log-watch gate (the front camera's
+           "RealSense Node Is Up!" tag, fail-fast on "Error starting device", 40 s
+           backstop), ONE reset_usb recovery cycle. Blocks ~15 s healthy, ~3 min worst.
+    false: landed-gated teardown - SIGINT the process group, wait for drain, escalate
+           to SIGTERM/SIGKILL only on stall.
+  ~/status (std_srvs/Trigger): success = vslam running.
+
+Idempotent both ways; double-spawn impossible (single-threaded executor queues calls,
+self._lock preserves this under any executor); foreign vslam stacks refused pre-spawn.
+Subprocess log: /workspaces/isaac_ros-dev/run_logs/<name>/<name>.log, truncated per launch.
+"""
+
+import glob
+import os
+import signal
+import subprocess
+import threading
+import time
+
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from std_srvs.srv import SetBool, Trigger
+
+from px4_msgs.msg import VehicleLandDetected
+
+
+LAND_FRESH_S = 2.0
+# Per-stack clean-shutdown grace before any hard kill; SIGINT lets nodes release their DDS shm.
+SIGINT_GRACE_S = {'vslam': 25.0}
+DEFAULT_SIGINT_GRACE_S = 15.0
+TERM_WAIT_S = 5.0   # SIGTERM grace after the SIGINT window, before SIGKILL
+LOG_DIR = '/workspaces/isaac_ros-dev/run_logs'
+
+RS_VID = '8086'                           # Intel RealSense USB vendor id
+# D43X-family PIDs; pin the exact one via the rs_usb_pids ROS param once confirmed
+# on hardware (cat /sys/bus/usb/devices/*/idProduct).
+DEFAULT_RS_PIDS = ['0b07', '0b3a', '0b3d', '0b64', '0b5c']
+CAM_COUNT = 1                             # ONE physical front RealSense (vslam_config
+                                          # num_cameras:2 = its two IR streams)
+CAM_UP_MARKER = 'RealSense Node Is Up!'
+CAM_ERR_MARKER = 'Error starting device'
+CAM_GATE_BACKSTOP_S = 40.0   # healthy bringup completes in 14-26 s
+CAM_GATE_POLL_S = 0.25
+USB_REENUM_WAIT_S = 20.0     # /reset_usb: ~5 s power cycle + ~10 s re-enumeration
+RESET_USB_TIMEOUT_S = 30.0   # subprocess `ros2 service call /reset_usb` hard cap
+RESP_MSG_MAX = 500           # SetBool response clip; full evidence always in the node log
+LEGACY_SCAN_TIMEOUT_S = 20.0  # `ros2 node list --no-daemon` fresh-discovery hard cap
+
+
+def _proc_descendants(root_pid):
+    # Walks descendants, not the process group: setsid children leave the group but not the tree.
+    kids = {}
+    for pid in os.listdir('/proc'):
+        if not pid.isdigit():
+            continue
+        try:
+            with open(f'/proc/{pid}/stat') as f:
+                ppid = int(f.read().rsplit(')', 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            continue
+        kids.setdefault(ppid, []).append(int(pid))
+    out, todo = [], [int(root_pid)]
+    while todo:
+        p = todo.pop()
+        out.append(p)
+        todo.extend(kids.get(p, []))
+    return out
+
+
+def _mapped_shm(pids):
+    # Excludes domain-global fastrtps_port segments: co-mapped by every DDS participant, never reclaim.
+    segs = set()
+    for pid in pids:
+        try:
+            with open(f'/proc/{pid}/maps') as f:
+                for line in f:
+                    i = line.find('/dev/shm/')
+                    if i == -1:
+                        continue
+                    path = line[i:].split()[0]
+                    base = os.path.basename(path)
+                    for pre in ('fastrtps_', 'sem.fastrtps_'):
+                        if base.startswith(pre):
+                            if not base[len(pre):].startswith('port'):
+                                segs.add(path)
+                            break
+        except OSError:
+            continue
+    return segs
+
+
+def _group_alive(pgid):
+    # True if any process is still in this process group.
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _reap_groups(groups, grace):
+    # Reaps orphaned setsid groups that remain after a mid-teardown parent death.
+    alive = [g for g in groups if _group_alive(g)]
+    if not alive:
+        return []
+    for g in alive:
+        try:
+            os.killpg(g, signal.SIGINT)
+        except ProcessLookupError:
+            pass
+    deadline = time.monotonic() + grace
+    while time.monotonic() < deadline and any(_group_alive(g) for g in alive):
+        time.sleep(0.3)
+    for g in alive:
+        if _group_alive(g):
+            try:
+                os.killpg(g, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+    return alive
+
+
+def sweep_stack_shm(owned, logger=None):
+    """Reclaim only the torn-down stack's own GUID segments that no live process still maps."""
+    if not owned:
+        return 0
+    held = _mapped_shm(int(p) for p in os.listdir('/proc') if p.isdigit())
+    removed = []
+    for seg in owned:
+        if seg in held or not os.path.exists(seg):
+            continue
+        base = os.path.basename(seg)
+        # GUID names are unique, so these globs cannot match another participant's live segment.
+        for path in glob.glob(f'/dev/shm/{base}*') + glob.glob(f'/dev/shm/sem.{base}*'):
+            try:
+                os.remove(path)
+                removed.append(os.path.basename(path))
+            except OSError:
+                pass
+    if removed and logger is not None:
+        logger.warn('reclaimed %d orphaned shm segment(s): %s' % (len(removed), ', '.join(removed)))
+    return len(removed)
+
+
+def _usb_rs_devices(pids):
+    # sysfs serial is the USB descriptor serial, NOT the librealsense camera serial:
+    # evidence only, never compare across the two.
+    devs = []
+    for d in sorted(glob.glob('/sys/bus/usb/devices/*/')):
+        try:
+            with open(os.path.join(d, 'idVendor')) as f:
+                vid = f.read().strip()
+            with open(os.path.join(d, 'idProduct')) as f:
+                pid = f.read().strip()
+        except OSError:
+            continue
+        if vid != RS_VID or pid not in pids:
+            continue
+        try:
+            with open(os.path.join(d, 'serial')) as f:
+                serial = f.read().strip()
+        except OSError:
+            serial = '?'
+        devs.append(f'{os.path.basename(d.rstrip("/"))} {vid}:{pid} serial={serial}')
+    return devs
+
+
+def _distinct_cam_ups(buf):
+    # Counts unique per-camera node tags (last [tag] before the marker), not raw marker
+    # occurrences: one camera re-emitting after a reconnect must never satisfy CAM_COUNT.
+    tags = set()
+    for line in buf.splitlines():
+        if CAM_UP_MARKER not in line:
+            continue
+        pre = line.split(CAM_UP_MARKER, 1)[0]
+        i, j = pre.rfind('['), pre.rfind(']')
+        tags.add(pre[i + 1:j] if 0 <= i < j else pre.strip())
+    return len(tags)
+
+
+def _squash(text):
+    # Multi-line evidence -> single ' | '-joined line for a SetBool response message.
+    return ' | '.join(line.strip() for line in text.splitlines() if line.strip())
+
+
+def _clip(msg, limit=RESP_MSG_MAX):
+    msg = _squash(msg)
+    if len(msg) <= limit:
+        return msg
+    return msg[:limit] + ' ...[truncated; full detail in supervisor log]'
+
+
+class _Stack:
+    def __init__(self, name, launch_pkg, launch_file, logger):
+        self.name = name
+        self.launch_pkg = launch_pkg
+        self.launch_file = launch_file
+        self.logger = logger
+        self.proc = None
+        self.started_at = None
+
+    def alive(self):
+        return self.proc is not None and self.proc.poll() is None
+
+    def start(self):
+        stack_dir = os.path.join(LOG_DIR, self.name)
+        os.makedirs(stack_dir, exist_ok=True)
+        log_path = os.path.join(stack_dir, f'{self.name}.log')
+        log = open(log_path, 'wb', buffering=0)
+        self.proc = subprocess.Popen(
+            ['ros2', 'launch', self.launch_pkg, self.launch_file],
+            stdout=log, stderr=subprocess.STDOUT, preexec_fn=os.setsid,
+        )
+        self.started_at = time.monotonic()
+        return log_path
+
+    def stop(self):
+        if not self.alive():
+            self.proc = None
+            return
+        try:
+            pgid = os.getpgid(self.proc.pid)
+        except ProcessLookupError:
+            self.proc = None
+            return
+        # Snapshot owned shm + every group (incl. setsid pipelines) before the kill.
+        descendants = _proc_descendants(self.proc.pid)
+        owned = _mapped_shm(descendants)
+        groups = set()
+        for pid in descendants:
+            try:
+                groups.add(os.getpgid(pid))
+            except ProcessLookupError:
+                pass
+        grace = SIGINT_GRACE_S.get(self.name, DEFAULT_SIGINT_GRACE_S)
+        # SIGINT first: nodes shut down cleanly and release their DDS shm; escalate only on stall.
+        if not self._signal_and_wait(pgid, signal.SIGINT, grace):
+            if not self._signal_and_wait(pgid, signal.SIGTERM, TERM_WAIT_S):
+                try:
+                    os.killpg(pgid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                try:
+                    self.proc.wait(timeout=3.0)
+                except subprocess.TimeoutExpired:
+                    pass
+        self.proc = None
+        reaped = _reap_groups(groups, TERM_WAIT_S)
+        if reaped:
+            self.logger.warn('%s: reaped %d straggler process group(s)' % (self.name, len(reaped)))
+        sweep_stack_shm(owned, self.logger)
+
+    def _signal_and_wait(self, pgid, sig, timeout):
+        # Wait for the WHOLE group, not just ros2 launch: returning early interrupts the
+        # RealSense destructor still releasing the camera USB (dirty camera on next init).
+        try:
+            os.killpg(pgid, sig)
+        except ProcessLookupError:
+            return True
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            self.proc.poll()   # reap ros2 launch so a dead leader doesn't hold the group open
+            if not _group_alive(pgid):
+                return True
+            time.sleep(0.2)
+        self.proc.poll()
+        return not _group_alive(pgid)
+
+
+class AridSupervisor(Node):
+    def __init__(self):
+        super().__init__('arid_supervisor')
+
+        self.vslam = _Stack('vslam', 'px4_vslam', 'vslam.launch.py', self.get_logger())
+
+        # ROS param so the exact PID can be pinned on-hardware without a code change.
+        self.rs_usb_pids = list(self.declare_parameter('rs_usb_pids', DEFAULT_RS_PIDS).value)
+        self.get_logger().info(
+            'front RealSense USB match: VID %s PID one of %s'
+            % (RS_VID, ', '.join(self.rs_usb_pids)))
+
+        self._lock = threading.Lock()
+        self._landed = None
+        self._landed_at = 0.0
+
+        px4_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=5,
+        )
+        self.create_subscription(
+            VehicleLandDetected, '/fmu/out/vehicle_land_detected',
+            self._land_cb, px4_qos,
+        )
+        self.create_service(SetBool, '~/vslam_enable', self._vslam_cb)
+        self.create_service(Trigger, '~/status', self._status_cb)
+
+        self.get_logger().info('arid_supervisor up - vslam_enable + status available')
+
+    def _land_cb(self, msg):
+        self._landed = bool(msg.landed)
+        self._landed_at = time.monotonic()
+
+    def _landed_fresh(self):
+        if self._landed is None:
+            return None
+        if time.monotonic() - self._landed_at > LAND_FRESH_S:
+            return None
+        return self._landed
+
+    def _gate_landed(self, resp, action):
+        state = self._landed_fresh()
+        if state is None:
+            resp.success = False
+            resp.message = f'land state unknown (no recent PX4 telemetry); cannot {action}'
+            return False
+        if not state:
+            resp.success = False
+            resp.message = f'drone not landed; land before {action}'
+            return False
+        return True
+
+    def _status_cb(self, req, resp):
+        with self._lock:
+            vslam = self.vslam.alive()
+            landed = self._landed_fresh()
+        resp.success = vslam
+        land = 'landed' if landed else ('airborne' if landed is False else 'unknown')
+        resp.message = f'vslam: {"running" if vslam else "stopped"} | land: {land}'
+        return resp
+
+    def _vslam_cb(self, req, resp):
+        with self._lock:
+            if req.data:
+                if self.vslam.alive():
+                    up_s = int(time.monotonic() - (self.vslam.started_at or time.monotonic()))
+                    resp.success = True
+                    resp.message = (f'vslam already running (up {up_s}s, '
+                                    f'{CAM_COUNT}/{CAM_COUNT} camera at bringup)')
+                    # Log the no-op: an unlogged idempotent return is invisible to post-run forensics.
+                    self.get_logger().info('vslam_enable(true) idempotent no-op: ' + resp.message)
+                    return resp
+                return self._vslam_enable_gated(resp)
+
+            if not self.vslam.alive():
+                resp.success = True
+                resp.message = 'vslam already stopped'
+                return resp
+
+            if not self._gate_landed(resp, 'disabling vslam'):
+                self.get_logger().warn(resp.message)
+                return resp
+
+            self.vslam.stop()
+            resp.success = True
+            resp.message = 'vslam stopped'
+            self.get_logger().info(resp.message)
+            return resp
+
+    # ------------------------------------------------------------------
+    # Camera-proven vslam bringup (runs under self._lock, from _vslam_cb).
+
+    def _vslam_enable_gated(self, resp):
+        # Blocks the single-threaded executor for the whole bringup; other callbacks queue behind it.
+        legacy = self._legacy_vslam_nodes()
+        if legacy:
+            msg = ('refusing vslam bringup: vslam nodes already on the ROS graph but NOT '
+                   'managed by this supervisor (legacy direct '
+                   "'ros2 launch px4_vslam vslam.launch.py'?): " + ', '.join(legacy)
+                   + '. Spawning over it would collide on node names/cameras. Stop that '
+                     'stack (Ctrl+C its ros2 launch / kill its process group), wait ~10s '
+                     'for its DDS lease to expire, then retry.')
+            self.get_logger().error(msg)
+            resp.success = False
+            resp.message = _clip(msg)
+            return resp
+
+        ok, msg = self._usb_precheck()
+        if not ok:
+            self.get_logger().error(msg)
+            resp.success = False
+            resp.message = _clip(msg)
+            return resp
+
+        # An unhandled raise here would leave a launched-but-unproven stack that the next
+        # enable(true) falsely no-ops as 'already running 1/1'.
+        try:
+            log = self.vslam.start()
+            self.get_logger().info(
+                f'vslam launching (log: {log}); gating on {CAM_COUNT}x RealSense bringup')
+            ok, elapsed, report1 = self._watch_vslam_log(log)
+            if ok:
+                resp.success = True
+                resp.message = f'vslam up: {CAM_COUNT}/{CAM_COUNT} camera in {elapsed:.0f}s'
+                self.get_logger().info(resp.message)
+                return resp
+            self.get_logger().error('vslam camera gate FAIL (attempt 1/2):\n' + report1)
+
+            # ONE recovery, no ladder. No land gate: pre-mission bringup, camera already unusable.
+            self.get_logger().warn('recovery: vslam teardown + /reset_usb + relaunch (single attempt)')
+            self.vslam.stop()
+            reset_ok, _ = self._reset_usb()
+            if not reset_ok:
+                self.get_logger().warn('/reset_usb failed - relaunching on the un-cycled bus anyway')
+            if not self._wait_usb_rs():
+                devs = _usb_rs_devices(self.rs_usb_pids)
+                self.get_logger().warn(
+                    'only %d/%d RealSense on USB after /reset_usb - relaunching anyway; devices: %s'
+                    % (len(devs), CAM_COUNT, '; '.join(devs) or '(none)'))
+            log = self.vslam.start()
+            self.get_logger().info(f'vslam relaunched (log: {log}); re-running camera gate')
+            ok, elapsed, report2 = self._watch_vslam_log(log)
+            if ok:
+                resp.success = True
+                resp.message = (f'vslam up: {CAM_COUNT}/{CAM_COUNT} camera in {elapsed:.0f}s '
+                                '(after one reset_usb recovery)')
+                self.get_logger().info(resp.message)
+                return resp
+            self.get_logger().error('vslam camera gate FAIL (attempt 2/2):\n' + report2)
+            self.vslam.stop()
+            full = ('vslam camera bringup failed twice (single-recovery policy); stack stopped. '
+                    '=== FAILURE 1 (initial) === ' + _squash(report1)
+                    + ' === FAILURE 2 (post-reset_usb) === ' + _squash(report2))
+            resp.success = False
+            resp.message = _clip(full)
+            return resp
+        except Exception as exc:  # noqa: BLE001 - deliberate catch-all: explicit failure over a false 'already running 1/1'
+            err = f'{type(exc).__name__}: {exc}'
+            self.get_logger().error(
+                'vslam bringup aborted by unexpected exception - stopping the unproven stack: ' + err)
+            cleanup = 'stack stopped'
+            try:
+                self.vslam.stop()
+            except Exception as stop_exc:
+                # Drop tracking so the next enable(true) cannot no-op; leftover processes trip the legacy guard.
+                self.vslam.proc = None
+                cleanup = (f'stack stop ALSO failed ({type(stop_exc).__name__}: {stop_exc}); '
+                           'tracking dropped - leftover processes will be refused by the legacy-node guard')
+                self.get_logger().error(cleanup)
+            resp.success = False
+            resp.message = _clip(f'vslam bringup aborted by unexpected exception ({err}); {cleanup}')
+            return resp
+
+    def _legacy_vslam_nodes(self):
+        # Only called when self.vslam is not alive, so any vslam node on the graph is foreign.
+        # --no-daemon forces fresh discovery; on CLI failure returns [] (introspection must
+        # never block bringup).
+        try:
+            out = subprocess.run(
+                ['ros2', 'node', 'list', '--no-daemon'],
+                capture_output=True, text=True, timeout=LEGACY_SCAN_TIMEOUT_S,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            self.get_logger().warn(
+                f'legacy-vslam graph check skipped ({type(exc).__name__}: {exc})')
+            return []
+        return [n.strip() for n in out.stdout.splitlines()
+                if 'visual_slam' in n or 'vslam_container' in n]
+
+    def _usb_precheck(self):
+        # A camera absent from USB cannot be fixed by launching drivers: one /reset_usb, then fail.
+        devs = _usb_rs_devices(self.rs_usb_pids)
+        self.get_logger().info(
+            'usb pre-check: %d/%d RealSense (VID %s) on the bus'
+            % (len(devs), CAM_COUNT, RS_VID))
+        if len(devs) >= CAM_COUNT:
+            return True, ''
+        self.get_logger().warn(
+            'only %d/%d RealSense on USB - devices: %s; issuing one /reset_usb'
+            % (len(devs), CAM_COUNT, '; '.join(devs) or '(none)'))
+        reset_ok, reset_out = self._reset_usb()
+        if not reset_ok:
+            return False, (
+                'usb pre-check: only %d/%d RealSense on USB and /reset_usb failed (%s) - cannot '
+                'recover; not launching vslam. devices: %s'
+                % (len(devs), CAM_COUNT, reset_out, '; '.join(devs) or '(none)'))
+        if self._wait_usb_rs():
+            self.get_logger().info(
+                'usb pre-check: %d/%d RealSense back after /reset_usb' % (CAM_COUNT, CAM_COUNT))
+            return True, ''
+        devs = _usb_rs_devices(self.rs_usb_pids)
+        return False, (
+            'usb pre-check: still %d/%d RealSense (VID %s) on USB after /reset_usb - camera(s) '
+            'absent from the bus (dead VBUS/cable/port); not launching vslam. devices: %s'
+            % (len(devs), CAM_COUNT, RS_VID, '; '.join(devs) or '(none)'))
+
+    def _wait_usb_rs(self):
+        # Poll for re-enumeration after /reset_usb (power cycle ~5 s + enumeration ~10 s).
+        deadline = time.monotonic() + USB_REENUM_WAIT_S
+        while True:
+            if len(_usb_rs_devices(self.rs_usb_pids)) >= CAM_COUNT:
+                return True
+            if time.monotonic() >= deadline:
+                return len(_usb_rs_devices(self.rs_usb_pids)) >= CAM_COUNT
+            time.sleep(2.0)
+
+    def _reset_usb(self):
+        # ros2 CLI subprocess, NOT an rclpy client: a sync client call inside this service
+        # callback deadlocks the single-threaded executor.
+        # SAFETY: /reset_usb power-cycles the ARK PAB USB hub the RealSense is on and pulses
+        # the FMU reset line (GPIO85); pre-mission bringup only, drone disarmed on the ground.
+        try:
+            out = subprocess.run(
+                ['ros2', 'service', 'call', '/reset_usb', 'std_srvs/srv/Trigger', '{}'],
+                capture_output=True, text=True, timeout=RESET_USB_TIMEOUT_S,
+            )
+            text = (out.stdout + out.stderr).strip()
+            ok = out.returncode == 0 and 'success=True' in text
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            text, ok = f'{type(exc).__name__}: {exc}', False
+        if not ok:
+            # Fallback: start the host unit directly over the mounted D-Bus socket
+            # (polkit authorizes uid 1000); covers a down usb_ros_reset.service.
+            try:
+                out = subprocess.run(
+                    ['systemctl', 'start', 'reset_usb.service'],
+                    capture_output=True, text=True, timeout=RESET_USB_TIMEOUT_S,
+                )
+                fb = (out.stdout + out.stderr).strip()
+                if out.returncode == 0:
+                    ok, text = True, 'systemctl fallback: reset_usb.service started'
+                else:
+                    text += ' | systemctl fallback: ' + fb
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                text += f' | systemctl fallback: {type(exc).__name__}: {exc}'
+        if ok:
+            self.get_logger().info('/reset_usb: ok')
+        else:
+            self.get_logger().error('/reset_usb: FAILED - ' + _clip(text, 300))
+        return ok, _squash(text)
+
+    def _watch_vslam_log(self, log_path):
+        # Tail the per-launch-truncated log so counts are scoped to this generation.
+        # Returns (ok, elapsed_s, failure_report); report is '' on success.
+        start = time.monotonic()
+        buf = ''
+        try:
+            f = open(log_path, 'r', errors='replace')
+        except OSError as exc:
+            return False, 0.0, f'GATE FAIL: cannot open vslam log {log_path}: {exc}'
+        with f:
+            while True:
+                buf += f.read()
+                elapsed = time.monotonic() - start
+                if CAM_ERR_MARKER in buf:
+                    return False, elapsed, self._gate_report(
+                        buf, f"'{CAM_ERR_MARKER}' in vslam log "
+                             '(terminal per camera - retry patch reverted)', elapsed)
+                ups = _distinct_cam_ups(buf)
+                if ups >= CAM_COUNT:
+                    return True, elapsed, ''
+                if not self.vslam.alive():
+                    return False, elapsed, self._gate_report(
+                        buf, f'vslam launch process exited during bringup ({ups}/{CAM_COUNT} up)',
+                        elapsed)
+                if elapsed >= CAM_GATE_BACKSTOP_S:
+                    return False, elapsed, self._gate_report(
+                        buf, f'backstop: only {ups}/{CAM_COUNT} up after '
+                             f'{int(CAM_GATE_BACKSTOP_S)}s (silent hang, no driver error)', elapsed)
+                time.sleep(CAM_GATE_POLL_S)
+
+    def _gate_report(self, buf, reason, elapsed):
+        # Verbatim driver evidence: error lines, cameras that did come up, last WARN/ERROR lines.
+        lines = buf.splitlines()
+        err = [l for l in lines if CAM_ERR_MARKER in l]
+        up = [l for l in lines if CAM_UP_MARKER in l]
+        warn = [l for l in lines if '[WARN]' in l or '[ERROR]' in l][-5:]
+
+        def block(title, ls):
+            body = '\n'.join('  ' + l for l in ls) if ls else '  (none)'
+            return f'-- {title}:\n{body}'
+
+        return (f'GATE FAIL after {elapsed:.1f}s: {reason}\n'
+                + block(f"'{CAM_ERR_MARKER}' lines (verbatim, incl. exception text)", err) + '\n'
+                + block(f"cameras that DID come up ('{CAM_UP_MARKER}')", up) + '\n'
+                + block('last WARN/ERROR lines', warn))
+
+    def shutdown(self):
+        with self._lock:
+            self.vslam.stop()
+
+
+def main():
+    rclpy.init()
+    node = AridSupervisor()
+
+    # Treat SIGTERM (systemctl stop / ExecStop) like Ctrl+C so the finally tears down child stacks instead of orphaning them.
+    def _terminate(signum, frame):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, _terminate)
+
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.shutdown()
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()

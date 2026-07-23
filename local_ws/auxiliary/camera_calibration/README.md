@@ -1,40 +1,35 @@
 # camera_calibration
 
-Wrapper around ROS 2's `camera_calibration` tool for running the GUI calibrator against any image topic on the drone.
+`cam_down` calibration launcher wrapping ROS 2's `camera_calibration` GUI. The GUI renders over a **NoMachine remote display**: connect a session first.
 
-Built to work over a **NoMachine remote display**. The calibrator GUI renders on the Jetson and streams back to the workstation. The script auto-detects the `DISPLAY` socket under `/tmp/.X11-unix/` so no manual `DISPLAY` export is needed after SSH or NoMachine connects.
+## `camera_calibration_auto/camera_calibrate.sh`
 
-It also isolates itself in a local venv (`calib_env/`) pinned to `numpy<2`, because ROS 2 Humble's `cv_bridge` is compiled against NumPy 1.x and breaks with NumPy 2.x.
-
-## Usage
-
-With no arguments, the script queries the ROS graph for every live `sensor_msgs/msg/Image` topic and presents an interactive numbered menu. Pick the camera to calibrate:
+Calibrates the downward `cam_down` CSI pipeline; wired into `setup.sh` (menu option 8). Takes no argument.
 
 ```bash
-./camera_calibrate.sh
+./camera_calibration_auto/camera_calibrate.sh
 ```
 
-Example output:
+Flow:
 
-```
-[calib] Select an image topic to calibrate (or Ctrl-C to abort):
-1) /cam_down/image_raw
-[calib] > 1
-```
+- starts `cam_down` via the `gst_camera_manager` service (starting the systemd unit if needed), waits for frames, runs the calibrator, stops the camera on exit
+- waits up to `NM_WAIT_S` seconds (default 180) for a NoMachine viewer, then skips cleanly
+- saves the result to the store (`camera_calibrations/cam_down/`: timestamped record + current `cam_down.yaml`) and applies it to the live pipeline file (`ros_gst_cameras/gst_camera_manager/config/calibrations/cam_down.yaml`); takes effect on the next pipeline restart
 
-`CAMERA_NS` is auto-derived from the selected topic (strips the trailing segment, e.g. `/cam_down/image_raw` becomes `/cam_down`).
+Board: prompts for a custom board (columns/rows in squares + square size in mm), or Enter/`n` uses the included 10x7-square / 50 mm board at `../calibration_pattern/calib_pattern.pdf`.
 
-**Scripted (non-interactive):** set `IMAGE_TOPIC` explicitly and the menu is skipped:
+Env overrides skip the prompt:
 
 ```bash
-SIZE=9x7 SQUARE=0.030 IMAGE_TOPIC=/cam_down/image_raw \
-    ./camera_calibrate.sh
+SIZE=9x6 SQUARE=0.050 ROS_DOMAIN_ID=23 NM_WAIT_S=180 \
+    ./camera_calibration_auto/camera_calibrate.sh
 ```
 
-Click **Save** in the GUI before closing. The script extracts `ost.yaml` and writes it next to itself as `<topic_slug>_calibration.yaml` (e.g. `cam_down_image_raw_calibration.yaml`). Re-calibrating the same topic overwrites the previous file.
+After the first successful run, set `calibration: "cam_down"` in the `cam_down` entry of `pipelines.yaml` (it ships empty) so the pipeline loads the new intrinsics.
 
 ## Files
 
-- `camera_calibrate.sh`: the launcher.
-- `calib_env/`: auto-created venv (gitignored).
-- `*_calibration.yaml`: saved calibrations, one per topic slug (gitignored).
+- `camera_calibration_auto/camera_calibrate.sh`: the `cam_down` calibrator
+- `calibration_pattern/calib_pattern.pdf`: included 10x7-square / 50 mm checkerboard
+- `camera_calibrations/`: per-camera store (current `<name>.yaml` tracked, timestamped records gitignored)
+- `camera_calibration_auto/calib_env/`: auto-created venv (gitignored)

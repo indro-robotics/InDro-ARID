@@ -1,12 +1,20 @@
 #!/bin/bash
-# Start the VSLAM stack via the supervisor:
-#   /vslam_supervisor/vslam_enable -> true
-# Idempotent. The supervisor itself is started at boot by vslam_supervisor.service.
+# Start the VSLAM stack: /arid_supervisor/vslam_enable -> true. Idempotent.
 set -u
 
+# The bringup gate blocks ~15 s healthy, up to ~3 min worst; cap the call and surface a
+# stalled supervisor.
+CALL_TIMEOUT_S=300
+
 call() {
-    local svc="$1" data="$2" out msg
-    if ! out=$(ros2 service call "${svc}" std_srvs/srv/SetBool "{data: ${data}}" 2>&1); then
+    local svc="$1" data="$2" out rc msg
+    out=$(timeout "${CALL_TIMEOUT_S}" ros2 service call "${svc}" std_srvs/srv/SetBool "{data: ${data}}" 2>&1)
+    rc=$?
+    if [ "${rc}" -eq 124 ]; then
+        echo "  ${svc}: no response within ${CALL_TIMEOUT_S}s (supervisor may be stalled)"
+        return 1
+    fi
+    if [ "${rc}" -ne 0 ]; then
         echo "  ${svc}: call failed"
         echo "${out}" | sed 's/^/    /'
         return 1
@@ -20,12 +28,12 @@ call() {
     return 1
 }
 
-if ! ros2 service list 2>/dev/null | grep -q '^/vslam_supervisor/vslam_enable$'; then
-    echo "ERROR: /vslam_supervisor/* services not on the graph - supervisor not running." >&2
-    echo "       Check 'sudo systemctl status vslam_supervisor.service' on the host." >&2
+if ! ros2 service list 2>/dev/null | grep -q '^/arid_supervisor/vslam_enable$'; then
+    echo "ERROR: /arid_supervisor/* services not on the graph - supervisor not running." >&2
+    echo "       Check 'sudo systemctl status arid_supervisor.service' on the host." >&2
     exit 1
 fi
 
 echo "Starting VSLAM stack:"
-call /vslam_supervisor/vslam_enable true || exit 1
+call /arid_supervisor/vslam_enable true || exit 1
 echo "Services come up in a few seconds."

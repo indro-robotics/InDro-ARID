@@ -5,9 +5,9 @@ from launch_ros.actions import Node
 def generate_launch_description():
     return LaunchDescription([
         Node(
-            package='vslam_supervisor',
-            executable='vslam_supervisor_node',
-            name='vslam_supervisor',
+            package='arid_supervisor',
+            executable='arid_supervisor_node',
+            name='arid_supervisor',
             output='screen',
         ),
     ])

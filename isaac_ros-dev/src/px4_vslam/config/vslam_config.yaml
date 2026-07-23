@@ -3,7 +3,7 @@ front_realsense/front_realsense_link:
     enable_infra1: true
     enable_infra2: true
     enable_color: true
-    enable_sync: true
+    enable_sync: false          # rs2 syncer would batch 90Hz infra onto the 15fps color cadence; off keeps IR at native 90Hz
     enable_depth: false
     depth_module:
       emitter_enabled: 0

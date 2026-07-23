@@ -1,6 +1,6 @@
 # rslidar_coordinator
 
-Supervisor for the RoboSense RSAIRY 3-D LiDAR. The coordinator owns the SDK config and spawns `rslidar_sdk_node` (from the upstream [`rslidar_sdk`](https://github.com/RoboSense-LiDAR/rslidar_sdk) submodule) as a managed subprocess. The `rslidar_sdk` submodule is never patched; this package passes its own config to the SDK via the `config_path` ROS parameter at spawn time.
+Supervisor for the RoboSense RSAIRY 3-D LiDAR. Spawns `rslidar_sdk_node` (from the upstream [`rslidar_sdk`](https://github.com/RoboSense-LiDAR/rslidar_sdk) submodule, unpatched) as a managed subprocess and passes this package's SDK config via the `config_path` ROS parameter at spawn time.
 
 Mirrors the operational shape of [`gst_camera_manager`](../ros_gst_cameras/): the LiDAR pipeline is **idle at boot**, started on demand via a `SetBool` service. Clean stop, status, and restart from any ROS client, plus a latched `/alive` Bool other consumers can subscribe to with TRANSIENT_LOCAL QoS.
 
@@ -8,10 +8,10 @@ Mirrors the operational shape of [`gst_camera_manager`](../ros_gst_cameras/): th
 |---|---|
 | Sensor | RoboSense RSAIRY (Ethernet, solid-state hemispheric scanner) |
 | Driver | `rslidar_sdk_node` (binary from `rslidar_sdk` submodule at tag `v1.5.19`; nested `rs_driver` at `v1.5.19`) |
-| Messages | `rslidar_msg` submodule at tag `v1.5.10` (pure message definitions, no node or launch) |
+| Messages | `rslidar_msg` submodule at tag `v1.5.9` (pure message definitions, no node or launch) |
 | Coordinator | `rslidar_coordinator_node.py` (Python, this package) |
 | Cloud topic | `/rslidar_points` (`sensor_msgs/PointCloud2`, BEST_EFFORT, frame `rslidar_link`) |
-| IMU topic | **Not published.** IMU parsing is gated by the SDK's `ENABLE_IMU_DATA_PARSE` cmake flag, deliberately not flipped (keeps the submodule untouched). `imu_port: 0` in the YAML. |
+| IMU topic | **Not published.** IMU parsing is gated by the SDK's `ENABLE_IMU_DATA_PARSE` cmake flag, not flipped. `imu_port: 6688` binds the socket but no IMU messages are produced. |
 | Mount frame | `rslidar_link` (fixed-joint child of `base_link` in `arid_description/xacro/arid.xacro`) |
 
 ---
@@ -33,7 +33,7 @@ The systemd unit `rslidar_coordinator.service` (installed by the workspace-level
 
 | Service | Type | What it does |
 |---|---|---|
-| `/rslidar_coordinator/enable` | `std_srvs/SetBool` | `data: true` spawns `rslidar_sdk_node`. `data: false` SIGTERMs the process group (3 s grace), then SIGKILL fallback. Returns only after the SDK binary is genuinely gone. |
+| `/rslidar_coordinator/enable` | `std_srvs/SetBool` | `data: true` spawns `rslidar_sdk_node`. `data: false` SIGTERMs the process group (3 s grace), then SIGKILL fallback. Returns only after the SDK binary has exited. |
 | `/rslidar_coordinator/status` | `std_srvs/Trigger` | Returns `RUNNING (pid=N)` or `STOPPED`. |
 | `/rslidar_coordinator/restart` | `std_srvs/Trigger` | Stop then start. |
 
@@ -67,15 +67,13 @@ The SDK chain is `ros2 run rslidar_sdk rslidar_sdk_node ...`. The `ros2` Python 
 1. **Spawn:** `subprocess.Popen(cmd, preexec_fn=os.setsid)`. The child becomes the leader of a new session AND process group, with `pgid == pid`. `self.proc_pgid` is cached at spawn time so the group ID stays valid after the wrapper exits.
 2. **Terminate:** `killpg(pgid, SIGTERM)` signals every process in the group. Then `_wait_pgroup_empty(pgid, terminate_grace)` polls.
 3. **Wait loop:** each iteration does `self.proc.poll()` (reaps the wrapper's zombie; zombies count as group members under `killpg(0)`), then `killpg(pgid, 0)` (existence check). Raises `ProcessLookupError` when the group has no live members. Without the in-loop `poll()`, the wait never sees the group as empty because the zombie wrapper lingers.
-4. **SIGKILL fallback:** if the group hasn't drained after `terminate_grace` (default 3 s), `killpg(pgid, SIGKILL)`, then another 2 s wait.
-
-Net effect: `rslidar_stop` only returns "stopped" once the SDK binary is genuinely gone.
+4. **SIGKILL fallback:** if the group has not drained after `terminate_grace` (default 3 s), `killpg(pgid, SIGKILL)`, then another 2 s wait.
 
 ---
 
 ## Config: `config/rslidar.yaml`
 
-This package owns the SDK config. The `rslidar_sdk` submodule is never patched. The coordinator passes the config's absolute install-share path via the SDK node's `config_path` ROS parameter at spawn:
+The coordinator passes the config's absolute install-share path via the SDK node's `config_path` ROS parameter at spawn:
 
 ```bash
 ros2 run rslidar_sdk rslidar_sdk_node \
@@ -89,19 +87,19 @@ YAML summary:
 | `lidar_type` | `RSAIRY` | |
 | `msop_port` | `6699` | point-cloud packets |
 | `difop_port` | `7788` | device info |
-| `imu_port` | `0` | IMU disabled (SDK parser gated by compile-time flag) |
-| `min_distance` | `0.5` m | filter out close-range prop reflections |
-| `max_distance` | `20.0` m | adjust for op envelope |
-| `use_lidar_clock` | `true` | timestamps from LiDAR clock |
+| `imu_port` | `6688` | socket bound only; parser gated off in the SDK build, no IMU messages produced |
+| `min_distance` | `0.2` m | near-range cutoff |
+| `max_distance` | `200` m | far-range cutoff |
+| `use_lidar_clock` | `false` | host ROS time; `true` needs PTP sync or TF lookups fail |
 | `dense_points` | `true` | strip NaN points at source |
-| `ts_first_point` | `true` | timestamp uses first point in scan |
+| `ts_first_point` | `false` | timestamp = end of scan (ROS convention) |
 | `ros_frame_id` | `rslidar_link` | matches xacro |
 | `ros_send_point_cloud_topic` | `/rslidar_points` | |
-| `ros_queue_length` | `10` | publisher queue depth |
+| `ros_queue_length` | `5` | publisher queue depth (matches sensor_data QoS) |
 
-`pcap_*` fields are deliberately omitted (only used in `msg_source: 3` file-replay mode). `ros_recv_packet_topic` is omitted (this package publishes, does not subscribe). `ros_send_imu_data_topic` is omitted (no IMU).
+`pcap_*` fields are omitted (only used in `msg_source: 3` file-replay mode). `ros_recv_packet_topic` / `ros_send_packet_topic` (`/rslidar_packets`) and `ros_send_imu_data_topic` (`/rslidar_imu_data`) are set but unused: `send_packet_ros: false` and no IMU parser, so neither topic carries data.
 
-This file is **not** marked skip-worktree. The values are deliberate defaults the team agreed on. Add skip-worktree later if site-specific overrides become a concern.
+This file is **not** marked skip-worktree: the values are shared defaults, not per-deployment.
 
 ---
 
@@ -157,29 +155,14 @@ This package intentionally does NOT:
 
 ## Operational reference
 
-```bash
-# Verify the coordinator service is up
-systemctl status rslidar_coordinator
-
-# Start
-rslidar_start
-
-# Verify cloud is flowing in the right frame
-ros2 topic echo --once --qos-reliability best_effort /rslidar_points --field header
-
-# Read the latched alive Bool
-rslidar_alive
-
-# Watch logs live
-journalctl -u rslidar_coordinator -f
-
-# Stop
-rslidar_stop
-
-# Run the diagnostic when something looks wrong
-lidar_diag
-sudo lidar_diag
-```
+| Command | Action |
+|---|---|
+| `systemctl status rslidar_coordinator` | Coordinator service state. |
+| `rslidar_start` / `rslidar_stop` | Start / stop the SDK subprocess. |
+| `ros2 topic echo --once --qos-reliability best_effort /rslidar_points --field header` | Verify cloud flow + frame. |
+| `rslidar_alive` | Read the latched alive Bool. |
+| `journalctl -u rslidar_coordinator -f` | Live logs. |
+| `lidar_diag` (`sudo` for sniff/scan steps) | Full network + runtime diagnostic. |
 
 ---
 

@@ -1,15 +1,15 @@
 # arid_description
 
-Xacro description and meshes for the **ARID** quadrotor platform by InDro Robotics.
+Xacro description and meshes for the **ARID** quadrotor by InDro Robotics.
 
-![ARID drone](doc/arid.png)
+![ARID drone](doc/arid_description.png)
 
 ## Contents
 
-- `xacro/arid.xacro`: full robot description. Includes `base_link`, `autopilot`, 4 propellers, 1 RealSense camera (front), 1 RoboSense LiDAR (`rslidar_link`), 1 CV camera (`bottom_visual_link`, down-facing CSI), optical flow, rangefinder, and `base_footprint`. Uses xacro macros for the propeller and RealSense groups.
-- `meshes/arid_model.stl`: visual mesh of the full airframe. Collision is a `<box>` primitive defined inline in the xacro.
-- `launch/display.launch.py`: starts `robot_state_publisher` with optional `joint_state_publisher_gui` and RViz.
-- `rviz/arid.rviz`: default RViz display config.
+- `xacro/arid.xacro`: full robot description (`base_link`, `autopilot`, 4 propellers, 1 RealSense camera, 1 RoboSense LiDAR, 1 down-facing CV camera, optical flow, rangefinder, `base_footprint`)
+- `meshes/arid_model.stl`: visual mesh (collision is an inline `<box>`)
+- `launch/display.launch.py`: `robot_state_publisher` with optional GUI and RViz
+- `rviz/arid.rviz`: default RViz config
 
 ## Build and launch
 
@@ -20,42 +20,38 @@ source install/setup.bash
 ros2 launch arid_description display.launch.py
 ```
 
-`robot_state_publisher` then publishes:
+Publishes:
 
-- `/robot_description`: latched `std_msgs/String` with the expanded URDF. Consumed by RViz, Foxglove, and MoveIt.
-- `/tf_static`: the full fixed-joint transform tree for all sensor, propeller, and airframe frames.
+- `/robot_description`: latched expanded URDF (RViz, Foxglove)
+- `/tf_static`: full fixed-joint transform tree
 
-**Auto-start on boot:** `arid_description.service` (installed by `setup.sh`) runs this launch file as a systemd unit, so the TF tree is available system-wide without manual steps.
+**Auto-start:** `arid_description.service` (installed by `setup.sh`) runs this launch at boot.
 
 ### Launch arguments
 
-| Arg | Default | Description |
-|-----|---------|-------------|
-| `rviz` | `false` | Launch RViz with `arid.rviz` preloaded. |
-| `gui` | `false` | Launch `joint_state_publisher_gui`. Not useful here, since all joints are fixed. |
+| Arg | Default | Function |
+|-----|---------|----------|
+| `rviz` | `false` | RViz with `arid.rviz` preloaded |
+| `gui` | `false` | `joint_state_publisher_gui` (no effect: all joints fixed) |
 
 ## Xacro structure
 
-[`xacro/arid.xacro`](xacro/arid.xacro) defines the robot with:
-
-**Properties** (tune these to rebuild the geometry at different scales or spans):
+**Properties** (tune to rebuild geometry):
 
 | Property | Value | Meaning |
 |---|---|---|
-| `mesh_scale` | `0.0001` | Multiplier applied to the STL. The mesh is natively in mm; URDF uses meters. |
-| `propeller_span` | `0.0975` | Half the propeller-to-propeller distance along one axis. Propellers sit at `(±span, ±span)`. |
+| `mesh_scale` | `0.0001` | STL is mm, URDF is meters. |
+| `propeller_span` | `0.0975` | Propellers are at `(±span, ±span)`. |
 | `realsense_z` | `0.092042` | Z-offset of the front RealSense camera from `base_link`. |
 
 **Macros:**
 
-- `propeller(name, x, y)`: instantiates a propeller link and its fixed joint. Used 4× for `front_left`, `front_right`, `rear_left`, `rear_right`.
-- `realsense(name, x, y, yaw)`: instantiates a RealSense camera link at `(x, y, realsense_z)` with the given yaw. Used 1× for `front`.
+- `propeller(name, x, y)`: propeller link + fixed joint; 4x (`front_left`, `front_right`, `rear_left`, `rear_right`)
+- `realsense(name, x, y, yaw)`: RealSense link at `(x, y, realsense_z)`; 1x (`front`)
 
-Unique links (autopilot, bottom visual camera, flow, rangefinder, rslidar) are inlined to preserve their specific joint names.
+Unique links (autopilot, bottom visual camera, flow, rangefinder, rslidar) are inlined to keep their joint names.
 
 ## Frames
-
-TF tree rooted at `base_footprint` → `base_link`:
 
 ```
 base_footprint
@@ -70,21 +66,19 @@ base_footprint
     └── rangefinder_link
 ```
 
-All joints are fixed. The RealSense frame sits at the left IR lens per the `realsense-ros` convention.
+All joints fixed. The RealSense frame is at the left IR lens (`realsense-ros` convention).
 
 ## Visualization in Foxglove
 
-Requires [Foxglove Studio](https://foxglove.dev/download) (desktop or web) and the `foxglove_bridge` package (`sudo apt install ros-humble-foxglove-bridge`).
-
-Run the `robot_state_publisher` in one terminal and the `foxglove_bridge` WebSocket (port 8765) in another:
+With this launch running, start the `foxglove_bridge` alias in another terminal:
 
 ```bash
 ros2 launch arid_description display.launch.py
-ros2 run foxglove_bridge foxglove_bridge
+foxglove_bridge
 ```
 
-In Foxglove Studio, open a connection to `ws://<device-ip>:8765` (use `localhost` on the same machine), add a 3D panel, then in the panel settings under **Custom Layers > Add > URDF** set topic `/robot_description` and set the panel **Frame** to `base_link`.
+Connect Studio to `ws://<device-ip>:8765`; URDF on `/robot_description`, panel frame `base_link`. Studio setup: root [README](../../../README.md) Foxglove section.
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE).
+Apache-2.0: see [LICENSE](LICENSE).

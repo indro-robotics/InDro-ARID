@@ -17,5 +17,9 @@ local_ws/auxiliary/camera_calibration/*_calibration.yaml
 # Ignore timestamped calibration records under the store; the per-camera <name>.yaml stays tracked.
 local_ws/auxiliary/camera_calibration/camera_calibrations/*/*_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_*.yaml
 
+# run_logs: contents anywhere + the root convenience symlink
+**/run_logs/
+/run_logs
+
 # Local machine state (auto-detected LiDAR config, etc.; written by scripts/config_lidar.sh)
 .lidar/

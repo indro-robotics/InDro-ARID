@@ -89,7 +89,7 @@ class RslidarCoordinator(Node):
 
         rc = self.proc.poll()
         if rc is not None:
-            self.get_logger().error(f'{SDK_EXEC} died (exit={rc})')
+            self.get_logger().error(f'{SDK_EXEC} exited unexpectedly (exit={rc})')
             self.proc = None
             self.last_frame_time = None
             self._publish_alive(False)

@@ -3,7 +3,7 @@ from glob import glob
 
 from setuptools import find_packages, setup
 
-package_name = 'vslam_supervisor'
+package_name = 'arid_supervisor'
 
 setup(
     name=package_name,
@@ -18,11 +18,12 @@ setup(
     zip_safe=True,
     maintainer='Calvin-InDro',
     maintainer_email='calvin.rubens@indrorobotics.com',
-    description='Lifecycle supervisor for the px4_vslam stack',
+    description='Always-on supervisor for the ARID VSLAM stack.',
     license='Apache License 2.0',
+    tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'vslam_supervisor_node = vslam_supervisor.vslam_supervisor_node:main',
+            'arid_supervisor_node = arid_supervisor.arid_supervisor_node:main',
         ],
     },
 )

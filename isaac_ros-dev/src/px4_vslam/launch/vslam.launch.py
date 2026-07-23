@@ -39,7 +39,7 @@ def generate_launch_description():
              '--once',
              '--qos-durability', 'transient_local',
              '--qos-reliability', 'reliable'],
-        output='log',   # URDF content is huge; don't spam the console
+        output='log',   # URDF content is large; keep it out of the console
         name='wait_for_robot_description',
     )
 

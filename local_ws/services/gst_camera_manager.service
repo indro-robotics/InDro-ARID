@@ -8,8 +8,9 @@ After=systemd-user-sessions.service
 User=jetson
 Type=simple
 Environment="ROS_DOMAIN_ID=23"
+Environment="ROS_LOCALHOST_ONLY=1"
 Environment="HOME=/home/jetson"
-ExecStart=/bin/bash -c 'source /opt/ros/humble/setup.bash; source /home/jetson/workspaces/local_ws/install/setup.bash; ros2 launch gst_camera_manager gst_camera_manager.launch.py'
+ExecStart=/bin/bash -c 'set -o pipefail; d=/home/jetson/workspaces/isaac_ros-dev/run_logs/gst_camera_manager; mkdir -p "$$d"; [ -f "$$d/gst_camera_manager.log" ] && mv -f "$$d/gst_camera_manager.log" "$$d/gst_camera_manager.prev.log"; source /opt/ros/humble/setup.bash; source /home/jetson/workspaces/local_ws/install/setup.bash; ros2 launch gst_camera_manager gst_camera_manager.launch.py 2>&1 | tee "$$d/gst_camera_manager.log"'
 Restart=on-failure
 RestartSec=5s
 

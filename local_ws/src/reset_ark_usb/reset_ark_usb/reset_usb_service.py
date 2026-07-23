@@ -15,7 +15,7 @@ class ResetUsbService(Node):
         
     def reset_callback(self, request, response):
         try:
-            # Use explicit sudo with absolute path to systemctl
+            # Absolute /bin/systemctl path: the sudoers NOPASSWD rule matches on it.
             result = subprocess.run(
                 ['sudo', '/bin/systemctl', 'start', 'reset_usb.service'],
                 check=True,

@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>vslam_supervisor</name>
+  <name>arid_supervisor</name>
   <version>0.0.1</version>
-  <description>Lifecycle supervisor for the px4_vslam stack. Hosts a SetBool service to start and stop the VSLAM launch as a managed subprocess with a landed-state safety gate.</description>
+  <description>Always-on supervisor for the ARID VSLAM stack. Hosts a SetBool service to start/stop px4_vslam as a managed subprocess with a camera-proven bringup gate and a landed-state safety interlock.</description>
   <maintainer email="calvin.rubens@indrorobotics.com">Calvin-InDro</maintainer>
   <license>Apache License 2.0</license>
 

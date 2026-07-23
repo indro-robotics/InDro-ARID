@@ -1,9 +1,11 @@
 #!/usr/bin/env python
 import rclpy
 import numpy as np
+
+CADENCE_ANOMALY_CEILING_S = 5.0   # stamp gap beyond this = stamp anomaly, never a gate trigger
 import message_filters
 from rclpy.node import Node
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, UInt8, UInt32
 from std_srvs.srv import Trigger
 from nav_msgs.msg import Odometry
 from rclpy.qos import QoSProfile, \
@@ -23,33 +25,54 @@ from isaac_ros_visual_slam_interfaces.msg import VisualSlamStatus
 
 
 class vslam_reactor(Node):
-    def __init__(self):
+    def __init__(self): 
         super().__init__('vslam_reactor_node')
 
-        # Tunable parameters declared with defaults, overridden by config/px4_vslam_reactor.yaml
+        # Tunable parameters: declared with defaults, overridden by config/px4_vslam_reactor.yaml
         # (loaded by px4_vslam/launch/vslam.launch.py). Must run before sync_cache_sz is used below.
         self._load_params()
 
-        # REACTOR CONTROL STATE
+        # REACTOR CONTROL PARAMETERS
         self.init_flag = True
+        self._last_px4_rx = self.get_clock().now()
+        self._fmu_stamp_excursions = 0                      # FMU stamp skew clamp events (telemetry)
         self.vslam_status = 0
         self.vslam_busy = False
+        self._vslam_busy_since = self.get_clock().now()
         self.new_set_pose_call = False
         self.ev_fusion_started = False                      # PX4 EV fusion
+        self._vio_reset_epoch = 0                           # bumped on each committed re-seat -> EKF2 reset_counter
         self.last_set_pose_time = self.get_clock().now()
 
         self.fmu_local_position = Vector3Stamped()
         self.last_vslam_odom_msg = Odometry()
 
-        self.fmu_lockout = False
+
+
+        # Cadence-health gate: withholds VO from EKF2 while the cuVSLAM frame cadence is broken
+        # (camera-swap starvation produces smooth-but-stale poses that vo_state and the jump gate
+        # cannot see; fusing them causes a lag -> failover -> reset cascade). Dedicated stamp var:
+        # last_vslam_odom_msg's stamp can be frozen by the jump path, so it is NOT a valid cadence
+        # reference.
+        self._last_cadence_stamp = None       # rclpy Time of previous VO header.stamp
+        self._cadence_gated = False           # currently withholding
+        self._cadence_nominal_run = 0         # consecutive nominal-cadence samples while gated
+        self._cadence_gate_t0 = None          # node-clock time the current gate engaged
+        self._cadence_gated_frames = 0        # frames seen during the current gated window
+        self._cadence_gate_count = 0          # cumulative gate events (telemetry)
+        self._cadence_trigger_gap_ms = 0.0    # gap that engaged the current gate (silence accounting)
+
         self.R_FRD_TO_FLU = R.from_euler('x', np.pi)
 
+        ### TF BUFFERING ###########################################################################
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
+        ### CALLBACK GROUPS ########################################################################
         self.vslam_cbg = MutuallyExclusiveCallbackGroup()
         self.gen_processing_cbg = MutuallyExclusiveCallbackGroup()
 
+        ### QoS PARAMETERS #########################################################################
         self.qos_fmu = QoSProfile(
             reliability=QoSReliabilityPolicy.BEST_EFFORT,
             durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
@@ -67,6 +90,7 @@ class vslam_reactor(Node):
             durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
             depth=1)
 
+        ### PUBLISHERS #############################################################################
         self.pub_filtered_odom_ = self.create_publisher(Odometry,
                                                         '/visual_slam/filt_slam_odometry',
                                                          qos_profile=self.qos_vslam,
@@ -77,12 +101,38 @@ class vslam_reactor(Node):
                                                      qos_profile=self.qos_vslam,
                                                      callback_group=self.vslam_cbg)
 
-        self.pub_drone_pose_ = self.create_publisher(PoseStamped, 
-                                                     '/reactor/drone_pose', 
+        self.pub_drone_pose_ = self.create_publisher(PoseStamped,
+                                                     '/reactor/drone_pose',
                                                      qos_profile=self.qos_vslam,
                                                      callback_group=self.vslam_cbg)
 
+        # EKF2 reset-epoch: incremented on every committed VSLAM re-seat and forwarded by
+        # vio_transform into VehicleOdometry.reset_counter. Transient-local so a late/restarted
+        # vio_transform latches the current value.
+        self.pub_vio_reset_epoch_ = self.create_publisher(UInt8,
+                                                          '/reactor/vio_reset_epoch',
+                                                          qos_profile=self.qos_transient,
+                                                          callback_group=self.vslam_cbg)
+        self.pub_vio_reset_epoch_.publish(UInt8(data=self._vio_reset_epoch))
 
+        # Cadence-gate event counter (latched): post-flight forensics can read how many times the
+        # gate engaged without scraping logs. Bumped once per gate ENGAGEMENT, not per frame.
+        self.pub_cadence_gate_count_ = self.create_publisher(UInt32,
+                                                             '/reactor/cadence_gate_count',
+                                                             qos_profile=self.qos_transient,
+                                                             callback_group=self.vslam_cbg)
+        self.pub_cadence_gate_count_.publish(UInt32(data=0))
+
+        # Live gate state (latched): True while the gate is withholding. /visual_slam/status stays
+        # healthy during starvation, so without this an observer cannot see EV being withheld at all.
+        self.pub_cadence_gated_ = self.create_publisher(Bool,
+                                                        '/reactor/cadence_gated',
+                                                        qos_profile=self.qos_transient,
+                                                        callback_group=self.vslam_cbg)
+        self.pub_cadence_gated_.publish(Bool(data=False))
+
+
+        ### SUBSCRIBERS ############################################################################
         self.vslam_status_sub = self.create_subscription(VisualSlamStatus,
                                                          '/visual_slam/status',
                                                          self.visual_slam_status_callback,
@@ -101,12 +151,6 @@ class vslam_reactor(Node):
                                                       qos_profile=self.qos_fmu,
                                                       callback_group=self.gen_processing_cbg)
 
-        self.sub_fmu_lockout = self.create_subscription(Bool,
-                                                        '/px4_state_machine/fmu_lockout',
-                                                        self.fmu_lockout_callback,
-                                                        qos_profile=self.qos_transient,
-                                                        callback_group=self.gen_processing_cbg)
-
         self._drone_odom_sub = message_filters.Subscriber(self, Odometry,
                                                           '/reactor/drone_odom',
                                                           qos_profile=self.qos_vslam,
@@ -118,19 +162,27 @@ class vslam_reactor(Node):
                                                          callback_group=self.vslam_cbg)
 
 
+        ### CACHES #################################################################################
         self._drone_odom_cache = message_filters.Cache(self._drone_odom_sub,
                                                        cache_size=self.sync_cache_sz)
 
+        ### SERVICES ###############################################################################
         self.set_slam_pose_client = self.create_client(SetSlamPose, 'visual_slam/set_slam_pose')
-
+        
         self.trigger_slam_pose_service = self.create_service(Trigger, 'visual_slam/set_reactor_pose',
                                                              self.set_slam_pose_callback,
                                                              callback_group=self.gen_processing_cbg)
 
+        ### TRANSFORM BROADCASTERS #################################################################            
         self.px4_tf_broadcaster = TransformBroadcaster(self)
 
-        while not self.set_slam_pose_client.wait_for_service(): pass
+        ### CALLBACK TIMERS ########################################################################
+        # Bounded wait with a heartbeat log: a bare loop hung node construction without
+        # logging (or hot-spun a core) when cuVSLAM never came up.
+        while not self.set_slam_pose_client.wait_for_service(timeout_sec=2.0):
+            self.get_logger().warn('waiting for visual_slam/set_slam_pose service...')
 
+        ### CALLBACK REGISTRATIONS #################################################################
         self._slam_odom_sub.registerCallback(self.slam_odom_callback)
 
 
@@ -144,8 +196,14 @@ class vslam_reactor(Node):
             ('VO_rate_lim', 0.20),
             ('VO_pos_delta_lim', 0.4),
             ('sync_cache_sz', 300),
-            ('quat_delta_theta_deg', 5.0),
-            ('displacement_delta', 0.25),
+            ('align_yaw_deg', 2.0),
+            ('align_pos_m', 0.10),
+            ('set_pose_max_odom_age', 0.010),
+            ('set_origin_settle_time', 10.0),
+            ('fmu_stamp_max_skew_s', 0.5),
+            ('cadence_gate_s', 0.15),
+            ('cadence_release_samples', 5),
+            ('set_pose_busy_timeout_s', 5.0),
         ]
         self.declare_parameters('', defaults)
         self._param_names = [n for n, _ in defaults]
@@ -156,10 +214,32 @@ class vslam_reactor(Node):
             setattr(self, name, self.get_parameter(name).value)
         # Derived (degrees -> radians)
         self.ang_vel_gate = np.radians(self.ang_vel_gate_dps)
-        self.quat_delta_theta = np.radians(self.quat_delta_theta_deg)
-
+        self.align_yaw = np.radians(self.align_yaw_deg)
 
     def px4_odom_callback(self, msg):
+        now = self.get_clock().now()
+        self._last_px4_rx = now
+
+        # FMU stamp skew clamp: uXRCE timesync excursions can pass boot-relative or future
+        # stamps straight through, corrupting tf2 buffers for the px4 frame.
+        # Must be skew-vs-now, NOT a monotonicity guard: a +10s future stamp is still
+        # monotonic. Duration.nanoseconds is signed, so future stamps yield negative skew.
+        # clock_type must match now's (ROS_TIME); the Time() default is SYSTEM_TIME and
+        # cross-clock subtraction raises TypeError.
+        fmu_time = rclpy.time.Time(nanoseconds=msg.timestamp * 1000,
+                                   clock_type=now.clock_type)
+        skew_s = (now - fmu_time).nanoseconds * 1e-9
+        if abs(skew_s) > self.fmu_stamp_max_skew_s:
+            self._fmu_stamp_excursions += 1
+            self.get_logger().warn(
+                f"FMU stamp excursion: raw={msg.timestamp}us skew={skew_s:.3f}s "
+                f"count={self._fmu_stamp_excursions} - re-stamping outputs with node clock",
+                throttle_duration_sec=5.0)
+            out_stamp = now.to_msg()
+        else:
+            # Normal path keeps the FMU stamp untouched: ordering fidelity matters to
+            # downstream ApproximateTimeSynchronizer consumers.
+            out_stamp = fmu_time.to_msg()
 
         # Position Conversion
         FMU_pos_frd = [float(msg.position[0]), 
@@ -176,7 +256,7 @@ class vslam_reactor(Node):
 
         # map to px4 transform creation
         map_px4_t = TransformStamped()
-        map_px4_t.header.stamp = rclpy.time.Time(nanoseconds=msg.timestamp * 1000).to_msg()
+        map_px4_t.header.stamp = out_stamp
         map_px4_t.header.frame_id = 'map'
         map_px4_t.child_frame_id = "px4" 
         map_px4_t.transform.translation.x = FMU_pos_flu[0]
@@ -189,7 +269,7 @@ class vslam_reactor(Node):
 
         # ros-frame odometry message for drone
         drone_odom_msg = Odometry()
-        drone_odom_msg.header.stamp = rclpy.time.Time(nanoseconds=msg.timestamp * 1000).to_msg()
+        drone_odom_msg.header.stamp = out_stamp
         drone_odom_msg.header.frame_id = "map"
         drone_odom_msg.child_frame_id = 'px4'
         drone_odom_msg.pose.pose.position.x = FMU_pos_flu[0]
@@ -214,10 +294,78 @@ class vslam_reactor(Node):
         # publish drone posestamped
         self.pub_drone_pose_.publish(drone_pose_msg)
 
-    def fmu_lockout_callback(self, msg):
-        self.fmu_lockout = msg.data
-        self.ev_fusion_started = False
-        self.init_flag = True
+    def _cadence_update(self, vslam_odom_msg):
+        """Track VO header.stamp cadence and maintain the gate state. Called on EVERY frame
+        arriving at slam_odom_callback, BEFORE any processing guard, so busy/vo_state windows keep
+        the bookkeeping warm and cannot fabricate a gap on resume.
+
+        Stamps are camera-frame acquisition time (cuVSLAM override_publishing_stamp=false), so
+        consecutive-stamp deltas ARE the frame cadence; a starvation gap surfaces as one large
+        delta on the next sample. Stamp deltas are a LOWER BOUND on the silence EKF2 experiences
+        (EKF2 de-latches on ARRIVAL silence; a pure arrival stall with contiguous stamps is
+        invisible here and is handled natively by EKF2's own 400 ms de-latch + clean re-anchor).
+        The gate's protected class is degraded-cadence starvation bursts with advancing stamps.
+        It is severity reduction, not prevention.
+        """
+        stamp = rclpy.time.Time.from_msg(vslam_odom_msg.header.stamp)
+        prev = self._last_cadence_stamp
+        self._last_cadence_stamp = stamp
+        if prev is None:
+            return
+        dt = (stamp - prev).nanoseconds * 1e-9
+        if dt <= 0:
+            # Stamp anomaly, not a gap (mirrors odom_velocity_gate's delta_time<=0 bail).
+            return
+        if dt > CADENCE_ANOMALY_CEILING_S:
+            # A gap this large is a stamp-regime anomaly (rogue future stamp, clock jump, cuVSLAM
+            # restart), not starvation: engaging on it would wedge the gate until wall-clock
+            # overtakes the rogue stamp. Reseed and move on; genuine outages this long are already
+            # EKF2-de-latched and jump-gate territory.
+            return
+
+        now = self.get_clock().now()
+        if dt > self.cadence_gate_s:
+            if not self._cadence_gated:
+                self._cadence_gated = True
+                self._cadence_gate_t0 = now
+                self._cadence_trigger_gap_ms = dt * 1000.0
+                self._cadence_gated_frames = 0
+                self._cadence_gate_count += 1
+                self.pub_cadence_gate_count_.publish(UInt32(data=self._cadence_gate_count))
+                self.pub_cadence_gated_.publish(Bool(data=True))
+            self._cadence_nominal_run = 0
+            self._cadence_gated_frames += 1
+            self.get_logger().warn(
+                f"CADENCE GATE: VO stamp gap {dt*1000:.0f}ms > {self.cadence_gate_s*1000:.0f}ms "
+                f"- withholding EV (event #{self._cadence_gate_count})",
+                throttle_duration_sec=1.0)
+        elif self._cadence_gated:
+            self._cadence_nominal_run += 1
+            self._cadence_gated_frames += 1
+            if self._cadence_nominal_run >= self.cadence_release_samples:
+                held_ms = (now - self._cadence_gate_t0).nanoseconds * 1e-6
+                self._cadence_release(held_ms)
+
+        # NO timed escape: the gate never releases on a clock - only proven-nominal cadence
+        # readmits VO. A degraded stream stays withheld indefinitely; EKF2 coasts on flow+rng
+        # after its native 400 ms EV de-latch, and if ALL horizontal aiding is lost PX4's own
+        # ladder takes over (1 s aid-timeout -> inertial dead-reckon -> EKF2_NOAID_TOUT 5 s ->
+        # local position invalid -> commander position-loss failsafe). Feeding one degraded
+        # sample per window would re-anchor EKF2 onto lagged poses repeatedly.
+        # Prolonged-withhold visibility: /reactor/cadence_gated stays latched True.
+
+    def _cadence_release(self, held_ms):
+        total_ms = held_ms + self._cadence_trigger_gap_ms
+        self._cadence_gated = False
+        self._cadence_nominal_run = 0
+        self.pub_cadence_gated_.publish(Bool(data=False))
+        note = (" - EV silence exceeded EKF2's 400ms de-latch: expect a clean re-anchor reset "
+                "on resume" if total_ms > 400.0 else "")
+        self.get_logger().info(
+            f"CADENCE GATE: released after {held_ms:.0f}ms hold "
+            f"(+{self._cadence_trigger_gap_ms:.0f}ms trigger gap = {total_ms:.0f}ms EV silence), "
+            f"{self._cadence_gated_frames} frames withheld (event #{self._cadence_gate_count}){note}")
+        # The releasing frame streams in this same callback pass.
 
     # Potentially switch to message_filters.ApproximateTimeSynchronizer to trigger main odom callback
     def sync_msg(self, target_time: rclpy.time.Time, target_msg_cache: message_filters.Cache):
@@ -240,14 +388,21 @@ class vslam_reactor(Node):
     
 
     def service_response_callback(self, future):
+        # vslam_busy must clear on EVERY path (success, refusal, exception) or the reactor
+        # stalls with EV publishing suppressed indefinitely. The epoch bump lives here, on success
+        # only, so reset_counter can never precede the actual re-seat and a failed re-seat
+        # never burns an epoch.
         try:
             response = future.result()
             if response.success:
-                self.vslam_busy = False
+                self._vio_reset_epoch = (self._vio_reset_epoch + 1) & 0xFF
+                self.pub_vio_reset_epoch_.publish(UInt8(data=self._vio_reset_epoch))
             else:
                 self.get_logger().error(f"SetSlamPose failure: {response.message}")
         except Exception as e:
             self.get_logger().error(f"SetSlamPose call failed: {str(e)}")
+        finally:
+            self.vslam_busy = False
 
 
     def calculate_3d_displacement(self, pose_1: Pose, pose_2: Pose) -> float:
@@ -267,7 +422,15 @@ class vslam_reactor(Node):
         q2 /= np.linalg.norm(q2) 
         dot_product = np.clip(np.abs(np.dot(q1, q2)), -1.0, 1.0)
         return 2 * np.arccos(dot_product)
-    
+
+    def yaw_delta(self, q1_orientation: Quaternion, q2_orientation: Quaternion) -> float:
+        # Absolute yaw-only difference (radians), wrapped to [0, pi]. Used by the settle-exit
+        # alignment check so yaw can be gated independently of roll/pitch.
+        y1 = R.from_quat([q1_orientation.x, q1_orientation.y, q1_orientation.z, q1_orientation.w]).as_euler('zyx')[0]
+        y2 = R.from_quat([q2_orientation.x, q2_orientation.y, q2_orientation.z, q2_orientation.w]).as_euler('zyx')[0]
+        d = y1 - y2
+        return abs(np.arctan2(np.sin(d), np.cos(d)))
+
     def position_frd_to_flu(self, pos_frd):
         return np.array([pos_frd[0],
                         -pos_frd[1],
@@ -280,10 +443,15 @@ class vslam_reactor(Node):
         return [float(q_flu[0]), float(q_flu[1]), float(q_flu[2]), float(q_flu[3])]
 
     def est_status_callback(self, msg):
+        # Subscription is kept alive for the node's whole life so fusion detection can
+        # re-fire if EKF2 ever drops and re-establishes EV fusion. (A destroy-on-first-True
+        # here trapped ev_fusion_started False after a re-arm, bypassing the
+        # velocity/displacement gates entirely.)
         if not self.ev_fusion_started:
             self.ev_fusion_started = msg.cs_ev_pos
             if self.ev_fusion_started:
-                self.destroy_subscription(self.est_status_sub)
+                # Settle window should measure EKF2-fusion time, not FMU downtime.
+                self.last_set_pose_time = self.get_clock().now()
 
 
     def visual_slam_status_callback(self, msg):
@@ -291,6 +459,18 @@ class vslam_reactor(Node):
 
 
     def vslam_check(self):
+        # Busy-wedge watchdog: a SetSlamPose call whose future never completes (cuVSLAM died
+        # mid-call) would leave vslam_busy True forever and kill the EV stream permanently -
+        # nothing else clears it. Bounded here because this runs on every frame. A late straggler
+        # response after the force-clear is harmless (its finally re-clears an already-False flag;
+        # the epoch bump only fires on genuine success).
+        if self.vslam_busy:
+            busy_s = (self.get_clock().now() - self._vslam_busy_since).nanoseconds * 1e-9
+            if busy_s > self.set_pose_busy_timeout_s:
+                self.get_logger().error(
+                    f"SetSlamPose response never arrived ({busy_s:.1f}s > "
+                    f"{self.set_pose_busy_timeout_s:.1f}s) - clearing vslam_busy (wedge guard)")
+                self.vslam_busy = False
         if self.vslam_status == 1 and not self.vslam_busy:
             return True
         else:
@@ -308,7 +488,6 @@ class vslam_reactor(Node):
         current_odom_time = rclpy.time.Time.from_msg(vslam_odom_msg.header.stamp)
         previous_odom_time = rclpy.time.Time.from_msg(self.last_vslam_odom_msg.header.stamp)
 
-        # This redundancy might be overkill. Maybe there was a past reason...
         delta_time = (current_odom_time - previous_odom_time).nanoseconds * 1e-9
         if delta_time <= 0: return False
 
@@ -318,7 +497,7 @@ class vslam_reactor(Node):
         delta_position = self.calculate_3d_displacement(vslam_odom_msg.pose.pose, 
                                                         self.last_vslam_odom_msg.pose.pose)
 
-        # Minor umotion short-circuit efficiency
+        # No-motion short-circuit
         if delta_position < 1e-3 and delta_angle < np.radians(0.1):
             for field in Odometry.__slots__:
                 setattr(self.last_vslam_odom_msg, field, getattr(vslam_odom_msg, field))
@@ -363,28 +542,38 @@ class vslam_reactor(Node):
             drone_odom_msg = self.sync_msg(current_odom_time, self._drone_odom_cache)
 
             if drone_odom_msg is None:
-                self.get_logger().info("<<<<< PX4/VSLAM BUFFER DESYNC >>>>>")
+                # No per-frame log: this is polled every frame during the settle window.
                 return True
 
-            angle = self.min_quat_theta(drone_odom_msg.pose.pose.orientation,
-                                        vslam_odom_msg.pose.pose.orientation)
-            
-            displacement = self.calculate_3d_displacement(vslam_odom_msg.pose.pose,
-                                                          drone_odom_msg.pose.pose)
-            if angle >= self.quat_delta_theta or displacement >= self.displacement_delta:
-                self.get_logger().info("<<<<< VSLAM RESET MISALIGNMENT >>>>>")
+            # Dedicated settle-exit tolerances (align_yaw_deg / align_pos_m), separate from the jump
+            # gate: yaw is gated on its own axis, position on the combined 3D norm.
+            yaw_err = self.yaw_delta(drone_odom_msg.pose.pose.orientation,
+                                     vslam_odom_msg.pose.pose.orientation)
+            pos_err = self.calculate_3d_displacement(vslam_odom_msg.pose.pose,
+                                                     drone_odom_msg.pose.pose)
+            if yaw_err >= self.align_yaw or pos_err >= self.align_pos_m:
+                # Still misaligned (EKF2 not yet converged). Polled per frame during the settle
+                # window, so do not log here; the caller warns once per (re)injection.
                 return True
             self.new_set_pose_call = False
+            self.get_logger().info(
+                f"<<<<< SET ORIGIN: EKF2 aligned (yaw {np.degrees(yaw_err):.2f}deg <= {self.align_yaw_deg:.1f}, "
+                f"pos {pos_err:.3f}m <= {self.align_pos_m:.2f}) - streaming normally >>>>>")
 
         return False
 
 
     def set_slam_pose(self, init=False):
-        self.last_set_pose_time = self.get_clock().now()
         last_drone_odom_msg = self._drone_odom_cache.getLast()
+        if not last_drone_odom_msg:
+            return False
 
-        if not last_drone_odom_msg: return
+        # Freshness gate: skip stale (pre-reboot) PX4 samples; caller retries each frame until fresh.
+        age = (self.get_clock().now() - self._last_px4_rx).nanoseconds / 1e9
+        if age > self.set_pose_max_odom_age:
+            return False
 
+        self.last_set_pose_time = self.get_clock().now()
         req = SetSlamPose.Request()
 
         # Position: Converted vehicle position in FLU frame
@@ -397,18 +586,47 @@ class vslam_reactor(Node):
             req.pose.position.y = last_drone_odom_msg.pose.pose.position.y
             req.pose.position.z = last_drone_odom_msg.pose.pose.position.z
 
-        # Orientation: Converted vehicle quaternion in FLU [x, y, z, w]
-        req.pose.orientation.x = last_drone_odom_msg.pose.pose.orientation.x
-        req.pose.orientation.y = last_drone_odom_msg.pose.pose.orientation.y
-        req.pose.orientation.z = last_drone_odom_msg.pose.pose.orientation.z
-        req.pose.orientation.w = last_drone_odom_msg.pose.pose.orientation.w
+        # Orientation: Converted vehicle quaternion in FLU [x, y, z, w].
+        # On init (pre-takeoff datum) zero YAW as well as position: mag is disabled so the
+        # heading datum is arbitrary (POSE_FRAME_FRD = "arbitrary heading reference"), and a
+        # clean 0-yaw origin removes the re-anchor jump EKF2 would otherwise reject. Roll/pitch
+        # are kept from the FMU so the frame stays gravity-aligned. Non-init (in-flight) re-seats
+        # keep the FMU's full orientation, so the re-anchor vs EKF2's current estimate stays ~zero.
+        _q_flu = last_drone_odom_msg.pose.pose.orientation
+        if init:
+            _rpy = R.from_quat([_q_flu.x, _q_flu.y, _q_flu.z, _q_flu.w]).as_euler('zyx')
+            _rpy[0] = 0.0  # zero yaw, keep pitch/roll
+            _q_zeroed = R.from_euler('zyx', _rpy).as_quat()
+            req.pose.orientation.x = float(_q_zeroed[0])
+            req.pose.orientation.y = float(_q_zeroed[1])
+            req.pose.orientation.z = float(_q_zeroed[2])
+            req.pose.orientation.w = float(_q_zeroed[3])
+        else:
+            req.pose.orientation.x = _q_flu.x
+            req.pose.orientation.y = _q_flu.y
+            req.pose.orientation.z = _q_flu.z
+            req.pose.orientation.w = _q_flu.w
         
-        self.get_logger().info(f">>> VSLAM SET POSE <<<")
+        _q = req.pose.orientation
+        _yaw = np.degrees(R.from_quat([_q.x, _q.y, _q.z, _q.w]).as_euler('zyx')[0])
+        # WARN on every origin injection so operators can see the set-origin / settle-retry cycle.
+        _emit = self.get_logger().warn if init else self.get_logger().info
+        _tag = "SET ORIGIN (settling)" if init else "VSLAM SET POSE"
+        _emit(
+            f">>> {_tag} <<< init={init} "
+            f"pos=({req.pose.position.x:.3f},{req.pose.position.y:.3f},{req.pose.position.z:.3f}) "
+            f"yaw={_yaw:.1f}deg src_odom_age={age:.4f}s")
         self.vslam_busy = True
+        self._vslam_busy_since = self.get_clock().now()
         self.new_set_pose_call = True
 
+        # The reset epoch is bumped in service_response_callback on SUCCESS, not here: bumping
+        # before the re-seat completes lets vio_transform stamp the new reset_counter onto a
+        # pre-reseat pose (EKF2 re-anchors onto stale data), and a failed re-seat would burn an
+        # epoch with no pose change. vslam_busy suppresses EV publishing until the callback runs.
         future = self.set_slam_pose_client.call_async(req)
         future.add_done_callback(self.service_response_callback)
+        return True
 
 
     def set_slam_pose_callback(self, request, response):   
@@ -426,19 +644,57 @@ class vslam_reactor(Node):
 
 
     def slam_odom_callback(self, vslam_odom_msg):
-        if self.vslam_check() and not self.fmu_lockout:
+        # Cadence bookkeeping runs on EVERY frame BEFORE any guard: busy/vo_state windows must not
+        # freeze the stamp reference (a stale reference would read the whole window as one giant
+        # gap and spuriously gate the first resumed frame).
+        self._cadence_update(vslam_odom_msg)
+        if self.vslam_check():
             if self.ev_fusion_started is False:
                 if self.init_flag:
-                    self.set_slam_pose(True)
-                    self.init_flag = False
+                    if self.set_slam_pose(True):
+                        self.init_flag = False
                 else:
                     self.publish_vslam_to_px4(vslam_odom_msg)
+            elif self._cadence_gated:
+                # ENFORCED WITHHOLD: starvation-cadence VO must not reach EKF2 (smooth-but-stale
+                # poses pass vo_state AND the jump gate). ALL settles are withheld with the settle
+                # countdown paused (no init bypass - the settle-timeout re-inject can fire mid-
+                # flight and would disable the gate around a fresh airborne origin). NEVER touches
+                # vslam_busy or the reset epoch - a withhold is not a re-seat.
+                if self.new_set_pose_call:
+                    # Settle in progress while gated: rebase the countdown so gate-induced
+                    # starvation cannot fire the settle-timeout re-inject; alignment evaluation
+                    # resumes on gate release.
+                    self.last_set_pose_time = self.get_clock().now()
+                if self.odom_velocity_gate(vslam_odom_msg):
+                    # Jump detection stays LIVE during the gate: a genuine cuVSLAM jump inside a
+                    # gated window must re-seat exactly as it would ungated (the non-jump path
+                    # refreshes last_vslam_odom_msg so the release-edge delta is computed against
+                    # the newest gated pose).
+                    self.set_slam_pose()
+                # else: frame withheld - no publish
             elif not self.odom_velocity_gate(vslam_odom_msg):
                 if not self.odom_displacement_gate(vslam_odom_msg):
+                    # Aligned (EKF2 converged onto the origin) -> stream normally.
                     self.publish_vslam_to_px4(vslam_odom_msg)
-                # elif self.odom_temporal_reset_gate(): # Potentially depreciate 
                 elif not self.init_flag:
-                    self.set_slam_pose(True)
+                    # Misaligned: EKF2 has not yet converged onto the freshly-injected origin.
+                    # Do NOT re-seat every frame -- rapid reset_counter bumps stop EKF2 ever
+                    # converging. Keep INJECTING the stream for a settle window so EKF2 can align;
+                    # only re-inject the origin (one reset) if the window elapses without alignment.
+                    settle_dt = (self.get_clock().now() - self.last_set_pose_time).nanoseconds * 1e-9
+                    if settle_dt < self.set_origin_settle_time:
+                        self.publish_vslam_to_px4(vslam_odom_msg)
+                    else:
+                        # set_slam_pose's freshness gate no-ops when PX4 odom is stale (FMU down),
+                        # so skip the warn+call this frame rather than repeatedly log an action that never runs.
+                        px4_age = (self.get_clock().now() - self._last_px4_rx).nanoseconds / 1e9
+                        if px4_age <= self.set_pose_max_odom_age:
+                            self.get_logger().warn(
+                                f"SET ORIGIN: EKF2 not aligned within {self.set_origin_settle_time:.1f}s "
+                                f"settle window - re-injecting origin",
+                                throttle_duration_sec=1.0)
+                            self.set_slam_pose(True)
             else:
                 self.set_slam_pose()
 
@@ -454,7 +710,8 @@ def main(args=None):
         tracker.get_logger().info('Keyboard Interrupt (SIGINT)')
     finally:
         tracker.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 if __name__ == '__main__':
     main()
