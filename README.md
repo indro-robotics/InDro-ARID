@@ -272,13 +272,15 @@ reboot
 
 ## Development workflow
 
-SSH into the drone and edit everything there:
+VSCode over Remote-SSH is the recommended editor: all code, builds, and the live runtime stay on the drone, and the repo ships VSCode configuration for a streamlined development experience.
 
 ```bash
 ssh jetson@<device-ip>
 ```
 
 On first open VSCode prompts to install the workspace's recommended extensions on the drone. `.vscode/` carries the extension list, Python/C++ lint + IntelliSense settings, and search excludes.
+
+For direct virtual desktop access, connect a NoMachine session to `<device-ip>`. The GUI tools (camera feed windows, the calibration GUI, camera focus) render on that desktop, so keep a session attached when using them.
 
 ### VSCode Remote-SSH offline fix
 
