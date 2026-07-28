@@ -2,15 +2,20 @@
 
 Services (under /arid_supervisor):
   ~/vslam_enable (std_srvs/SetBool)
-    true : camera-proven bringup - USB pre-check, log-watch gate (3 distinct
-           "RealSense Node Is Up!" tags, fail-fast on "Error starting device", 40 s
-           backstop), ONE reset_usb recovery cycle. Blocks ~15 s healthy, ~3 min worst.
+    true : camera-proven bringup - USB pre-check, log-watch gate (CAM_COUNT distinct
+           "RealSense Node Is Up!" tags, fail-fast on "Error starting device" and on the
+           image_transport plugin-load race, 40 s backstop), ONE reset_usb recovery cycle.
+           Blocks ~15 s healthy, ~3 min worst. Landed-proven unowned trees are reaped
+           first so 'initialize' over an orphan just works.
     false: landed-gated teardown - SIGINT the process group, wait for drain, escalate
            to SIGTERM/SIGKILL only on stall.
   ~/status (std_srvs/Trigger): success = vslam running.
 
 Idempotent both ways; double-spawn impossible (single-threaded executor queues calls,
-self._lock preserves this under any executor); foreign vslam stacks refused pre-spawn.
+self._lock preserves this under any executor); foreign vslam stacks refused pre-spawn
+unless the drone is provably landed.
+A supervisor stop while PROVABLY airborne leaves the stack flying (same gate as the
+unit's ExecStopPost -> container_scripts/airborne_check.sh).
 Subprocess log: /workspaces/isaac_ros-dev/run_logs/<name>/<name>.log, truncated per launch.
 """
 
@@ -29,7 +34,7 @@ from std_srvs.srv import SetBool, Trigger
 from px4_msgs.msg import VehicleLandDetected
 
 
-LAND_FRESH_S = 2.0
+LAND_FRESH_S = 3.5   # survives one dropped 1 Hz keepalive; 2.0 read a flying drone as unknown
 # Per-stack clean-shutdown grace before any hard kill; SIGINT lets nodes release their DDS shm.
 SIGINT_GRACE_S = {'vslam': 25.0}
 DEFAULT_SIGINT_GRACE_S = 15.0
@@ -40,9 +45,34 @@ RS_VID = '8086'                           # Intel RealSense USB vendor id
 # D43X-family PIDs; pin the exact one via the rs_usb_pids ROS param once confirmed
 # on hardware (cat /sys/bus/usb/devices/*/idProduct).
 DEFAULT_RS_PIDS = ['0b07', '0b3a', '0b3d', '0b64', '0b5c']
-CAM_COUNT = 3                             # THREE physical RealSense (front/left/right)
+
+VSLAM_CONFIG = '/workspaces/isaac_ros-dev/src/px4_vslam/config/vslam_config.yaml'
+CAM_COUNT_FALLBACK = 3                    # THREE physical RealSense (left/front/right)
+
+
+def _cam_count_from_config(path=VSLAM_CONFIG, fallback=CAM_COUNT_FALLBACK):
+    """Camera count = the *_realsense driver sections carrying a serial in
+    vslam_config.yaml - the same source of truth vslam_sentry parses. Blank serials
+    (unprovisioned drone) or an unreadable config -> fallback."""
+    try:
+        import yaml as _yaml
+        with open(path) as f:
+            root = _yaml.safe_load(f)
+        n = sum(1 for k, v in root.items()
+                if '_realsense/' in str(k)
+                and isinstance(v, dict)
+                and v.get('ros__parameters', {}).get('serial_no'))
+        return n if n > 0 else fallback
+    except Exception:
+        return fallback
+
+
+CAM_COUNT = _cam_count_from_config()
 CAM_UP_MARKER = 'RealSense Node Is Up!'
 CAM_ERR_MARKER = 'Error starting device'
+# class_loader race: every camera marker still prints while the image_transport
+# publishers are dead, so the gate would pass N/N with VO at 0 Hz.
+CAM_PLUGIN_ERR = 'no factory exists'
 CAM_GATE_BACKSTOP_S = 40.0   # healthy bringup completes in 14-26 s
 CAM_GATE_POLL_S = 0.25
 USB_REENUM_WAIT_S = 20.0     # /reset_usb: ~5 s power cycle + ~10 s re-enumeration
@@ -69,6 +99,23 @@ def _proc_descendants(root_pid):
         out.append(p)
         todo.extend(kids.get(p, []))
     return out
+
+
+def _pgid_members(pgid):
+    # Live members of this group (pgrp field of /proc/<pid>/stat). CONFIRMS membership right
+    # before a killpg on a REMEMBERED pgid: pid reuse can hand a drained pgid to an innocent group.
+    members = []
+    for pid in os.listdir('/proc'):
+        if not pid.isdigit():
+            continue
+        try:
+            with open(f'/proc/{pid}/stat') as f:
+                pgrp = int(f.read().rsplit(')', 1)[1].split()[2])
+        except (OSError, ValueError, IndexError):
+            continue
+        if pgrp == pgid:
+            members.append(int(pid))
+    return members
 
 
 def _mapped_shm(pids):
@@ -203,6 +250,7 @@ class _Stack:
         self.launch_file = launch_file
         self.logger = logger
         self.proc = None
+        self._pgid = None        # remembered group - outlives a dead leader for teardown
         self.started_at = None
 
     def alive(self):
@@ -217,12 +265,48 @@ class _Stack:
             ['ros2', 'launch', self.launch_pkg, self.launch_file],
             stdout=log, stderr=subprocess.STDOUT, preexec_fn=os.setsid,
         )
+        self._pgid = self.proc.pid   # setsid makes the leader its own group leader
         self.started_at = time.monotonic()
         return log_path
 
     def stop(self):
         if not self.alive():
+            # `ros2 launch` can die (OOM/segfault) while its component_container children
+            # SURVIVE in the same group holding the cameras and DDS shm; abandoning them
+            # gets every next bringup refused by the legacy guard. Reap the remembered group.
+            pgid = self._pgid
             self.proc = None
+            self._pgid = None
+            if pgid is None:
+                return
+            members = _pgid_members(pgid)
+            if not members:
+                return
+            self.logger.warn('%s: leader dead - reaping %d surviving pgid member(s)'
+                             % (self.name, len(members)))
+            descendants = []
+            for m in members:
+                descendants.extend(_proc_descendants(m))
+            owned = _mapped_shm(descendants)
+            groups = {pgid}
+            for pid in descendants:
+                try:
+                    groups.add(os.getpgid(pid))
+                except ProcessLookupError:
+                    pass
+            grace = SIGINT_GRACE_S.get(self.name, DEFAULT_SIGINT_GRACE_S)
+            if not self._dead_leader_signal_and_wait(pgid, signal.SIGINT, grace):
+                if not self._dead_leader_signal_and_wait(pgid, signal.SIGTERM, TERM_WAIT_S):
+                    # Membership re-confirmed immediately before the hard kill.
+                    if _pgid_members(pgid):
+                        try:
+                            os.killpg(pgid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+            reaped = _reap_groups(groups, TERM_WAIT_S)
+            if reaped:
+                self.logger.warn('%s: reaped %d straggler process group(s)' % (self.name, len(reaped)))
+            sweep_stack_shm(owned, self.logger)
             return
         try:
             pgid = os.getpgid(self.proc.pid)
@@ -251,6 +335,7 @@ class _Stack:
                 except subprocess.TimeoutExpired:
                     pass
         self.proc = None
+        self._pgid = None
         reaped = _reap_groups(groups, TERM_WAIT_S)
         if reaped:
             self.logger.warn('%s: reaped %d straggler process group(s)' % (self.name, len(reaped)))
@@ -272,6 +357,22 @@ class _Stack:
         self.proc.poll()
         return not _group_alive(pgid)
 
+    def _dead_leader_signal_and_wait(self, pgid, sig, timeout):
+        # No self.proc to poll, and membership is re-confirmed via /proc immediately before
+        # the killpg - a remembered pgid whose group has drained may have been recycled.
+        if not _pgid_members(pgid):
+            return True
+        try:
+            os.killpg(pgid, sig)
+        except ProcessLookupError:
+            return True
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if not _pgid_members(pgid):
+                return True
+            time.sleep(0.2)
+        return not _pgid_members(pgid)
+
 
 class AridSupervisor(Node):
     def __init__(self):
@@ -282,8 +383,8 @@ class AridSupervisor(Node):
         # ROS param so the exact PID can be pinned on-hardware without a code change.
         self.rs_usb_pids = list(self.declare_parameter('rs_usb_pids', DEFAULT_RS_PIDS).value)
         self.get_logger().info(
-            'RealSense USB match: VID %s PID one of %s'
-            % (RS_VID, ', '.join(self.rs_usb_pids)))
+            'RealSense USB match: VID %s PID one of %s; gating on %d camera(s)'
+            % (RS_VID, ', '.join(self.rs_usb_pids), CAM_COUNT))
 
         self._lock = threading.Lock()
         self._landed = None
@@ -349,7 +450,26 @@ class AridSupervisor(Node):
                     return resp
                 return self._vslam_enable_gated(resp)
 
-            if not self.vslam.alive():
+            # A dead leader whose children survive still holds the cameras; only an empty
+            # tree is 'already stopped' (self.vslam.stop() reaps the remembered group).
+            survivors = bool(self.vslam._pgid and _pgid_members(self.vslam._pgid))
+            if not self.vslam.alive() and not survivors:
+                # Unowned trees (airborne-preserved orphans) must not get a false
+                # 'already stopped' success: landed -> reap them here; else refuse.
+                legacy = self._legacy_vslam_nodes()
+                stray = self._unowned_tree_pids()
+                if legacy or stray:
+                    what = ', '.join(legacy) or f'pids {stray}'
+                    if self._landed_fresh() is True:
+                        self._reap_unowned_trees()
+                        resp.success = True
+                        resp.message = f'unowned vslam trees reaped ({what})'
+                        self.get_logger().warn(resp.message)
+                        return resp
+                    resp.success = False
+                    resp.message = (f'unowned vslam trees present ({what}) and land state '
+                                    'not proven - land first')
+                    return resp
                 resp.success = True
                 resp.message = 'vslam already stopped'
                 return resp
@@ -370,17 +490,34 @@ class AridSupervisor(Node):
     def _vslam_enable_gated(self, resp):
         # Blocks the single-threaded executor for the whole bringup; other callbacks queue behind it.
         legacy = self._legacy_vslam_nodes()
-        if legacy:
-            msg = ('refusing vslam bringup: vslam nodes already on the ROS graph but NOT '
-                   'managed by this supervisor (legacy direct '
-                   "'ros2 launch px4_vslam vslam.launch.py'?): " + ', '.join(legacy)
-                   + '. Spawning over it would collide on node names/cameras. Stop that '
-                     'stack (Ctrl+C its ros2 launch / kill its process group), wait ~10s '
-                     'for its DDS lease to expire, then retry.')
-            self.get_logger().error(msg)
-            resp.success = False
-            resp.message = _clip(msg)
-            return resp
+        stray = self._unowned_tree_pids()
+        # A dead leader of OUR last launch leaves children holding the cameras; they get
+        # reaped on the same landed proof as a foreign tree.
+        survivors = bool(self.vslam._pgid and _pgid_members(self.vslam._pgid))
+        if legacy or stray or survivors:
+            # Kill-before-spinup: landed-proven -> reap the unowned trees and continue into a
+            # fresh gated bringup; airborne/unknown -> refuse.
+            if self._landed_fresh() is True:
+                self.get_logger().warn(
+                    'vslam trees with no live owner (graph: ' + ', '.join(legacy) +
+                    '; pids: ' + str(stray) + f'; dead-leader survivors: {survivors})'
+                    ' - landed, reaping before bringup')
+                if survivors:
+                    self.vslam.stop()
+                self._reap_unowned_trees()
+                time.sleep(10.0)  # DDS forget
+                legacy = self._legacy_vslam_nodes()
+            if legacy or self._unowned_tree_pids():
+                msg = ('refusing vslam bringup: vslam nodes already on the ROS graph but NOT '
+                       'managed by this supervisor (legacy direct '
+                       "'ros2 launch px4_vslam vslam.launch.py'?): " + ', '.join(legacy)
+                       + '. Spawning over it would collide on node names/cameras. '
+                         'Landed-proven trees are reaped automatically; this refusal means '
+                         'land state is unknown/airborne or the reap could not clear them.')
+                self.get_logger().error(msg)
+                resp.success = False
+                resp.message = _clip(msg)
+                return resp
 
         ok, msg = self._usb_precheck()
         if not ok:
@@ -447,6 +584,59 @@ class AridSupervisor(Node):
             resp.success = False
             resp.message = _clip(f'vslam bringup aborted by unexpected exception ({err}); {cleanup}')
             return resp
+
+    # Same qualified pattern as container_scripts/reap_stack.sh (keep in sync). Must match
+    # ONLY the vslam launch tree - gst_camera_manager / arid_description are separate units.
+    REAP_PATTERN = r'ros2 launch px4_vslam vslam\.launch\.py'
+
+    def _unowned_tree_pids(self):
+        # Process-level scan: immune to the DDS discovery race that can hide a fresh orphan
+        # from `ros2 node list`.
+        try:
+            out = subprocess.run(['pgrep', '-f', self.REAP_PATTERN],
+                                 capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            return []
+        pids = [int(p) for p in out.stdout.split() if p.strip().isdigit()]
+        owned = {g for g in (self.vslam._pgid,) if g}
+        return [p for p in pids if p not in owned]
+
+    def _reap_unowned_trees(self):
+        # Group-SIGINT unowned launch trees, drain, group-SIGKILL. Callers MUST hold the
+        # landed proof.
+        pids = self._unowned_tree_pids()
+        if not pids:
+            return True
+        self.get_logger().warn(f'reaping unowned launch trees: {pids}')
+        for p in pids:
+            try:
+                os.killpg(p, signal.SIGINT)
+            except (ProcessLookupError, PermissionError):
+                try:
+                    os.kill(p, signal.SIGINT)
+                except OSError:
+                    pass
+        deadline = time.monotonic() + 25.0
+        while time.monotonic() < deadline:
+            if not any(self._group_has_members(p) for p in pids):
+                self.get_logger().info('unowned trees drained')
+                return True
+            time.sleep(1.0)
+        for p in pids:
+            try:
+                os.killpg(p, signal.SIGKILL)
+            except OSError:
+                pass
+        self.get_logger().warn('unowned trees SIGKILLed after 25s')
+        return True
+
+    @staticmethod
+    def _group_has_members(pgid):
+        try:
+            return subprocess.run(['pgrep', '-g', str(pgid)],
+                                  capture_output=True, timeout=5).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            return False
 
     def _legacy_vslam_nodes(self):
         # Only called when self.vslam is not alive, so any vslam node on the graph is foreign.
@@ -549,6 +739,12 @@ class AridSupervisor(Node):
             while True:
                 buf += f.read()
                 elapsed = time.monotonic() - start
+                if CAM_PLUGIN_ERR in buf and 'user interrupted with ctrl-c' not in buf:
+                    # A ctrl-c line means these are the PREVIOUS generation's plugin-UNLOAD
+                    # stragglers writing through their fd on the truncated log, not this bringup.
+                    return False, elapsed, self._gate_report(
+                        buf, f"'{CAM_PLUGIN_ERR}' in vslam log "
+                             '(image_transport plugin load failed - publishers dead)', elapsed)
                 if CAM_ERR_MARKER in buf:
                     return False, elapsed, self._gate_report(
                         buf, f"'{CAM_ERR_MARKER}' in vslam log "
@@ -584,6 +780,14 @@ class AridSupervisor(Node):
 
     def shutdown(self):
         with self._lock:
+            # A supervisor stop while PROVABLY flying leaves vslam running (the drone keeps
+            # its VO); landed or unknown tears down. ExecStopPost applies the same gate on
+            # the crash path (airborne_check.sh).
+            if self._landed_fresh() is False:
+                self.get_logger().error(
+                    'supervisor stopping while AIRBORNE - leaving vslam running '
+                    '(land, then deinitialize/initialize)')
+                return
             self.vslam.stop()
 
 

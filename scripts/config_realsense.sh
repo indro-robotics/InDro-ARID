@@ -8,6 +8,41 @@ is_yes() { local a="${1//[^A-Za-z]/}"; case "${a,,}" in y|yes) return 0 ;; *) re
 
 WORKSPACES="${WORKSPACES:-/home/jetson/workspaces}"
 VSLAM_CONFIG="${WORKSPACES}/isaac_ros-dev/src/px4_vslam/config/vslam_config.yaml"
+# vslam_config.yaml is untracked and REGENERABLE: template (fleet structure/tunables)
+# + serials (this drone). Reseed from the template on every run so template updates
+# propagate; existing serials are captured first and re-spliced, so the interactive
+# identify flow is only needed when serials are absent.
+VSLAM_TEMPLATE="${VSLAM_CONFIG%.yaml}.template.yaml"
+# --reseed-only: template refresh + serial re-splice, no prompts/hardware, then exit.
+# Setup runs it unconditionally so new template keys reach provisioned drones;
+# missing/partial configs are left to the interactive flow.
+RESEED_ONLY=0
+[[ "${1:-}" == "--reseed-only" ]] && RESEED_ONLY=1
+_SERIALS=()
+[ -f "${VSLAM_CONFIG}" ] && mapfile -t _SERIALS < <(grep -oE 'serial_no: "[0-9]+"' "${VSLAM_CONFIG}" | grep -oE '[0-9]+')
+if (( RESEED_ONLY )) && [ "${#_SERIALS[@]}" -ne 3 ]; then
+    # Seed anyway so a fresh clone / wiped config still gets a usable file with the
+    # current template keys; warn loudly because the serials are NOT restorable here.
+    cp "${VSLAM_TEMPLATE}" "${VSLAM_CONFIG}"
+    echo "WARNING: vslam_config.yaml had ${#_SERIALS[@]}/3 serials - reseeded from template" >&2
+    echo "         with BLANK serials; run 'config_realsense' to reassign." >&2
+    exit 0
+fi
+cp "${VSLAM_TEMPLATE}" "${VSLAM_CONFIG}"
+if [ "${#_SERIALS[@]}" -eq 3 ]; then
+    python3 - "${VSLAM_CONFIG}" "${_SERIALS[@]}" <<'PYSPLICE'
+import re, sys
+p, serials = sys.argv[1], sys.argv[2:]
+s = open(p).read()
+it = iter(serials)
+s = re.sub(r'serial_no: ""', lambda m: 'serial_no: "%s"' % next(it), s, count=3)
+open(p, 'w').write(s)
+PYSPLICE
+fi
+if (( RESEED_ONLY )); then
+    echo "vslam_config.yaml reseeded from template (serials preserved)"
+    exit 0
+fi
 MOUNTS=(left front right)
 
 # rs-enumerate-devices / pyrealsense2 live under /opt/ros/humble; source ROS if needed
@@ -140,7 +175,16 @@ realsense_assign() {
     ok "3 RealSense cameras detected"
 
     local GO
-    if [[ -n "${ARID_RS_ASSIGN:-}" ]]; then GO="${ARID_RS_ASSIGN}"; else ask "  Assign RealSense cameras? (y/n, Enter = skip): "; GO="${REPLY}"; fi
+    if [[ -n "${ARID_RS_ASSIGN:-}" ]]; then GO="${ARID_RS_ASSIGN}"
+    elif [[ "${#_SERIALS[@]}" -eq 3 ]]; then
+        # Serials from the previous config were re-spliced into the fresh template above;
+        # keeping them needs no identification.
+        ok "existing serials carried through reseed: ${_SERIALS[*]}"
+        ask "  Assign RealSense cameras? (y/n, Enter = keep existing): "; GO="${REPLY}"
+        is_yes "${GO}" || { skip "keeping existing serials; template refreshed"; return 0; }
+    else
+        ask "  Assign RealSense cameras? (y/n, Enter = skip): "; GO="${REPLY}"
+    fi
     is_yes "${GO}" || { skip "RealSense serial assignment skipped; vslam_config.yaml unchanged"; return 0; }
 
     FEED=0

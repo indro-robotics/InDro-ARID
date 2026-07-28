@@ -8,9 +8,9 @@ left_realsense/left_realsense_link:
     depth_module:
       emitter_enabled: 0
       enable_auto_exposure: true
-      profile: '640x360x90'
+      profile: '640x360x60'   # not 90: the 90fps USB service interval stalls the bus
     rgb_camera:
-      power_line_frequency: 1 
+      power_line_frequency: 1
     enable_gyro: false
     enable_accel: false
     initial_reset: false
@@ -22,15 +22,14 @@ front_realsense/front_realsense_link:
   ros__parameters:
     enable_infra1: true
     enable_infra2: true
-    enable_color: true
+    enable_color: false         # nothing on ARID subscribes RealSense colour
     enable_sync: false
     enable_depth: false
     depth_module:
       emitter_enabled: 0
       enable_auto_exposure: true
-      profile: '640x360x90'
+      profile: '640x360x60'
     rgb_camera:
-      profile: '1280x800x15'
       power_line_frequency: 1  # 60 Hz
     enable_gyro: false
     enable_accel: false
@@ -49,9 +48,9 @@ right_realsense/right_realsense_link:
     depth_module:
       emitter_enabled: 0
       enable_auto_exposure: true
-      profile: '640x360x90'
+      profile: '640x360x60'
     rgb_camera:
-      power_line_frequency: 1 
+      power_line_frequency: 1
     enable_gyro: false
     enable_accel: false
     initial_reset: false
@@ -70,12 +69,14 @@ visual_slam_node:
     odom_frame: 'odom'
     base_frame: 'base_link'
     imu_frame: 'autopilot'
-    enable_slam_visualization: false 
+    enable_slam_visualization: false
     enable_landmarks_view: false
     enable_observations_view: false
     enable_localization_n_mapping: true
     num_cameras: 6
-    min_num_images: 5
+    # Applies only AFTER cuVSLAM init: init still needs one camera_info from all 6 streams.
+    min_num_images: 4   # survives a FULL single-camera loss (2 stereo pairs keep VO alive, degraded); 5 only survives one dead stream
+    stale_stream_timeout_ms: 100.0   # stamp-domain: a stream silent this long stops blocking set emission; 0 = stock stall-on-empty
     image_qos: "SENSOR_DATA"
     camera_optical_frames:
       - 'front_realsense_infra1_optical_frame'

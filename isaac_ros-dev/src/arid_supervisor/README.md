@@ -24,10 +24,16 @@ Subscribes `/fmu/out/vehicle_land_detected` for the interlock. Subprocess output
 `vslam_enable=true` returns `success=true` only once all 3 RealSense (front/left/right) are
 up. Blocks the caller about 15 s healthy, up to about 3 min on double failure.
 
+Camera count = the `*_realsense` sections of `vslam_config.yaml` carrying a serial; blank
+(unprovisioned) or unreadable falls back to 3.
+
+0. Kill-before-spinup: unowned vslam trees are reaped first when landed is proven, refused
+   otherwise.
 1. USB pre-check: 3 RealSense on the bus, else one `/reset_usb` and recheck. Still short:
    stack never launched, response carries per-device USB evidence.
 2. Log watch: success once 3 distinct cameras log `RealSense Node Is Up!`; fail-fast on
-   `Error starting device` (terminal per camera); 40 s backstop for silent hangs.
+   `Error starting device` (terminal per camera) and on `no factory exists` (image_transport
+   plugin load failed: markers still print, publishers dead); 40 s backstop for silent hangs.
 3. One recovery cycle on failure: teardown, `/reset_usb`, respawn, re-watch. Second failure
    stops the stack, `success=false`. No retry ladder.
 
@@ -44,9 +50,9 @@ the node journal). Relay them unchanged.
 - `enable=false` with nothing running: no-op, `success=true`.
 - Double-spawn impossible: a second enable queues behind an in-flight bringup and resolves to
   the no-op.
-- Foreign stacks (direct `ros2 launch px4_vslam vslam.launch.py`) are refused with the
-  colliding node names. A recently crashed one persists until its DDS lease expires: wait
-  about 10 s and retry.
+- Foreign stacks (direct `ros2 launch px4_vslam vslam.launch.py`): reaped when landed is
+  proven, else refused with the colliding node names. A recently crashed one persists until
+  its DDS lease expires: wait about 10 s and retry.
 
 ## Interlock
 
@@ -54,13 +60,22 @@ the node journal). Relay them unchanged.
 the disable. The supervisor never force-disarms and never lands the drone.
 
 Teardown SIGINTs the whole process group and waits for it to drain, escalating to SIGTERM
-then SIGKILL only on stall.
+then SIGKILL only on stall. A dead `ros2 launch` leader whose children survive is reaped by
+its remembered process group, so `false` never answers "already stopped" over a live tree.
+
+A supervisor stop while provably airborne leaves the stack running (log line, no teardown);
+land, then `deinitialize` / `initialize`.
 
 ## systemd unit
 
 `isaac_ros-dev/services/arid_supervisor.service` runs the launch via `docker exec` into
 `isaac_ros_dev-aarch64-container` as user `admin`, ordered after and bound to
 `start_isaac_docker.service`.
+
+`Restart=always`: a node crash makes `ros2 launch` exit 0, so `on-failure` never fires.
+`ExecStopPost` runs on every stop path incl. crash and is airborne-gated:
+`container_scripts/airborne_check.sh` proves flight (stack preserved), otherwise
+`container_scripts/reap_stack.sh` reaps the orphaned launch tree.
 
 Restart after any change to the node, its launch graphs, or the workspace build:
 

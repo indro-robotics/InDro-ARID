@@ -21,3 +21,6 @@ local_ws/auxiliary/camera_calibration/*_calibration.yaml
 
 # Isaac ROS CUDA/nitros cache
 isaac_ros-dev/.cache/
+
+# Per-drone live config (RealSense serials); reseeded from vslam_config.template.yaml
+isaac_ros-dev/src/px4_vslam/config/vslam_config.yaml

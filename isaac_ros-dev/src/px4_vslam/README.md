@@ -5,7 +5,8 @@ Wraps three RealSense drivers + [Isaac ROS Visual SLAM](https://github.com/NVIDI
 
 - **`vslam.launch.py`**: orchestrates the full stack.
 - **`vio_transform`** (C++ node): bridges VSLAM odometry into PX4 over uXRCE-DDS.
-- **`config/vslam_config.yaml`**: parameters for the RealSense drivers and the SLAM node.
+- **`config/vslam_config.template.yaml`**: tracked fleet defaults for the RealSense drivers and the SLAM node.
+- **`config/vslam_config.yaml`**: the live per-drone file (template + this drone's serials); git-ignored and regenerated.
 
 Pose-correction / SLAM-reset logic lives in the sibling [`px4_vslam_reactor`](../px4_vslam_reactor/) package.
 
@@ -25,14 +26,17 @@ In order, the launch:
 2. Starts `vslam_container` with three `realsense2_camera::RealSenseNodeFactory` nodes (`left_realsense`, `front_realsense`, `right_realsense`) and `VisualSlamNode` (6-stream stereo multicam: one IR pair per camera).
 3. Starts `vslam_reactor_node` (see the reactor README).
 4. Starts `vio_transform`.
+5. Starts `vslam_sentry` (per-camera stream health + targeted `hardware_reset`, see [`vslam_sentry`](../vslam_sentry/README.md)).
 
-The three camera drivers and `VisualSlamNode` share one `component_container_mt` process for intra-process comms; `vslam_reactor_node` and `vio_transform` run as separate processes.
+The three camera drivers and `VisualSlamNode` share one `component_container_mt` process for intra-process comms; `vslam_reactor_node`, `vio_transform` and `vslam_sentry` run as separate processes.
 
 ---
 
 ## Config: `config/vslam_config.yaml`
 
-Single YAML keyed by node name: three RealSense blocks and one SLAM block. `front_realsense` and `right_realsense` mirror `left_realsense`, with colour enabled on `front_realsense` only.
+Template/live split: `vslam_config.template.yaml` is tracked and carries the fleet structure and tunables. `vslam_config.yaml` is the live file, git-ignored, and `scripts/config_realsense.sh` reseeds it from the template on every run while re-splicing this drone's three serials. Tunable edits belong in the template — live-only edits are lost on the next reseed. Both ship blank `serial_no`.
+
+Single YAML keyed by node name: three identical RealSense blocks (`left_`, `front_`, `right_realsense`) and one SLAM block. Each camera streams `infra1` + `infra2` at 640x360x60; colour, depth, IMU, the IR emitter and the rs2 syncer are all off.
 
 ```yaml
 left_realsense/left_realsense_link:
@@ -40,7 +44,10 @@ left_realsense/left_realsense_link:
     serial_no: "<camera-serial>"
     enable_infra1: true
     enable_infra2: true
-    depth_module: { profile: '640x360x90' }
+    enable_color: false
+    enable_depth: false
+    enable_sync: false
+    depth_module: { profile: '640x360x60', emitter_enabled: 0 }
 
 visual_slam_node:
   ros__parameters:
@@ -49,6 +56,8 @@ visual_slam_node:
     base_frame: 'base_link'
     imu_frame:  'autopilot'
     num_cameras: 6
+    min_num_images: 4
+    stale_stream_timeout_ms: 100.0
     camera_optical_frames:
       - 'front_realsense_infra1_optical_frame'
       - 'front_realsense_infra2_optical_frame'
@@ -58,17 +67,20 @@ visual_slam_node:
       - 'right_realsense_infra2_optical_frame'
 ```
 
-To change anything: edit the YAML, rebuild (`colcon build --packages-select px4_vslam --symlink-install`), source install, relaunch. With `--symlink-install`, YAML-only edits need no rebuild.
+`min_num_images: 4` plus `stale_stream_timeout_ms: 100.0` keep VO alive through a full single-camera loss: a stream silent 100 ms in the stamp domain stops blocking set emission, and sets continue on the two surviving stereo pairs. Both apply only after cuVSLAM init — init still needs one `camera_info` from all six streams.
+
+To change anything: edit the template, reseed, rebuild (`colcon build --packages-select px4_vslam --symlink-install`), source install, relaunch. With `--symlink-install`, YAML-only edits need no rebuild.
 
 ### Common tweaks
 
 | Setting | Where | When to change |
 |---|---|---|
-| `serial_no` per camera | realsense blocks | Camera swap / multiple boards |
-| `depth_module.profile` / `rgb_camera.profile` | realsense blocks | Trade FPS vs resolution |
+| `serial_no` per camera | realsense blocks | Camera swap / multiple boards; written by `config_realsense.sh`, not by hand |
+| `depth_module.profile` | realsense blocks | Trade FPS vs resolution; never 90 fps (that service interval stalls the USB bus) |
+| `min_num_images` | `visual_slam_node` | How many of the 6 streams may drop before VO stops |
 | `base_frame`, `imu_frame` | `visual_slam_node` | Must match frames in the published TF tree |
 | `camera_optical_frames` | `visual_slam_node` | Must match `<camera_name>_infra{1,2}_optical_frame` from the drivers |
-| `enable_imu_fusion` | `visual_slam_node` | Keep `false`: the `vio_transform` IMU republisher is commented out pending re-test, and the RealSense IMU must not bias EKF2 via the visual-odom feedback path |
+| `enable_imu_fusion` | `visual_slam_node` | Keep `false`: the RealSense IMU streams are disabled (`enable_gyro`/`enable_accel`) and the `vio_transform` IMU republisher is commented out, so no IMU reaches `visual_slam/imu`; PX4 owns fusion |
 
 ---
 
