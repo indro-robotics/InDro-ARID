@@ -22,7 +22,7 @@ Every VSLAM frame runs through `slam_odom_callback`. A frame is forwarded to PX4
 
 - **Velocity / jump gate** (`odom_velocity_gate`). Rejects a frame exceeding `lin_vel_gate`, `ang_vel_gate_dps`, or the `VO_pos_delta_lim`/`VO_rate_lim` slow-jump pair. A rejection triggers an in-flight re-seat.
 - **Displacement / settle gate** (`odom_displacement_gate`). After an origin injection, keeps injecting until VSLAM and FMU poses agree within `align_yaw_deg` and `align_pos_m`; re-injects if `set_origin_settle_time` elapses first.
-- **Cadence gate** (`_cadence_update`). Withholds VO from EKF2 while cuVSLAM stamp cadence is degraded: a header-stamp gap over `cadence_gate_s` engages, `cadence_release_samples` consecutive nominal frames release (no timed escape). Stamp gaps over 5 s are treated as anomalies (reseed, no engage). While gated all settles are withheld and the settle countdown is paused; jump detection stays live (a genuine jump still re-seats and bumps the epoch). The withhold never bumps the epoch. State latched on `/reactor/cadence_gated`; engagements count on `/reactor/cadence_gate_count`.
+- **Cadence gate** (`_cadence_update`). Withholds VO from EKF2 while cuVSLAM stamp cadence is degraded. Two-tier engage: one header-stamp gap at or over `cadence_gate_hard_s` (0.40 s, EKF2's own arrival de-latch point), **or** `cadence_gate_sustained_samples` (5) consecutive gaps in the `cadence_gate_s`..`cadence_gate_hard_s` band — any nominal sample resets that streak, so lone 150-400 ms gaps are left to EKF2 as valid-late poses. `cadence_release_samples` consecutive nominal frames release (no timed escape). Stamp gaps over 5 s are treated as anomalies (reseed, no engage). While gated all settles are withheld and the settle countdown is paused; jump detection stays live (a genuine jump still re-seats and bumps the epoch). The withhold never bumps the epoch. State latched on `/reactor/cadence_gated`; engagements count on `/reactor/cadence_gate_count`.
 
 A `SetSlamPose` that never returns leaves `vslam_busy` set and suppresses EV forever; the `set_pose_busy_timeout_s` watchdog clears a hung call.
 
@@ -95,7 +95,9 @@ Loaded by [`px4_vslam/launch/vslam.launch.py`](../px4_vslam/launch/vslam.launch.
 | `set_origin_settle_time` | s | Injection window before the origin is re-injected. |
 | `set_pose_max_odom_age` | s | Max age of the PX4 odom sample seeding a re-seat. |
 | `fmu_stamp_max_skew_s` | s | Max \|now - FMU stamp\| before re-stamping outputs. |
-| `cadence_gate_s` | s | VO header-stamp gap that engages the cadence gate. |
+| `cadence_gate_s` | s | VO header-stamp gap counted as degraded cadence. |
+| `cadence_gate_hard_s` | s | Absolute gap that engages the gate on its own. |
+| `cadence_gate_sustained_samples` | count | Consecutive `cadence_gate_s`..`cadence_gate_hard_s` gaps that engage the gate. |
 | `cadence_release_samples` | count | Consecutive nominal frames to release the cadence gate. |
 | `set_pose_busy_timeout_s` | s | Clear a hung `vslam_busy` if SetSlamPose never returns. |
 

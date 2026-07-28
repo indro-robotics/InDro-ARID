@@ -27,7 +27,8 @@ caller about 15 s healthy, up to about 3 min on double failure.
 1. USB pre-check: the RealSense on the bus, else one `/reset_usb` and recheck. Still absent:
    stack never launched, response carries per-device USB evidence.
 2. Log watch: success once the camera logs `RealSense Node Is Up!`; fail-fast on
-   `Error starting device` (terminal per camera); 40 s backstop for silent hangs.
+   `Error starting device` (terminal per camera) and on `no factory exists` (image_transport
+   plugin race - markers print, no images flow); 40 s backstop for silent hangs.
 3. One recovery cycle on failure: teardown, `/reset_usb`, respawn, re-watch. Second failure
    stops the stack, `success=false`. No retry ladder.
 
@@ -44,9 +45,9 @@ the node journal). Relay them unchanged.
 - `enable=false` with nothing running: no-op, `success=true`.
 - Double-spawn impossible: a second enable queues behind an in-flight bringup and resolves to
   the no-op.
-- Foreign stacks (direct `ros2 launch px4_vslam vslam.launch.py`) are refused with the
-  colliding node names. A recently crashed one persists until its DDS lease expires: wait
-  about 10 s and retry.
+- Unowned trees (direct `ros2 launch px4_vslam vslam.launch.py`, or an orphan a crashed
+  supervisor left behind) are reaped on both paths when the drone is provably landed, so
+  `initialize` over one just works. Airborne or unknown refuses with the colliding names.
 
 ## Interlock
 
@@ -54,13 +55,23 @@ the node journal). Relay them unchanged.
 the disable. The supervisor never force-disarms and never lands the drone.
 
 Teardown SIGINTs the whole process group and waits for it to drain, escalating to SIGTERM
-then SIGKILL only on stall.
+then SIGKILL only on stall. A dead `ros2 launch` leader is no escape: the group is
+remembered, so surviving container children are still reaped.
+
+A supervisor stop while provably airborne leaves vslam running - land, then
+`deinitialize`/`initialize`.
 
 ## systemd unit
 
 `isaac_ros-dev/services/arid_supervisor.service` runs the launch via `docker exec` into
 `isaac_ros_dev-aarch64-container` as user `admin`, ordered after and bound to
 `start_isaac_docker.service`.
+
+`ExecStopPost` runs on every stop path including a crash: `airborne_check.sh` exit 0 (proven
+flight) preserves the stack, otherwise `reap_stack.sh` kills the vslam launch group. Its
+pattern is qualified to `ros2 launch px4_vslam vslam.launch.py` only - the host-side
+`rslidar_coordinator`, `gst_camera_manager` and `arid_description` units are untouched.
+`Restart=always`, because a node crash makes `ros2 launch` exit 0.
 
 Restart after any change to the node, its launch graphs, or the workspace build:
 

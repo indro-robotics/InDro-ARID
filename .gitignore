@@ -23,3 +23,6 @@ local_ws/auxiliary/camera_calibration/camera_calibrations/*/*_[0-9][0-9][0-9][0-
 
 # Local machine state (auto-detected LiDAR config, etc.; written by scripts/config_lidar.sh)
 .lidar/
+
+# Per-drone VSLAM config (serials); reseeded from vslam_config.template.yaml
+isaac_ros-dev/src/px4_vslam/config/vslam_config.yaml

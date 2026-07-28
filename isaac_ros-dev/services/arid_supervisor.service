@@ -21,11 +21,24 @@ ExecStart=/usr/bin/docker exec -u admin -e PYTHONUNBUFFERED=1 isaac_ros_dev-aarc
 # DDS servers); a bare 'arid_supervisor' matches unrelated host cmdlines (shared PID namespace)
 # and kills the invoking shell.
 ExecStop=/usr/bin/docker exec isaac_ros_dev-aarch64-container pkill -TERM -f 'arid_supervisor_node|arid_supervisor[.]launch[.]py'
+# Orphan reap. KillMode=mixed only reaches the host-side exec client (the real tree is
+# parented under containerd-shim, outside the unit cgroup), and ExecStop's pkill fires only
+# on a GRACEFUL stop with the node alive to run its own teardown. A supervisor crash, or a
+# restart racing the stop, otherwise leaves the vslam tree orphaned holding the camera.
+# ExecStopPost runs on EVERY stop path incl. crash, airborne-gated: airborne_check.sh exit 0
+# (proven flight) = reap nothing, vslam keeps flying; else reap_stack.sh SIGINTs the tree,
+# 25 s drain, SIGKILL. Scripts, not inline: systemd expands $VAR itself (unset -> pkill -f ""
+# = everything). '-' prefix: a down container must not fail the unit.
+ExecStopPost=-/bin/bash -c '/usr/bin/docker exec -u admin isaac_ros_dev-aarch64-container bash -lc /workspaces/isaac_ros-dev/container_scripts/airborne_check.sh && exit 0; exec /usr/bin/docker exec isaac_ros_dev-aarch64-container bash /workspaces/isaac_ros-dev/container_scripts/reap_stack.sh'
 # mixed: SIGTERM the whole cgroup so the launch wrapper is not orphaned.
 KillMode=mixed
-# 30 s lets the rclpy graph drain; less leaves leftover processes that collide on the next start (address in use).
-TimeoutStopSec=30
-Restart=on-failure
+# Worst-case stop ~112 s: supervisor ladder 38 s (SIGINT 25 + SIGTERM 5 + kill-wait 3 + straggler
+# reap 5) + ExecStopPost airborne check 47 s (13 + 17 + 17) + reap drain 27 s. A SIGKILL mid-reap
+# leaves the camera-holding survivors it exists to kill, so 150 keeps margin over that sum.
+TimeoutStopSec=150
+# always, not on-failure: a node crash makes `ros2 launch` exit 0, so on-failure never fires.
+# Manual stop is exempt from Restart=; StartLimit caps the loop.
+Restart=always
 RestartSec=5
 
 [Install]

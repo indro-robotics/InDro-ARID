@@ -27,6 +27,8 @@ info() { echo -e "  ${YELLOW}>>>${NC} $*"; }
 LIVE_SUBMODULES=(
     "isaac_ros-dev/src/px4_msgs:release/1.15"
     "local_ws/auxiliary/PX4-Autopilot:PX4-InDro"
+    "isaac_ros-dev/src/realsense-ros:v4.51.1"
+    "isaac_ros-dev/src/isaac_ros_visual_slam:v3.2-14"
 )
 
 # Format: "path:tag"
@@ -34,8 +36,6 @@ PINNED_SUBMODULES=(
     "isaac_ros-dev/src/isaac_ros_common:v3.2-14"
     "isaac_ros-dev/src/isaac_ros_nitros:v3.2-14"
     "isaac_ros-dev/src/isaac_ros_image_pipeline:v3.2-14"
-    "isaac_ros-dev/src/isaac_ros_visual_slam:v3.2-14"
-    "isaac_ros-dev/src/realsense-ros:4.51.1"
     "isaac_ros-dev/src/px4-ros2-interface-lib:1.4.0"
     "local_ws/src/rslidar_sdk:v1.5.19"
     "local_ws/src/rslidar_msg:v1.5.10"
@@ -50,7 +50,8 @@ if [[ "${1:-}" == "--update" ]]; then
         path="${entry%%:*}"; branch="${entry##*:}"
         if [[ -d "$path" ]]; then
             info "${path} -> branch ${branch}"
-            (cd "$path" && git fetch origin && git checkout "$branch" && git pull origin "$branch")
+            # -B from the remote ref: a bare checkout prefers a same-named TAG
+            (cd "$path" && git fetch origin && git checkout -B "$branch" "origin/$branch")
             ok "${path} updated"
         else
             warn "${path} not found - skipping"
@@ -85,6 +86,7 @@ fi
 # MODE: default  (sync + verify - called by setup.sh)
 ###############################################################################
 echo "Syncing all submodules to pinned commits..."
+git submodule sync --recursive
 git submodule update --init --recursive
 echo ""
 

@@ -51,6 +51,26 @@ def generate_launch_description():
         executable='vio_transform'
     )
 
+    # Device-plane watchdog: per-camera stream health + targeted hardware_reset
+    # recovery (one camera at a time). Reads the same vslam_config.yaml for serials.
+    # Single camera: a reset here is a real VO outage, no second camera to carry
+    # it. EKF2 coasts on ARK flow + rangefinder for the re-enumeration.
+    vslam_sentry_node = Node(
+        package='vslam_sentry',
+        executable='vslam_sentry_node',
+        name='vslam_sentry',
+        output='screen',
+        parameters=[{
+            'config_path': os.path.join(
+                get_package_share_directory('px4_vslam'), 'config',
+                'vslam_config.yaml'),
+            # Calm-window deferral off: with one camera a dead stream IS the VO
+            # outage, so waiting for a calm VO window only delays the one recovery
+            # available (the calm streak can never accrue while VO is down).
+            'reset_defer_max_s': 0.0,
+        }],
+    )
+
     vslam_reactor_config = os.path.join(
         get_package_share_directory('px4_vslam_reactor'),
         'config', 'px4_vslam_reactor.yaml')
@@ -70,6 +90,10 @@ def generate_launch_description():
         executable='component_container_mt',
         output='screen',
         env=env,
+        # The D4xx sensor close takes seconds; the launch default grace SIGKILLs mid-close
+        # and leaves the device dirty for the next init. Match the supervisor's SIGINT grace.
+        sigterm_timeout='25.0',
+        sigkill_timeout='10.0',
         composable_node_descriptions=[
             ComposableNode(
                 package='realsense2_camera',
@@ -77,10 +101,6 @@ def generate_launch_description():
                 name='front_realsense_link',
                 namespace='front_realsense',
                 parameters=[param_file],
-                remappings=[
-                    ('color/image_raw',   'image_raw'),
-                    ('color/camera_info', 'camera_info'),
-                ],
             ),
             ComposableNode(
                 package='isaac_ros_visual_slam',
@@ -109,6 +129,7 @@ def generate_launch_description():
                 vslam_container,
                 vslam_reactor_node,
                 vio_transform_node,
+                vslam_sentry_node,
             ],
         )),
     ])

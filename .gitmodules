@@ -8,16 +8,16 @@
 	branch = release-3.2
 [submodule "isaac_ros-dev/src/isaac_ros_visual_slam"]
 	path = isaac_ros-dev/src/isaac_ros_visual_slam
-	url = https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_visual_slam.git
-	branch = release-3.2
+	url = https://github.com/indro-robotics/isaac_ros_visual_slam.git
+	branch = v3.2-14
 [submodule "isaac_ros-dev/src/isaac_ros_nitros"]
 	path = isaac_ros-dev/src/isaac_ros_nitros
 	url = https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_nitros.git
 	branch = release-3.2
 [submodule "isaac_ros-dev/src/realsense-ros"]
 	path = isaac_ros-dev/src/realsense-ros
-	url = https://github.com/IntelRealSense/realsense-ros.git
-	branch = ros2-development
+	url = https://github.com/indro-robotics/realsense-ros.git
+	branch = v4.51.1
 [submodule "isaac_ros-dev/src/px4-ros2-interface-lib"]
 	path = isaac_ros-dev/src/px4-ros2-interface-lib
 	url = https://github.com/Auterion/px4-ros2-interface-lib.git

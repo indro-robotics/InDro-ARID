@@ -2,15 +2,14 @@ front_realsense/front_realsense_link:
   ros__parameters:
     enable_infra1: true
     enable_infra2: true
-    enable_color: true
-    enable_sync: false          # rs2 syncer would batch 90Hz infra onto the 15fps color cadence; off keeps IR at native 90Hz
+    enable_color: false         # nothing subscribes RealSense colour on ARID
+    enable_sync: false
     enable_depth: false
     depth_module:
       emitter_enabled: 0
       enable_auto_exposure: true
-      profile: '640x360x90'
+      profile: '640x360x60'
     rgb_camera:
-      profile: '1280x720x15'   # D43X-native RGB profile
       power_line_frequency: 1  # 60 Hz
     enable_gyro: false
     enable_accel: false
@@ -30,11 +29,14 @@ visual_slam_node:
     odom_frame: 'odom'
     base_frame: 'base_link'
     imu_frame: 'autopilot'
-    enable_slam_visualization: true
-    enable_landmarks_view: true
-    enable_observations_view: true
+    enable_slam_visualization: false   # nothing subscribes the vis topics; the LiDAR SDK shares this box
+    enable_landmarks_view: false
+    enable_observations_view: false
     enable_localization_n_mapping: true
     num_cameras: 2
+    min_num_images: 2   # one camera = 2 infra streams, both required; no loss is survivable.
+                        # Post-init only: cuVSLAM init still needs a camera_info from all num_cameras streams.
+    stale_stream_timeout_ms: 100.0   # inert at one camera: dropping a stale stream leaves 1 < min 2, so no set emits either way
     image_qos: "SENSOR_DATA"
     camera_optical_frames:
       - 'front_realsense_infra1_optical_frame'

@@ -8,6 +8,40 @@ set -u
 
 WORKSPACES="${WORKSPACES:-/home/jetson/workspaces}"
 VSLAM_CONFIG="${WORKSPACES}/isaac_ros-dev/src/px4_vslam/config/vslam_config.yaml"
+# vslam_config.yaml is untracked and REGENERABLE: template (fleet structure/tunables)
+# + serial (this drone). Reseed from the template on every run so template updates
+# propagate; an existing serial is captured first and re-spliced.
+VSLAM_TEMPLATE="${VSLAM_CONFIG%.yaml}.template.yaml"
+# --reseed-only: template refresh + serial re-splice, no probing, then exit. Setup runs
+# it unconditionally so new template keys reach provisioned drones; a missing/partial
+# config is left to the detect flow.
+RESEED_ONLY=0
+[[ "${1:-}" == "--reseed-only" ]] && RESEED_ONLY=1
+_SERIALS=()
+[ -f "${VSLAM_CONFIG}" ] && mapfile -t _SERIALS < <(grep -oE 'serial_no: "[0-9]+"' "${VSLAM_CONFIG}" | grep -oE '[0-9]+')
+if (( RESEED_ONLY )) && [ "${#_SERIALS[@]}" -ne 1 ]; then
+    # Seed anyway so a fresh clone / wiped config still gets a usable file with the
+    # current template keys; warn loudly because the serials are NOT restorable here.
+    cp "${VSLAM_TEMPLATE}" "${VSLAM_CONFIG}"
+    echo "WARNING: vslam_config.yaml had ${#_SERIALS[@]}/1 serials - reseeded from template" >&2
+    echo "         with BLANK serials; run 'config_realsense' to reassign." >&2
+    exit 0
+fi
+cp "${VSLAM_TEMPLATE}" "${VSLAM_CONFIG}"
+if [ "${#_SERIALS[@]}" -eq 1 ]; then
+    python3 - "${VSLAM_CONFIG}" "${_SERIALS[@]}" <<'PYSPLICE'
+import re, sys
+p, serials = sys.argv[1], sys.argv[2:]
+s = open(p).read()
+it = iter(serials)
+s = re.sub(r'serial_no: ""', lambda m: 'serial_no: "%s"' % next(it), s, count=1)
+open(p, 'w').write(s)
+PYSPLICE
+fi
+if (( RESEED_ONLY )); then
+    echo "vslam_config.yaml reseeded from template (serial preserved)"
+    exit 0
+fi
 
 # Source ROS if PATH lacks rs-enumerate-devices (setup.sh invokes this before the
 # user's shell sources ROS).
