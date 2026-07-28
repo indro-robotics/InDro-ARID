@@ -79,7 +79,7 @@ def generate_launch_description():
     )
 
     # NOTE on the RealSense claim race: sibling RealSenseNodeFactory instances
-    # cross-probe every attached D455 during enumeration; a collision yields
+    # cross-probe every attached RealSense during enumeration; a collision yields
     # RS2_USB_STATUS_BUSY -> "failed to set power state" -> that factory
     # permanently gives up. A launch-time stagger (8 s / 16 s TimerAction
     # LoadComposableNodes) proved insufficient and was reverted; recovery is
@@ -93,7 +93,7 @@ def generate_launch_description():
         executable='component_container_mt',
         output='screen',
         env=env,
-        # The D455 sensors close serially (~15-20 s for 3 stereo + RGB); the launch
+        # The D4xx sensors close serially (~15-20 s for 3 stereo + RGB); the launch
         # default grace SIGKILLs mid-close, leaving the device dirty for the next init.
         # Match the supervisor's 25 s SIGINT grace so the close completes cleanly.
         sigterm_timeout='25.0',

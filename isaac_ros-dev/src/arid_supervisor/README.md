@@ -21,7 +21,8 @@ Subscribes `/fmu/out/vehicle_land_detected` for the interlock. Subprocess output
 
 ## Bringup gate
 
-`vslam_enable=true` returns `success=true` only once all 3 RealSense (front/left/right) are
+`vslam_enable=true` returns `success=true` only once every configured RealSense (count derived
+from `vslam_config.yaml`; front/left/right on this airframe) is
 up. Blocks the caller about 15 s healthy, up to about 3 min on double failure.
 
 Camera count = the `*_realsense` sections of `vslam_config.yaml` carrying a serial; blank
@@ -31,7 +32,7 @@ Camera count = the `*_realsense` sections of `vslam_config.yaml` carrying a seri
    otherwise.
 1. USB pre-check: 3 RealSense on the bus, else one `/reset_usb` and recheck. Still short:
    stack never launched, response carries per-device USB evidence.
-2. Log watch: success once 3 distinct cameras log `RealSense Node Is Up!`; fail-fast on
+2. Log watch: success once that many distinct cameras log `RealSense Node Is Up!`; fail-fast on
    `Error starting device` (terminal per camera) and on `no factory exists` (image_transport
    plugin load failed: markers still print, publishers dead); 40 s backstop for silent hangs.
 3. One recovery cycle on failure: teardown, `/reset_usb`, respawn, re-watch. Second failure

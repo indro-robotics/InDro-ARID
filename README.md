@@ -17,7 +17,7 @@ End-to-end repo for provisioning, building, and operating a deployed ARID:
 
 | Sensor | Fit |
 |---|---|
-| 3x RealSense D455 | front / left / right IR stereo (VSLAM); `640x360x60` infra1 + infra2, colour / depth / IMU off |
+| 3x RealSense D435 | front / left / right IR stereo (VSLAM); `640x360x60` infra1 + infra2, colour / depth / IMU off |
 | 2x IMX219 CSI | `cam_front` (front) + `cam_down` (downward); unrotated, uncalibrated, video only |
 | ARK optical flow + rangefinder | bottom pod |
 
