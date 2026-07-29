@@ -1,20 +1,24 @@
 # px4_vslam
 
-Launch package for the RealSense-based visual SLAM stack (Intel D43X stereo camera).
-Wraps the RealSense driver + [Isaac ROS Visual SLAM](https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_visual_slam) + a PX4 bridge into a single `ros2 launch`.
+This package launches the RealSense-based visual SLAM stack and bridges its solution into PX4. One
+`ros2 launch` brings up the RealSense driver, [Isaac ROS Visual
+SLAM](https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_visual_slam), the reactor, the sentry, and the
+PX4 bridge.
 
-- **`vslam.launch.py`**: orchestrates the full stack.
-- **`vio_transform`** (C++ node): bridges VSLAM odometry into PX4 over uXRCE-DDS.
-- **`config/vslam_config.template.yaml`**: tracked fleet config (structure + tunables, blank `serial_no`).
-- **`config/vslam_config.yaml`**: the live per-drone file — gitignored, reseeded from the template by `config_realsense`, which splices in this drone's serial.
+- **`vslam.launch.py`**: the stack launch graph.
+- **`vio_transform`**: C++ node publishing VSLAM odometry to PX4 over uXRCE-DDS.
+- **`config/vslam_config.template.yaml`**: tracked fleet config with a blank `serial_no`.
+- **`config/vslam_config.yaml`**: the live per-drone file, reseeded from the template by
+  `config_realsense`, which splices in this drone's serial.
 
-Pose-correction / SLAM-reset logic lives in the sibling [`px4_vslam_reactor`](../px4_vslam_reactor/) package.
+Pose correction and SLAM re-seat logic live in [`px4_vslam_reactor`](../px4_vslam_reactor/).
 
 ---
 
 ## Launch
 
-Normal operation goes through `/arid_supervisor/vslam_enable` (camera-proven gate + landed interlock, see [`arid_supervisor`](../arid_supervisor/README.md)). Direct launch is the unmanaged dev path:
+Normal operation goes through `/arid_supervisor/vslam_enable`, which adds the camera-proven gate
+and the landed interlock. Direct launch is the unmanaged development path.
 
 ```bash
 ros2 launch px4_vslam vslam.launch.py
@@ -22,21 +26,27 @@ ros2 launch px4_vslam vslam.launch.py
 
 In order, the launch:
 
-1. Waits for `/robot_description` (blocks with `[vslam] Waiting for /robot_description ...` until the drone's `robot_state_publisher` is up).
-2. Starts `vslam_container` with one `realsense2_camera::RealSenseNodeFactory` node (`front_realsense`) and `VisualSlamNode` (2-stream stereo SLAM on the front IR pair).
-3. Starts `vslam_reactor_node` (see the reactor README).
+1. Waits for `/robot_description`, logging `[vslam] Waiting for /robot_description ...` until the
+   host `robot_state_publisher` is up.
+2. Starts `vslam_container` holding the `front_realsense` driver node and `VisualSlamNode`, doing
+   two-stream stereo SLAM on the front IR pair.
+3. Starts `vslam_reactor_node`.
 4. Starts `vio_transform`.
-5. Starts `vslam_sentry` (device-plane watchdog; `reset_defer_max_s: 0.0` — with one camera there is no calm VO window to wait for).
+5. Starts `vslam_sentry` with `reset_defer_max_s: 0.0`, so a camera reset is never deferred.
 
-The camera driver and `VisualSlamNode` share one `component_container_mt` process for intra-process comms; `vslam_reactor_node`, `vio_transform`, and `vslam_sentry` run as separate processes. The container gets a 25 s SIGTERM grace so the sensor close finishes before SIGKILL.
+The camera driver and `VisualSlamNode` share one `component_container_mt` process for
+intra-process comms, while `vslam_reactor_node`, `vio_transform` and `vslam_sentry` run as separate
+processes. The container gets a 25 s SIGTERM grace so the sensor close finishes before SIGKILL.
 
 ---
 
-## Config: `config/vslam_config.yaml`
+## Config
 
-Single YAML keyed by node name: one RealSense block and one SLAM block. Only the IR pair streams — colour, depth, and the IMU are off; nothing on ARID subscribes them.
+`config/vslam_config.yaml` is a single YAML keyed by node name, with one RealSense block and one
+SLAM block. Only the IR pair streams; colour, depth and the IMU are off.
 
-Edit the **template**, not the live file: `config_realsense` overwrites `vslam_config.yaml` from it on every run.
+Edit the template rather than the live file: `config_realsense` overwrites `vslam_config.yaml`
+from the template on every run.
 
 ```yaml
 front_realsense/front_realsense_link:
@@ -53,7 +63,7 @@ visual_slam_node:
     map_frame:  'map'
     odom_frame: 'odom'
     base_frame: 'base_link'
-    imu_frame:  '<imu-frame>'
+    imu_frame:  'autopilot'
     num_cameras: 2
     min_num_images: 2
     stale_stream_timeout_ms: 100.0
@@ -62,33 +72,36 @@ visual_slam_node:
       - 'front_realsense_infra2_optical_frame'
 ```
 
-Not 90 fps: the 90 fps USB service interval stalls the bus.
+> Do not select a 90 fps profile. The 90 fps USB service interval stalls the bus.
 
-To change anything: edit the template, `config_realsense --reseed-only`, rebuild (`colcon build --packages-select px4_vslam --symlink-install`), source install, relaunch. With `--symlink-install`, YAML-only edits need no rebuild.
+To change a value: edit the template, run `config_realsense --reseed-only`, then relaunch. The
+package is built with `--symlink-install`, so YAML-only edits need no rebuild.
 
 ### Common tweaks
 
 | Setting | Where | When to change |
 |---|---|---|
-| `serial_no` | realsense block | Camera swap — set it via `config_realsense`, not by hand |
-| `depth_module.profile` | realsense block | Trade FPS vs resolution; stay off 90 |
-| `base_frame`, `imu_frame` | `visual_slam_node` | Must match frames in the published TF tree |
-| `camera_optical_frames` | `visual_slam_node` | Must match `<camera_name>_infra{1,2}_optical_frame` from the driver |
-| `min_num_images` | `visual_slam_node` | `2` = both IR streams required. Only one camera, so no stream loss is survivable; the tolerance is post-init anyway (cuVSLAM init needs a `camera_info` from all `num_cameras` streams) |
-| `stale_stream_timeout_ms` | `visual_slam_node` | `100.0`; inert here — dropping a stale stream leaves 1 < `min_num_images` 2, so no set emits either way |
-| `enable_imu_fusion` | `visual_slam_node` | Keep `false`: the `vio_transform` IMU republisher is commented out pending re-test, and the RealSense IMU must not bias EKF2 via the visual-odom feedback path |
+| `serial_no` | realsense block | Camera swap; set it with `config_realsense`, not by hand. |
+| `depth_module.profile` | realsense block | Trading FPS against resolution; stay off 90. |
+| `base_frame`, `imu_frame` | `visual_slam_node` | Must match frames in the published TF tree. |
+| `camera_optical_frames` | `visual_slam_node` | Must match `<camera_name>_infra{1,2}_optical_frame`. |
+| `min_num_images` | `visual_slam_node` | `2` requires both IR streams, so no stream loss is survivable. |
+| `stale_stream_timeout_ms` | `visual_slam_node` | Inert at one camera: dropping a stale stream leaves 1 below `min_num_images`. |
+| `enable_imu_fusion` | `visual_slam_node` | Keep `false`; the RealSense IMU must not bias EKF2 through the visual-odometry path. |
 
 ---
 
-## `vio_transform` node
+## vio_transform
 
-Converts the filtered VSLAM solution into the PX4 visual-odometry message. Forwards the latched `/reactor/vio_reset_epoch` into `VehicleOdometry.reset_counter` so EKF2 re-anchors on a committed re-seat instead of gating the discontinuity.
+`vio_transform` converts the filtered VSLAM solution into the PX4 visual-odometry message. It
+forwards the latched `/reactor/vio_reset_epoch` into `VehicleOdometry.reset_counter` so EKF2
+re-anchors on a committed re-seat instead of gating the discontinuity.
 
 | Subscribed | Type |
 |---|---|
 | `/visual_slam/filt_slam_odometry` | `nav_msgs/Odometry` |
 | `/visual_slam/status` | `isaac_ros_visual_slam_interfaces/VisualSlamStatus` |
-| `/reactor/vio_reset_epoch` | `std_msgs/UInt8` (transient-local) |
+| `/reactor/vio_reset_epoch` | `std_msgs/UInt8` (latched) |
 
 | Published | Type |
 |---|---|
@@ -98,10 +111,10 @@ Converts the filtered VSLAM solution into the PX4 visual-odometry message. Forwa
 
 ## Dependencies
 
-ROS packages (see [`package.xml`](package.xml)): `isaac_ros_visual_slam` + `isaac_ros_visual_slam_interfaces`, `px4_msgs`, tf2 stack, `nav_msgs`, `sensor_msgs`, `std_msgs`, `geometry_msgs`. `realsense2_camera`.
+ROS packages are declared in [`package.xml`](package.xml): `isaac_ros_visual_slam` and
+`isaac_ros_visual_slam_interfaces`, `realsense2_camera`, `px4_msgs`, the tf2 stack, `nav_msgs`,
+`sensor_msgs`, `std_msgs` and `geometry_msgs`.
 
-Runtime:
-
-- `robot_state_publisher` publishing `/robot_description` and `/tf_static` with the frames referenced in the YAML.
-- uXRCE-DDS client connected to PX4.
-- RealSense camera on USB with serial matching the YAML.
+At runtime the launch needs `robot_state_publisher` publishing `/robot_description` and
+`/tf_static` with the frames named in the YAML, a uXRCE-DDS client connected to PX4, and the
+RealSense on USB with the serial the YAML names.

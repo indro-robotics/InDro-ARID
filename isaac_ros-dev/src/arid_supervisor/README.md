@@ -1,112 +1,96 @@
 # arid_supervisor
 
-Always-on lifecycle manager for the ARID VSLAM stack. One long-lived ROS 2 node, started at
-boot by `arid_supervisor.service` inside the Isaac container. Starts and stops `px4_vslam`
-as a managed subprocess behind a camera-proven bringup gate and a landed-state interlock.
-Every entry point (`initialize`, `deinitialize`, manual `ros2 service call`) goes through it.
+The supervisor is the always-on lifecycle manager for the ARID VSLAM stack. It is one long-lived
+ROS 2 node, started at boot by `arid_supervisor.service` inside the Isaac container, and it runs
+`px4_vslam` as a managed subprocess behind a camera-proven bringup gate and a landed-state
+interlock. Every entry point (`initialize`, `deinitialize`, a manual `ros2 service call`) goes
+through it.
 
-Never controls the drone, never fuses state. Process lifecycle only.
+The node manages process lifecycle only. It never commands the drone and never fuses state.
 
 ## Services
 
-Hosted under the `arid_supervisor` node namespace.
+Both services are hosted under the `arid_supervisor` node namespace.
 
 | Service | Type | Purpose |
 | --- | --- | --- |
-| `~/vslam_enable` | `std_srvs/SetBool` | `true`: camera-proven bringup. `false`: teardown (landed-gated). |
-| `~/status` | `std_srvs/Trigger` | `success` = vslam running; message adds land state. |
+| `~/vslam_enable` | `std_srvs/SetBool` | `true` runs the camera-proven bringup; `false` tears down, landed-gated. |
+| `~/status` | `std_srvs/Trigger` | `success` is vslam running; the message adds land state. |
 
-Subscribes `/fmu/out/vehicle_land_detected` for the interlock. Subprocess output:
+The node subscribes `/fmu/out/vehicle_land_detected` for the interlock. Subprocess output goes to
 `/workspaces/isaac_ros-dev/run_logs/<name>/<name>.log`, truncated per launch.
 
 ## Bringup gate
 
-`vslam_enable=true` returns `success=true` only once the front RealSense is up. Blocks the
-caller about 15 s healthy, up to about 3 min on double failure.
+`vslam_enable=true` returns `success=true` only once the front RealSense is up. It blocks the
+caller about 15 s on a healthy bringup and up to about 3 min on a double failure.
 
-1. USB pre-check: the RealSense on the bus, else one `/reset_usb` and recheck. Still absent:
-   stack never launched, response carries per-device USB evidence.
-2. Log watch: success once the camera logs `RealSense Node Is Up!`; fail-fast on
-   `Error starting device` (terminal per camera) and on `no factory exists` (image_transport
-   plugin race - markers print, no images flow); 40 s backstop for silent hangs.
-3. One recovery cycle on failure: teardown, `/reset_usb`, respawn, re-watch. Second failure
-   stops the stack, `success=false`. No retry ladder.
+1. USB pre-check. The RealSense must be on the bus, otherwise one `/reset_usb` and a recheck. If
+   it is still absent the stack is never launched and the response carries per-device USB evidence.
+2. Log watch. Success on `RealSense Node Is Up!`; fail-fast on `Error starting device` (terminal)
+   and on `no factory exists` (an `image_transport` plugin race where markers print but no images
+   flow); a 40 s backstop catches silent hangs.
+3. One recovery cycle on failure: teardown, `/reset_usb`, respawn, re-watch. A second failure stops
+   the stack and returns `success=false`. There is no retry ladder.
 
-Failure messages carry verbatim driver evidence, clipped to about 500 chars (full detail in
-the node journal). Relay them unchanged.
+Failure messages carry verbatim driver evidence clipped to about 500 characters, with the full
+detail in the node journal. Relay them unchanged.
 
-> `/reset_usb` power-cycles the camera USB hub and pulses the FMU reset line. Bringup only,
-> drone disarmed on the ground; never issue it later in the mission.
+> `/reset_usb` power-cycles the camera USB hub and pulses the FMU reset line. Use it at bringup
+> only, with the drone disarmed on the ground.
 
 ## Idempotency
 
-- `enable=true` with the stack running: no-op, `success=true`, message
+- `enable=true` with the stack running is a no-op returning `success=true` and the message
   `vslam already running (up <N>s, 1/1 camera at bringup)`.
-- `enable=false` with nothing running: no-op, `success=true`.
-- Double-spawn impossible: a second enable queues behind an in-flight bringup and resolves to
-  the no-op.
-- Unowned trees (direct `ros2 launch px4_vslam vslam.launch.py`, or an orphan a crashed
-  supervisor left behind) are reaped on both paths when the drone is provably landed, so
-  `initialize` over one just works. Airborne or unknown refuses with the colliding names.
+- `enable=false` with nothing running is a no-op returning `success=true`.
+- A second enable queues behind an in-flight bringup and resolves to the no-op, so a double spawn
+  cannot occur.
+- Unowned trees, left by a direct `ros2 launch px4_vslam vslam.launch.py` or by a crashed
+  supervisor, are reaped on both paths when the drone is provably landed. Airborne or unknown land
+  state refuses the call and names the colliding processes.
 
 ## Interlock
 
-`vslam_enable=false` requires a fresh `landed == True` sample; stale or airborne refuses
+`vslam_enable=false` requires a fresh `landed == True` sample; a stale or airborne sample refuses
 the disable. The supervisor never force-disarms and never lands the drone.
 
-Teardown SIGINTs the whole process group and waits for it to drain, escalating to SIGTERM
-then SIGKILL only on stall. A dead `ros2 launch` leader is no escape: the group is
-remembered, so surviving container children are still reaped.
+Teardown SIGINTs the whole process group and waits for it to drain, escalating to SIGTERM and then
+SIGKILL only on a stall. A terminated `ros2 launch` leader is not an escape: the group id is
+remembered at spawn, so surviving container children are still reaped.
 
-A supervisor stop while provably airborne leaves vslam running - land, then
-`deinitialize`/`initialize`.
+A supervisor stop while the drone is provably airborne leaves vslam running. Land, then
+`deinitialize` or `initialize`.
+
+## Parameters
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `rs_usb_pids` | D43X family | USB product ids the pre-check accepts as a RealSense. |
+
+Pin the exact product id once confirmed with `cat /sys/bus/usb/devices/*/idProduct`.
 
 ## systemd unit
 
-`isaac_ros-dev/services/arid_supervisor.service` runs the launch via `docker exec` into
+`isaac_ros-dev/services/arid_supervisor.service` runs the launch through `docker exec` into
 `isaac_ros_dev-aarch64-container` as user `admin`, ordered after and bound to
 `start_isaac_docker.service`.
 
-`ExecStopPost` runs on every stop path including a crash: `airborne_check.sh` exit 0 (proven
-flight) preserves the stack, otherwise `reap_stack.sh` kills the vslam launch group. Its
-pattern is qualified to `ros2 launch px4_vslam vslam.launch.py` only - the host-side
-`rslidar_coordinator`, `gst_camera_manager` and `arid_description` units are untouched.
-`Restart=always`, because a node crash makes `ros2 launch` exit 0.
+`ExecStopPost` runs on every stop path including a crash. `airborne_check.sh` exiting 0 means
+proven flight and preserves the stack; anything else runs `reap_stack.sh`, whose pattern is
+qualified to `ros2 launch px4_vslam vslam.launch.py` so the host-side `rslidar_coordinator`,
+`gst_camera_manager` and `arid_description` units are untouched. The unit respawns within 5 s of
+any exit, and more than 5 restarts in 60 s leaves it failed.
 
-Restart after any change to the node, its launch graphs, or the workspace build:
+Restart the unit after any change to the node, its launch graphs, or the workspace build:
 
 ```bash
 sudo systemctl restart arid_supervisor.service
 sudo systemctl status arid_supervisor.service
 ```
 
-## Deployment
-
-After pulling onto another system:
-
-Rebuild the workspace. Symlink-install: Python edits need only a supervisor restart; new
-files, `setup.py`, or launch-graph changes need the build:
-
-```bash
-colcon_isaac
-```
-
-Install the unit (`setup.sh` does this in a full run):
-
-```bash
-sudo cp -f /home/jetson/workspaces/isaac_ros-dev/services/arid_supervisor.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl restart arid_supervisor.service
-```
-
-Propagate `arid_env.sh`: `container_scripts/arid_env.sh` is the tracked source, built into
-the image; rebuild the image or copy the file into the live container.
-
-Set the per-drone RealSense serial: run `config_realsense` (writes
-`px4_vslam/config/vslam_config.yaml`).
-
-Confirm the RealSense USB PID: the `rs_usb_pids` parameter defaults to the D43X family;
-pin the exact PID after checking `cat /sys/bus/usb/devices/*/idProduct`.
+The node is installed with `--symlink-install`, so a Python edit needs only the restart while new
+files, `setup.py` changes, or launch-graph changes need `colcon_isaac` first.
 
 Confirm the supervisor is live:
 
