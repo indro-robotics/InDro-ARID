@@ -259,7 +259,7 @@ class vslam_reactor(Node):
             ('sync_cache_sz', 300),
             ('align_yaw_deg', 2.0),
             ('align_pos_m', 0.10),
-            ('set_pose_max_odom_age', 0.010),
+            ('set_pose_max_odom_age', 0.030),
             ('set_origin_settle_time', 10.0),
             ('fmu_stamp_max_skew_s', 0.5),
             ('cadence_gate_s', 0.15),
