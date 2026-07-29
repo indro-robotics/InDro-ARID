@@ -1,52 +1,56 @@
 # px4_vslam_reactor
 
-Coordinates the external visual-SLAM source with PX4. Watches the incoming SLAM solution, gates bad samples (tracking jumps, teleports, mis-syncs), and re-anchors SLAM to the PX4 solution when the two diverge.
+The reactor coordinates the external visual-SLAM source with PX4. It watches the incoming SLAM solution, gates bad samples such as tracking jumps, teleports and cadence starvation, and re-anchors SLAM onto the PX4 solution when the two diverge.
 
-All sensor fusion is in PX4: the reactor does not fuse IMU data, run a filter, or cross-check against inertial state. It provides a jump-free visual-odometry stream and signals EKF2 when that stream has moved discontinuously.
+All sensor fusion stays in PX4. The reactor does not fuse IMU data, run a filter, or cross-check against inertial state; it provides a jump-free visual-odometry stream and signals EKF2 when that stream has moved discontinuously.
 
-Launched by the sibling [`px4_vslam`](../px4_vslam/) package. One node: `vslam_reactor_node`.
+The [`px4_vslam`](../px4_vslam/) launch starts it as `vslam_reactor_node`.
 
 ---
 
 ## Function
 
-1. **Filters the SLAM odometry stream.** Velocity and position-delta gates reject teleports and tracking glitches. Clean stream republished on `/visual_slam/filt_slam_odometry`.
-2. **Detects reset-misalignment.** After a `SetSlamPose` call, keeps injecting the stream until the VSLAM pose agrees with the PX4 estimator within tolerance; if the settle window elapses without alignment, the origin is re-injected and the window restarts.
-3. **Hosts a force-reset service** (`visual_slam/set_reactor_pose`, `std_srvs/Trigger`): commands a re-injection of the zero origin (0 position, 0 yaw, gravity-aligned roll/pitch) at any time.
-
-All thresholds are configurable via [`config/px4_vslam_reactor.yaml`](config/px4_vslam_reactor.yaml).
+1. It filters the SLAM odometry stream. Velocity and position-delta gates reject teleports and tracking glitches, and the clean stream is republished on `/visual_slam/filt_slam_odometry`.
+2. It detects reset-misalignment. After a `SetSlamPose` call it keeps injecting the stream until the VSLAM pose agrees with the PX4 estimator within tolerance; if the settle window elapses without alignment, the origin is re-injected and the window restarts.
+3. It hosts a force-reset service, `visual_slam/set_reactor_pose`, which commands a re-injection of the zero origin (zero position, zero yaw, gravity-aligned roll and pitch) at any time.
 
 ## Gates
 
-Every VSLAM frame runs through `slam_odom_callback`. A frame is forwarded to PX4 only when VSLAM reports tracking (`vslam_status == 1`) and the reactor is not mid-reseat (`vslam_busy` clear).
+Every VSLAM frame runs through `slam_odom_callback`. A frame reaches PX4 only when VSLAM reports tracking (`vslam_status == 1`) and the reactor is not mid-reseat.
 
-- **Velocity / jump gate** (`odom_velocity_gate`). Rejects a frame exceeding `lin_vel_gate`, `ang_vel_gate_dps`, or the `VO_pos_delta_lim`/`VO_rate_lim` slow-jump pair. A rejection triggers an in-flight re-seat.
-- **Displacement / settle gate** (`odom_displacement_gate`). After an origin injection, keeps injecting until VSLAM and FMU poses agree within `align_yaw_deg` and `align_pos_m`; re-injects if `set_origin_settle_time` elapses first.
-- **Cadence gate** (`_cadence_update`). Withholds VO from EKF2 while cuVSLAM stamp cadence is degraded. Two-tier engage on VO header-stamp gaps: one gap at or over `cadence_gate_hard_s` (0.40 s, EKF2's own arrival de-latch point), or `cadence_gate_sustained_samples` (5) consecutive gaps in `cadence_gate_s`..`cadence_gate_hard_s` — a lone lesser gap is a valid-late pose EKF2 absorbs and does not engage. Any nominal sample breaks the lesser-gap streak. `cadence_release_samples` consecutive nominal frames release (no timed escape). Stamp gaps over 5 s are treated as anomalies (reseed, no engage). While gated all settles are withheld and the settle countdown is paused; jump detection stays live (a genuine jump still re-seats and bumps the epoch). The withhold never bumps the epoch. State latched on `/reactor/cadence_gated`; engagements count on `/reactor/cadence_gate_count`.
+**Velocity and jump gate.** A frame exceeding `lin_vel_gate`, `ang_vel_gate_dps`, or the `VO_pos_delta_lim` and `VO_rate_lim` slow-jump pair is rejected, and the rejection triggers an in-flight re-seat. The slow-jump term is suppressed while the cadence gate is engaged, where normal motion across a gated gap would read as a jump.
 
-A `SetSlamPose` that never returns leaves `vslam_busy` set and suppresses EV forever; the `set_pose_busy_timeout_s` watchdog clears a hung call.
+**Post-re-seat bypass.** A committed re-seat opens a short window in which the jump gate is bypassed and the baseline is rebased onto every arriving frame, so the pose step the re-seat creates is not re-judged as a cuVSLAM jump. The window closes once `vslam_stabilization_time` has elapsed and at least two frames stamped after the commit have rebased the baseline, and it is hard-capped at 3 s. Frames stamped before the commit rebase the baseline but are withheld from PX4, since they may still carry the pre-re-seat pose under the already-bumped reset counter.
+
+**Displacement and settle gate.** After an origin injection the reactor keeps injecting until the VSLAM and FMU poses agree within `align_yaw_deg` and `align_pos_m`, and re-injects if `set_origin_settle_time` elapses first.
+
+**Cadence gate.** VO is withheld from EKF2 while cuVSLAM stamp cadence is degraded. Engagement is two-tier on VO header-stamp gaps: one gap at or over `cadence_gate_hard_s`, or `cadence_gate_sustained_samples` consecutive gaps between `cadence_gate_s` and `cadence_gate_hard_s`. A lone lesser gap does not engage, and any nominal sample breaks the lesser-gap streak. `cadence_release_samples` consecutive nominal frames release the gate; there is no timed escape. Stamp gaps over 5 s are treated as stamp anomalies and reseed the tracker instead of engaging. While gated, all settles are withheld and the settle countdown pauses, but jump detection stays live so a genuine jump still re-seats and bumps the epoch. The withhold itself never bumps the epoch. State is latched on `/reactor/cadence_gated` and engagements count on `/reactor/cadence_gate_count`.
+
+**Re-seat burst limit.** Jump re-seats are budgeted at `reseat_burst_max` committed re-seats per rolling `reseat_burst_window_s`. Once the budget is spent, further jump re-seats are blocked, because re-seating at that rate cannot recover cuVSLAM and only feeds EKF2 a reset storm. Blocking a re-seat never bumps the reset epoch. Origin re-injections are bounded by the settle timeout and are not counted against the budget.
+
+A `SetSlamPose` call that never returns would suppress EV publishing indefinitely; the `set_pose_busy_timeout_s` watchdog clears the hung call.
+
+## VO health
+
+`/reactor/vo_healthy` latches false on either of two conditions and returns to true when both clear. The first is an exhausted re-seat budget. The second is EV publish silence: no output to `vio_transform` for longer than `ev_silence_max_s` while cuVSLAM frames are still arriving and EV fusion has started, which is the case every input-side monitor reads as healthy. The reactor never commands a flight action off this signal.
 
 ## Epochs and reset_counter
 
-Each committed re-seat bumps the epoch on `/reactor/vio_reset_epoch` (`std_msgs/UInt8`, transient-local). `vio_transform` forwards it into `VehicleOdometry.reset_counter`, telling EKF2 to reset its EV-aided states onto the new pose instead of gating the discontinuity.
-
-The epoch bumps only on the `SetSlamPose` success path: bumping earlier would stamp the new counter onto a pre-reseat pose, and a failed re-seat would consume an epoch. `vslam_busy` must clear on every path (success, refusal, exception) or EV publishing is suppressed indefinitely.
+Each committed re-seat bumps the epoch on `/reactor/vio_reset_epoch`. `vio_transform` forwards it into `VehicleOdometry.reset_counter`, which tells EKF2 to reset its EV-aided states onto the new pose instead of gating the discontinuity. Only the `SetSlamPose` success path bumps the epoch.
 
 ## Origin injection
 
-On init (pre-takeoff datum) the origin is zero position and zero yaw, keeping FMU roll/pitch so the frame stays gravity-aligned: the magnetometer is disabled, so the heading datum is arbitrary, and a 0-yaw origin removes a re-anchor jump EKF2 would reject. In-flight re-seats keep the FMU's full orientation so the re-anchor stays near zero.
+On init the pre-takeoff datum is zero position and zero yaw, keeping the FMU roll and pitch so the frame stays gravity-aligned. The magnetometer is disabled, so the heading datum is arbitrary and a zero-yaw origin removes a re-anchor jump that EKF2 would reject. In-flight re-seats keep the FMU's full orientation, which keeps the re-anchor near zero.
 
 ## FMU stamp clamp
 
-`px4_odom_callback` re-stamps the `map`->`px4` TF and `/reactor/drone_odom` / `/reactor/drone_pose` with node time when the FMU timestamp skews more than `fmu_stamp_max_skew_s` from now: uXRCE timesync excursions can pass boot-relative or future stamps through and corrupt tf2 buffers. Skew-vs-now, not monotonicity: a future stamp is still monotonic. Normal-path stamps are untouched. Excursions are counted and warned at a throttle.
-
-## Lifecycle invariant
-
-`est_status_sub` (watching `/fmu/out/estimator_status_flags` for `cs_ev_pos`) is never destroyed: fusion detection must be able to re-fire after a re-arm, or the velocity and displacement gates are bypassed on later epochs. On detection it records `last_set_pose_time` so the settle window measures EKF2-fusion time, not FMU downtime.
+`px4_odom_callback` re-stamps the `map`->`px4` TF and `/reactor/drone_odom` and `/reactor/drone_pose` with node time when the FMU timestamp skews more than `fmu_stamp_max_skew_s` from now, because uXRCE timesync excursions can pass boot-relative or future stamps through and corrupt tf2 buffers. The test is skew against now rather than monotonicity, since a future stamp is still monotonic. Excursions are counted and warned at a throttle.
 
 ---
 
 ## Inputs
+
+The reactor subscribes to two VSLAM topics and two PX4 topics.
 
 | Topic | Type | From | Used for |
 |---|---|---|---|
@@ -57,16 +61,21 @@ On init (pre-takeoff datum) the origin is zero position and zero yaw, keeping FM
 
 ## Outputs
 
+The reactor publishes the filtered stream plus its gate and health telemetry.
+
 | Topic | Type | Purpose |
 |---|---|---|
 | `/visual_slam/filt_slam_odometry` | `nav_msgs/Odometry` | Jump-filtered VSLAM odometry; downstream consumers should prefer this. |
-| `/reactor/drone_odom` | `nav_msgs/Odometry` | PX4 odom in ROS conventions (FRD to FLU); cached for alignment checks. |
-| `/reactor/drone_pose` | `geometry_msgs/PoseStamped` | Same, pose only; for RViz or Foxglove. |
+| `/reactor/drone_odom` | `nav_msgs/Odometry` | PX4 odom in ROS conventions (FRD to FLU). |
+| `/reactor/drone_pose` | `geometry_msgs/PoseStamped` | Same, pose only, for RViz or Foxglove. |
 | `/reactor/vio_reset_epoch` | `std_msgs/UInt8` (latched) | Committed-re-seat epoch. |
-| `/reactor/cadence_gated` | `std_msgs/Bool` (latched) | True while VO is being withheld for degraded cadence. |
-| `/reactor/cadence_gate_count` | `std_msgs/UInt32` (latched) | Cumulative cadence-gate engagements; post-flight forensics. |
+| `/reactor/cadence_gated` | `std_msgs/Bool` (latched) | True while VO is withheld for degraded cadence. |
+| `/reactor/cadence_gate_count` | `std_msgs/UInt32` (latched) | Cumulative cadence-gate engagements. |
+| `/reactor/vo_healthy` | `std_msgs/Bool` (latched) | False on an exhausted re-seat budget or EV publish silence. |
 
 ## Services
+
+The reactor hosts one service and calls one.
 
 | Interface | Direction | Type | Purpose |
 |---|---|---|---|
@@ -75,20 +84,20 @@ On init (pre-takeoff datum) the origin is zero position and zero yaw, keeping FM
 
 ## TF
 
-Broadcasts the drone pose (`map`->`px4`); consumes the TF tree for body-frame conversions.
+The reactor broadcasts the drone pose as `map`->`px4` and consumes the TF tree for body-frame conversions.
 
 ---
 
-## Config: `config/px4_vslam_reactor.yaml`
+## Parameters
 
-Loaded by [`px4_vslam/launch/vslam.launch.py`](../px4_vslam/launch/vslam.launch.py). Defaults are also declared in the node, so it runs if the file is absent.
+Values come from [`config/px4_vslam_reactor.yaml`](config/px4_vslam_reactor.yaml), loaded by [`px4_vslam/launch/vslam.launch.py`](../px4_vslam/launch/vslam.launch.py). The node declares a default for every key, so it runs if the file is absent or omits a key. Angular gates are entered in degrees and converted in the node.
 
 | Parameter | Units | Controls |
 |---|---|---|
-| `vslam_stabilization_time` | s | Wait-window after a reset before accepting new odometry. |
+| `vslam_stabilization_time` | s | Floor of the post-re-seat jump-gate bypass window. |
 | `lin_vel_gate` | m/s | Linear-velocity ceiling for jump detection. |
 | `ang_vel_gate_dps` | deg/s | Angular-velocity ceiling for jump detection. |
-| `VO_rate_lim` + `VO_pos_delta_lim` | s, m | Slow-jump detection; both must hold to reject. |
+| `VO_rate_lim` + `VO_pos_delta_lim` | s, m | Slow-jump detection; the stamp delta and the position step must both exceed these. |
 | `sync_cache_sz` | count | Cache depth for PX4-to-VSLAM time alignment. |
 | `align_yaw_deg` | deg | Settle-exit yaw tolerance. |
 | `align_pos_m` | m | Settle-exit 3D position tolerance. |
@@ -98,31 +107,26 @@ Loaded by [`px4_vslam/launch/vslam.launch.py`](../px4_vslam/launch/vslam.launch.
 | `cadence_gate_s` | s | Floor of the lesser-gap tier; gaps below this are nominal. |
 | `cadence_gate_hard_s` | s | Single-gap engage threshold. |
 | `cadence_gate_sustained_samples` | count | Consecutive lesser gaps that engage. |
-| `cadence_release_samples` | count | Consecutive nominal frames to release the cadence gate. |
-| `set_pose_busy_timeout_s` | s | Clear a hung `vslam_busy` if SetSlamPose never returns. |
+| `cadence_release_samples` | count | Consecutive nominal frames that release. |
+| `set_pose_busy_timeout_s` | s | Clears a hung `SetSlamPose` call. |
+| `reseat_burst_max` | count | Committed jump re-seats allowed in the window. |
+| `reseat_burst_window_s` | s | Rolling window for the re-seat budget. |
+| `ev_silence_max_s` | s | EV output silence, with frames arriving, before `/reactor/vo_healthy` latches false. |
 
-To change a value: edit the YAML, rebuild (or re-source install if built with `--symlink-install`), restart the launch.
+Edit the YAML, then restart the launch. The workspace is symlink-installed, so this needs no rebuild.
 
 ---
 
 ## Running
 
-Normally launched by the VSLAM stack:
+Normally the VSLAM stack launches it:
 
 ```bash
 ros2 launch px4_vslam vslam.launch.py
 ```
 
-Standalone (testing against a running VSLAM graph):
+Standalone, against an already running VSLAM graph:
 
 ```bash
 ros2 run px4_vslam_reactor vslam_reactor_node
 ```
-
----
-
-## Dependencies
-
-ROS packages (declared in [`package.xml`](package.xml)): `isaac_ros_visual_slam` + `isaac_ros_visual_slam_interfaces`, `px4_vslam`, `px4_msgs`, `std_msgs`, `std_srvs`, `nav_msgs`, `geometry_msgs`, `sensor_msgs`, `tf2_ros`, `message_filters`.
-
-Python: `python3-numpy`, `python3-scipy`.

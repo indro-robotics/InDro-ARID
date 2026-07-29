@@ -5,12 +5,19 @@
 /**:
   ros__parameters:
 
-    vslam_stabilization_time: 1.0    # s, settle time before trusting a fresh VSLAM solution
+    vslam_stabilization_time: 1.0    # s, post-re-seat jump-gate bypass window FLOOR: a re-seat is purposeful,
+                                     #    so its pose step must never re-trigger the jump gate. Timed from the
+                                     #    SUCCESS response. The window closes only when this has elapsed AND
+                                     #    >=2 post-commit frames rebased the baseline (RESEAT_BYPASS_MIN_FRAMES);
+                                     #    hard cap RESEAT_BYPASS_CEILING_S 3 s so a dead stream cannot pin it open
     lin_vel_gate: 5.0                # m/s, reject odometry above this linear velocity (was 15.0 - too loose;
                                      #      analyzed flight peaked ~0.82 m/s, so 5.0 leaves headroom)
     ang_vel_gate_dps: 200.0          # deg/s, reject odometry above this angular velocity (was 900.0)
-    VO_rate_lim: 0.5                 # s, min interval between set-pose corrections
-    VO_pos_delta_lim: 0.4            # m, max position jump accepted in one correction
+    VO_rate_lim: 0.5                 # s, jump-gate pos-delta AND-term time threshold: displacement counts as
+                                     #    slow-teleport evidence only when the stamp delta exceeds this. Term is
+                                     #    suppressed while the cadence gate is engaged (gaps >=0.4 s are gated
+                                     #    first, and normal motion across such a gap would read as a jump)
+    VO_pos_delta_lim: 0.4            # m, position step treated as a slow teleport by the AND-term above
     sync_cache_sz: 300               # message_filters sync cache depth
 
     # Set-origin settle / alignment (dedicated; separate from the jump gate above).
@@ -47,8 +54,20 @@
     cadence_gate_hard_s: 0.40        # s, single-gap engage - EKF2's own arrival de-latch point; lesser gaps are valid-late poses it absorbs
     cadence_gate_sustained_samples: 5  # consecutive lesser gaps (gate_s..hard_s) that engage - persistent degraded cadence
     cadence_release_samples: 5       # consecutive nominal-cadence samples to release (~83 ms at 60 Hz, ~165 ms at 30 Hz)
-    set_pose_busy_timeout_s: 5.0     # s, clear vslam_busy if a SetSlamPose response never arrives (cuVSLAM died mid-call)
     # NO timed release: a degraded stream stays withheld until cadence proves nominal. EKF2 coasts
     # on flow+rng after its native 400 ms EV de-latch; if ALL horizontal aiding dies, PX4's own
     # ladder ends in failsafe. /reactor/cadence_gated latches True for the whole withhold so
     # prolonged gating is observable.
+    set_pose_busy_timeout_s: 3.0     # s, clear vslam_busy if a SetSlamPose response never arrives (cuVSLAM died
+                                     #    mid-call); without this the EV stream is dead for the rest of the flight.
+                                     #    3.0 not 5.0: must land CLEAR of CADENCE_ANOMALY_CEILING_S (5 s - at which
+                                     #    the cadence gate stands down as a stamp anomaly)
+
+    # Jump-re-seat burst limiter: re-seating at multi-Hz cannot recover cuVSLAM, it only feeds EKF2
+    # a reset storm. Past the limit the jump path stops re-seating and /reactor/vo_healthy latches
+    # False until the rate decays back under it. Operator-facing telemetry only - nothing on this
+    # platform consumes it and the reactor never commands a flight action. Origin re-injects are
+    # settle-timeout bounded and are not counted.
+    reseat_burst_max: 5              # committed jump re-seats allowed inside the window; the next attempt is blocked
+    reseat_burst_window_s: 10.0      # s, rolling window for the burst count
+    ev_silence_max_s: 2.0            # s, EV output silence with cuVSLAM frames still arriving before /reactor/vo_healthy latches False

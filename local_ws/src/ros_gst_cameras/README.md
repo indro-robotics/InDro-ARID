@@ -1,29 +1,15 @@
 # ros_gst_cameras
 
-ROS 2 GStreamer camera stack. Two packages:
+This directory holds the ROS 2 GStreamer camera stack in two packages.
 
-- **`gst_cam_node`**: C++ node; wraps any GStreamer pipeline ending in `appsink`, publishes `image_raw` (plus `image_raw/compressed` when `compress: true`) and `camera_info`.
-- **`gst_camera_manager`**: Python supervisor; starts/stops each pipeline in `pipelines.yaml` as a subprocess, with a liveness watchdog.
+- `gst_cam_node`: a C++ node that wraps any GStreamer pipeline ending in `appsink` and publishes `image_raw`, `image_raw/compressed` when `compress: true`, and `camera_info`.
+- `gst_camera_manager`: a Python supervisor that starts and stops each pipeline in `pipelines.yaml` as a subprocess, under a liveness watchdog.
 
-## Quick start
+`gst_camera_manager.service` runs the manager at boot. It reads `gst_camera_manager/config/pipelines.yaml` at startup, and no frames flow until a pipeline is started.
 
-Build:
+## Services
 
-```bash
-cd ~/workspaces/local_ws
-colcon build --packages-select gst_cam_node gst_camera_manager --symlink-install
-source install/setup.bash
-```
-
-Launch the manager:
-
-```bash
-ros2 launch gst_camera_manager gst_camera_manager.launch.py
-```
-
-Reads `gst_camera_manager/config/pipelines.yaml` at startup. No frames flow until a pipeline is started.
-
-### Services
+The manager exposes one service per pipeline plus four global ones.
 
 | Service | Type | Function |
 |---|---|---|
@@ -31,20 +17,21 @@ Reads `gst_camera_manager/config/pipelines.yaml` at startup. No frames flow unti
 | `/gst_camera_manager/<name>/status` | `std_srvs/Trigger` | `RUNNING (pid=N)` or `STOPPED`. |
 | `/gst_camera_manager/status_all` | `std_srvs/Trigger` | One state line per pipeline. |
 | `/gst_camera_manager/stop_all` | `std_srvs/Trigger` | Stops every running pipeline. |
-| `/gst_camera_manager/refresh` | `std_srvs/Trigger` | Stops running pipelines, re-reads `pipelines.yaml`, rebuilds services. |
+| `/gst_camera_manager/refresh` | `std_srvs/Trigger` | Stops running pipelines, re-reads `pipelines.yaml`, rebuilds the services. |
 
-`<name>` matches the keys in `pipelines.yaml`: `cam_front`, `cam_down`.
+`<name>` matches the keys in `pipelines.yaml`: `cam_front` and `cam_down`.
 
 ```bash
 ros2 service call /gst_camera_manager/cam_down std_srvs/srv/SetBool "{data: true}"
-ros2 service call /gst_camera_manager/cam_down std_srvs/srv/SetBool "{data: false}"
 ros2 service call /gst_camera_manager/cam_down/status std_srvs/srv/Trigger "{}"
 ros2 service call /gst_camera_manager/status_all std_srvs/srv/Trigger "{}"
 ros2 service call /gst_camera_manager/stop_all std_srvs/srv/Trigger "{}"
 ros2 service call /gst_camera_manager/refresh std_srvs/srv/Trigger "{}"
 ```
 
-### Verify frames
+## Verify frames
+
+Check a running pipeline against its three topics.
 
 ```bash
 ros2 topic hz /cam_down/image_raw
@@ -52,28 +39,30 @@ ros2 topic hz /cam_down/image_raw/compressed
 ros2 topic echo /cam_down/camera_info --once
 ```
 
-Same topics under `/cam_front`. The `compressed` topic exists only when the pipeline sets `compress: true`.
+The same topics exist under `/cam_front`. The `compressed` topic exists only when the pipeline sets `compress: true`.
 
-### Liveness
+## Liveness
 
-Each pipeline publishes `/gst_camera_manager/<name>/alive` (`std_msgs/Bool`, latched). The 2 Hz watchdog sets it `false` on subprocess exit (`Pipeline crashed`, exit code logged) or when no `camera_info` arrives within `alive_threshold` seconds (`stalled`), and `true` when frames resume. The first `alive_threshold` seconds after launch are a startup grace period.
+Each pipeline publishes `/gst_camera_manager/<name>/alive` (`std_msgs/Bool`, latched). The 2 Hz watchdog sets it false on subprocess exit, logging `Pipeline crashed` with the exit code, or when no `camera_info` arrives within `alive_threshold` seconds, logging `stalled`. It sets it true again when frames resume. The first `alive_threshold` seconds after launch are a startup grace period.
 
 ## Configuration: `pipelines.yaml`
+
+Each pipeline entry takes the fields below.
 
 | Field | Behavior |
 |---|---|
 | `gst_pipeline` | GStreamer pipeline string ending in `appsink`. |
 | `calibration` | Basename of a file in `config/calibrations/`; missing or empty falls back to default `camera_info`. |
-| `topic` | Root of `/<topic>/image_raw`, `/<topic>/image_raw/compressed`, `/<topic>/camera_info`. |
+| `topic` | Root of `/<topic>/image_raw`, `/<topic>/image_raw/compressed` and `/<topic>/camera_info`. |
 | `frame_id` | TF frame stamped onto every message. |
-| `encoding` | `""` auto-detects (table below); set explicitly (`"rgb8"`, `"bayer_rggb8"`) to override. |
-| `compress` | `true` adds JPEG via `image_transport` (encoder runs only with a subscriber). |
+| `encoding` | `""` auto-detects; set explicitly (`"rgb8"`, `"bayer_rggb8"`) to override. |
+| `compress` | `true` adds JPEG through `image_transport`; the encoder runs only with a subscriber. |
 | `alive_threshold` | Seconds without `camera_info` before not-alive. Default `5.0`. |
-| `reliable` | `true` = RELIABLE QoS; omitted/`false` = sensor_data (BEST_EFFORT), drops frames instead of stalling. |
+| `reliable` | `true` selects RELIABLE QoS; omitted or `false` selects sensor_data, which drops frames instead of stalling. |
 
 ### Encoding auto-detect
 
-Resolved once on the first frame; the log shows `Image encoding: <enc> (auto-detected|override)`.
+The encoding is resolved once on the first frame, and the log shows `Image encoding: <enc> (auto-detected|override)`.
 
 | cv::Mat type | ROS encoding |
 |---|---|
@@ -83,15 +72,22 @@ Resolved once on the first frame; the log shows `Image encoding: <enc> (auto-det
 | `CV_16UC1` | `mono16` |
 | `CV_16UC3` | `bgr16` |
 | `CV_16UC4` | `bgra16` |
-| anything else | `""` (warns; set `encoding:` to override) |
+| anything else | `""`, with a warning to set `encoding:` |
 
 ### Calibration
 
-Calibration YAMLs live in `config/calibrations/` (`camera_calibration_parsers` format). Recalibrate with `camera_calibrate.sh front|down` (`local_ws/auxiliary/camera_calibration/`); it writes `config/calibrations/<cam>.yaml`. Without a calibration the node publishes a default `CameraInfo` from the first frame (zero distortion, `fx = fy = width`, centered principal point), so `image_raw`/`camera_info` subscribers keep working before calibration.
+Calibration YAMLs live in `config/calibrations/` in `camera_calibration_parsers` format. Recalibrate with `cam_calibrate front|down`, which writes `config/calibrations/<cam>.yaml`. Without a calibration the node publishes a default `CameraInfo` built from the first frame (zero distortion, `fx = fy = width`, centered principal point), so `image_raw` and `camera_info` subscribers keep working before calibration.
 
-## Adding a new pipeline
+## Defined pipelines
 
-Append to `pipelines.yaml`:
+Two pipelines ship in `pipelines.yaml`.
+
+- `cam_front`: CSI sensor-id 0, 1920x1080 at 15 fps, GRAY8, frame ID `top_visual_link`.
+- `cam_down`: CSI sensor-id 1, the same format, frame ID `bottom_visual_link`.
+
+## Adding a pipeline
+
+Append an entry to `pipelines.yaml`:
 
 ```yaml
   my_cam:
@@ -105,55 +101,38 @@ Append to `pipelines.yaml`:
     alive_threshold: 2.0
 ```
 
-Field semantics: table above. Rebuild (`colcon build --packages-select gst_camera_manager`) or call `refresh`. The `/gst_camera_manager/my_cam` service appears automatically.
-
-### Defined pipelines
-
-- **`cam_front`**: CSI sensor-id 0, 1920x1080 at 15 fps, GRAY8 (IR-sensitive mono). Frame ID `top_visual_link`.
-- **`cam_down`**: CSI sensor-id 1, same format. Frame ID `bottom_visual_link`.
-
-## Auto-start on boot
-
-`gst_camera_manager.service` (installed by `setup.sh`) launches the manager at boot. Pipelines stay off until started via SetBool.
+Then call `refresh`, or `cam_refresh` from the host alias set. The `/gst_camera_manager/my_cam` service appears with it.
 
 ## Logs
 
-Manager log:
+The manager writes to `~/workspaces/isaac_ros-dev/run_logs/gst_camera_manager/gst_camera_manager.log`.
 
-```
-~/workspaces/isaac_ros-dev/run_logs/gst_camera_manager/gst_camera_manager.log
-```
-
-Per-pipeline GStreamer log (last 20 kept per pipeline):
-
-```
-~/workspaces/local_ws/install/gst_camera_manager/share/gst_camera_manager/logs/<pipeline_name>/<pipeline_name>_<timestamp>.log
-```
+Each pipeline writes its own GStreamer log under `~/workspaces/local_ws/install/gst_camera_manager/share/gst_camera_manager/logs/<pipeline_name>/`, and the last 20 are kept per pipeline.
 
 ## Troubleshooting
 
-### Pipeline runs but `ros2 topic hz` shows nothing
+### A pipeline runs but `ros2 topic hz` shows nothing
 
-1. Test the pipeline standalone (replace `appsink` with `fakesink`); failure here means camera/driver, not the ROS node:
+1. Test the pipeline standalone with `appsink` replaced by `fakesink`. A failure at this point is the camera or driver, not the ROS node.
    ```bash
    gst-launch-1.0 <pipeline-string>
    ```
-2. Check the per-pipeline log for GStreamer errors.
+2. Read the per-pipeline log for GStreamer errors.
 3. Check liveness:
    ```bash
    ros2 topic echo /gst_camera_manager/<name>/alive --once
    ```
-   `false`: crashed or stalled, see the log. `true` with zero hz: subscriber QoS mismatch.
-4. No `Image encoding:` log line means no frames ever reached the node.
+   `false` means crashed or stalled, so read the log. `true` with zero hz is a subscriber QoS mismatch.
+4. No `Image encoding:` log line means no frame ever reached the node.
 
-### Pipeline crashes immediately
+### A pipeline crashes immediately
 
-Per-pipeline log has the GStreamer error. Usual causes: missing plugin, camera busy (`sudo fuser /dev/video0`), device permissions.
+The per-pipeline log carries the GStreamer error. The usual causes are a missing plugin, another process already holding the camera, and device permissions.
 
 ### `stalled` warnings
 
-Camera disconnected or driver unresponsive: restart the pipeline (`SetBool false` then `true`). Legitimately slow pipelines (long exposure): raise `alive_threshold`.
+The camera is disconnected or the driver is unresponsive: restart the pipeline with `SetBool false` then `true`. For a legitimately slow pipeline such as a long exposure, raise `alive_threshold`.
 
 ### `Incompatible QoS` warnings
 
-Subscriber reliability differs from the publisher. Match the subscriber, or set `reliable: true` on the pipeline.
+The subscriber reliability differs from the publisher. Match the subscriber, or set `reliable: true` on the pipeline.

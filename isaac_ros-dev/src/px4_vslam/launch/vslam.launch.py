@@ -78,14 +78,10 @@ def generate_launch_description():
         parameters=[vslam_reactor_config]
     )
 
-    # NOTE on the RealSense claim race: sibling RealSenseNodeFactory instances
-    # cross-probe every attached RealSense during enumeration; a collision yields
-    # RS2_USB_STATUS_BUSY -> "failed to set power state" -> that factory
-    # permanently gives up. A launch-time stagger (8 s / 16 s TimerAction
-    # LoadComposableNodes) proved insufficient and was reverted; recovery is
-    # now handled by arid_supervisor's vslam_enable gate, which requires 3
-    # distinct "RealSense Node Is Up!" tags and runs one teardown + /reset_usb
-    # + respawn cycle if a camera wedges.
+    # RealSense claim race: sibling RealSenseNodeFactory instances cross-probe every
+    # attached RealSense during enumeration, and a collision yields RS2_USB_STATUS_BUSY
+    # ("failed to set power state") from which that factory never recovers. Recovery is
+    # the arid_supervisor vslam_enable gate, not a launch-time stagger.
     vslam_container = ComposableNodeContainer(
         name='vslam_container',
         namespace='',

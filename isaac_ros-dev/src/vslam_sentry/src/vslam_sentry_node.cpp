@@ -449,6 +449,32 @@ class VslamSentry : public rclcpp::Node {
       vslam_ok_streak_ = 0;
     }
 
+    // Process-plane discriminator: three independent cameras do not die in the same
+    // instant from hardware, but one frozen/stalled driver PROCESS kills every stream
+    // and VO together. A driver hw_reset cannot help either that or a bus-wide power
+    // death (device off-bus), so resets are HELD while the pattern stands; any single
+    // stream recovering clears it. Suppression only - this can never fire a reset.
+    {
+      // CURRENT-tick window rates, not last-tick states: all streams die in the SAME
+      // tick as the reset decision, so a state-based check lags one tick and lets the
+      // first reset through.
+      bool all_dead = !cams_.empty();
+      for (const auto &kv : cams_) {
+        if (kv.second.window_min_hz >= 1.0) { all_dead = false; break; }
+      }
+      const bool ppf = settled && all_dead && vslam_state_ == V_DOWN;
+      if (ppf != process_plane_fault_) {
+        process_plane_fault_ = ppf;
+        if (ppf) {
+          log_line("PROCESS-PLANE FAULT suspected: all streams + VO dead simultaneously - "
+                   "camera resets held (driver process frozen or bus-wide power loss; "
+                   "supervisor vslam cycle is the recovery)");
+        } else {
+          log_line("process-plane fault cleared - camera resets re-enabled");
+        }
+      }
+    }
+
     // per-camera classification + recovery bookkeeping
     for (auto &kv : cams_) {
       Cam &c = kv.second;
@@ -529,7 +555,7 @@ class VslamSentry : public rclcpp::Node {
       // same-tick candidates). GONE retries re-check the bus via the issue-time
       // lookup; attempts bound EVERY outcome, so a permanently off-bus camera
       // stops costing bus enumerations at the ceiling and sits ESCALATED.
-      if (auto_reset_ && active_reset_.empty() && settled &&
+      if (auto_reset_ && !process_plane_fault_ && active_reset_.empty() && settled &&
           steady_now() >= quarantine_until_ &&
           (c.state == STREAM_DEAD || c.state == DEGRADED || c.state == GONE ||
            c.state == ESCALATED)) {
@@ -662,6 +688,7 @@ class VslamSentry : public rclcpp::Node {
   double escalated_retry_s_;
   int dead_ticks_, degraded_ticks_, max_attempts_, calm_ticks_;
   int vslam_ok_streak_ = 0;
+  bool process_plane_fault_ = false;  // all streams + VO dead at once: not camera hardware
   double last_defer_log_ = 0.0;
   bool auto_reset_;
 
