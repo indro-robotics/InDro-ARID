@@ -31,7 +31,7 @@
 
     # Freshness gate for SetSlamPose: skip stale (pre-reboot) PX4 samples so a re-seat is never
     # anchored on FMU-down odometry. Caller retries each frame until a fresh sample arrives.
-    set_pose_max_odom_age: 0.010     # s, max age of the cached PX4 odom sample used to seed a re-seat
+    set_pose_max_odom_age: 0.030     # s, max age of the cached PX4 odom sample used to seed a re-seat; 3x the ~100 Hz odom period
 
     # FMU stamp skew clamp: if |now - FMU stamp| exceeds this, the map->px4 TF and
     # /reactor/drone_odom|drone_pose for that message are re-stamped with node time so uXRCE
