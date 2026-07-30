@@ -2,9 +2,10 @@
 
 Services (under /arid_supervisor):
   ~/vslam_enable (std_srvs/SetBool)
-    true : camera-proven bringup - USB pre-check, log-watch gate (CAM_COUNT distinct
-           "RealSense Node Is Up!" tags, fail-fast on "Error starting device" and on the
-           image_transport plugin-load race, 40 s backstop), ONE reset_usb recovery cycle.
+    true : camera-proven bringup - USB pre-check (orphaned /dev/bus/usb nodes pruned, camera
+           nodes repaired to root:plugdev 0666), log-watch gate (CAM_COUNT distinct
+           "RealSense Node Is Up!" tags, fail-fast on the image_transport plugin-load race,
+           40 s backstop bounds everything else), ONE reset_usb recovery cycle.
            Blocks ~15 s healthy, ~3 min worst. Landed-proven unowned trees are reaped
            first so 'initialize' over an orphan just works.
     false: landed-gated teardown - SIGINT the process group, wait for drain, escalate
@@ -16,6 +17,9 @@ self._lock preserves this under any executor); foreign vslam stacks refused pre-
 unless the drone is provably landed.
 A supervisor stop while PROVABLY airborne leaves the stack flying (same gate as the
 unit's ExecStopPost -> container_scripts/airborne_check.sh).
+Subscribes /vslam_sentry/healthy: on the unhealthy edge it runs a bounded camera-node repair
+burst (repair only, never prune) so a camera re-enumerated mid-flight onto a stale devnum
+becomes reopenable without waiting for the next bringup.
 Subprocess log: /workspaces/isaac_ros-dev/run_logs/<name>/<name>.log, truncated per launch.
 """
 
@@ -29,6 +33,7 @@ import time
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from std_msgs.msg import Bool
 from std_srvs.srv import SetBool, Trigger
 
 from px4_msgs.msg import VehicleLandDetected
@@ -69,6 +74,7 @@ def _cam_count_from_config(path=VSLAM_CONFIG, fallback=CAM_COUNT_FALLBACK):
 
 CAM_COUNT = _cam_count_from_config()
 CAM_UP_MARKER = 'RealSense Node Is Up!'
+# Evidence only, never a verdict: the fork retries this case every reconnect_timeout.
 CAM_ERR_MARKER = 'Error starting device'
 # class_loader race: every camera marker still prints while the image_transport
 # publishers are dead, so the gate would pass N/N with VO at 0 Hz.
@@ -76,6 +82,12 @@ CAM_PLUGIN_ERR = 'no factory exists'
 CAM_GATE_BACKSTOP_S = 40.0   # healthy bringup completes in 14-26 s
 CAM_GATE_POLL_S = 0.25
 USB_REENUM_WAIT_S = 20.0     # /reset_usb: ~5 s power cycle + ~10 s re-enumeration
+# Mid-flight camera-node repair: a sentry hw_reset can re-enumerate a camera onto a devnum
+# whose /dev node was left root:root by a dropped hotplug event. On the /vslam_sentry/healthy
+# False edge, repair (never prune) across the recovery window so the driver's open-retry
+# succeeds; the burst self-terminates on recovery or at the deadline.
+REPAIR_BURST_PERIOD_S = 5.0
+REPAIR_BURST_MAX_S = 70.0    # just past vslam_sentry reset_verify_s (60 s)
 RESET_USB_TIMEOUT_S = 30.0   # subprocess `ros2 service call /reset_usb` hard cap
 RESP_MSG_MAX = 500           # SetBool response clip; full evidence always in the node log
 LEGACY_SCAN_TIMEOUT_S = 20.0  # `ros2 node list --no-daemon` fresh-discovery hard cap
@@ -216,6 +228,80 @@ def _usb_rs_devices(pids):
             serial = '?'
         devs.append(f'{os.path.basename(d.rstrip("/"))} {vid}:{pid} serial={serial}')
     return devs
+
+
+def _prune_orphan_nodes(logger=None):
+    # Bringup-only, quiescent bus: the container's private /dev accumulates nodes because its
+    # udevd drops REMOVE events under the uevent storm a USB reset generates. A node whose
+    # (bus, devnum) has no backing device in sysfs is unreachable and, left in place, poisons
+    # that devnum for the next device that enumerates onto it. Never called in flight.
+    live = set()
+    for d in sorted(glob.glob('/sys/bus/usb/devices/*/')):
+        try:
+            with open(os.path.join(d, 'busnum')) as f:
+                bus = '%03d' % int(f.read().strip())
+            with open(os.path.join(d, 'devnum')) as f:
+                dev = '%03d' % int(f.read().strip())
+        except (OSError, ValueError):
+            continue
+        live.add((bus, dev))
+    if not live:
+        return 0  # no sysfs evidence: every node would look orphaned - never prune blind
+    orphans = [p for p in sorted(glob.glob('/dev/bus/usb/*/*'))
+               if tuple(p.split('/')[-2:]) not in live]
+    if not orphans:
+        return 0
+    try:
+        subprocess.run(['sudo', 'rm', '-f'] + orphans, timeout=15.0)
+    except (OSError, subprocess.SubprocessError) as exc:
+        if logger is not None:
+            logger.warn('orphan node prune failed (%s: %s)' % (type(exc).__name__, exc))
+        return 0
+    if logger is not None:
+        logger.warn('pruned %d orphaned /dev/bus/usb node(s): %s'
+                    % (len(orphans), ', '.join(orphans)))
+    return len(orphans)
+
+
+def _repair_camera_nodes(pids, logger=None):
+    # The container's /dev is a private tmpfs. A hotplug ADD that lands on a devnum still
+    # holding a node from a prior device cannot mknod over it, so the camera inherits that
+    # node's root:root ownership and libusb_open fails EACCES (RS2_USB_STATUS_ACCESS) for the
+    # non-root user. Restore root:plugdev 0666 on any RealSense node this user cannot open.
+    # Bringup-only: the cameras are enumerated and not yet held here, so this races nothing.
+    repaired = []
+    for d in sorted(glob.glob('/sys/bus/usb/devices/*/')):
+        try:
+            with open(os.path.join(d, 'idVendor')) as f:
+                if f.read().strip() != RS_VID:
+                    continue
+            with open(os.path.join(d, 'idProduct')) as f:
+                if f.read().strip() not in pids:
+                    continue
+            with open(os.path.join(d, 'busnum')) as f:
+                bus = '%03d' % int(f.read().strip())
+            with open(os.path.join(d, 'devnum')) as f:
+                dev = '%03d' % int(f.read().strip())
+        except (OSError, ValueError):
+            continue
+        node = '/dev/bus/usb/%s/%s' % (bus, dev)
+        if os.path.exists(node) and not os.access(node, os.R_OK | os.W_OK):
+            repaired.append(node)
+
+    if not repaired:
+        return 0
+    try:
+        subprocess.run(['sudo', 'chown', 'root:plugdev'] + repaired, timeout=15.0)
+        subprocess.run(['sudo', 'chmod', '0666'] + repaired, timeout=15.0)
+    except (OSError, subprocess.SubprocessError) as exc:
+        if logger is not None:
+            logger.warn('camera node repair failed (%s: %s)' % (type(exc).__name__, exc))
+        return 0
+
+    if logger is not None:
+        logger.warn('repaired %d camera node(s) to root:plugdev 0666: %s'
+                    % (len(repaired), ', '.join(repaired)))
+    return len(repaired)
 
 
 def _distinct_cam_ups(buf):
@@ -390,6 +476,13 @@ class AridSupervisor(Node):
         self._landed = None
         self._landed_at = 0.0
 
+        # Event-driven mid-flight camera-node repair (see REPAIR_BURST_* above).
+        self._repair_on_unhealthy = bool(
+            self.declare_parameter('repair_on_unhealthy', True).value)
+        self._repair_timer = None
+        self._repair_deadline = 0.0
+        self._repair_active = False
+
         px4_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
@@ -403,7 +496,63 @@ class AridSupervisor(Node):
         self.create_service(SetBool, '~/vslam_enable', self._vslam_cb)
         self.create_service(Trigger, '~/status', self._status_cb)
 
+        if self._repair_on_unhealthy:
+            # Match vslam_sentry's latched publisher (reliable + transient_local).
+            sentry_qos = QoSProfile(
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                history=HistoryPolicy.KEEP_LAST,
+                depth=1,
+            )
+            self.create_subscription(
+                Bool, '/vslam_sentry/healthy', self._sentry_health_cb, sentry_qos)
+
         self.get_logger().info('arid_supervisor up - vslam_enable + status available')
+
+    def _sentry_health_cb(self, msg):
+        # False = a camera is failing to recover; a sentry hw_reset may have re-enumerated it
+        # onto a devnum whose /dev node is root:root. Repair (never prune) across the recovery
+        # window. True cancels the burst. An escape here is re-raised out of spin().
+        try:
+            if msg.data:
+                self._end_repair_burst()
+            elif not self._repair_active:
+                self._begin_repair_burst()
+        except Exception as exc:                                   # noqa: BLE001
+            self.get_logger().warn(
+                'sentry-health handler failed (%s: %s)' % (type(exc).__name__, exc))
+
+    def _begin_repair_burst(self):
+        self._end_repair_burst()   # destroy any prior timer (safe: not from within a tick)
+        self._repair_deadline = time.monotonic() + REPAIR_BURST_MAX_S
+        self._repair_active = True
+        self._repair_timer = self.create_timer(REPAIR_BURST_PERIOD_S, self._repair_tick)
+        self.get_logger().warn(
+            'sentry unhealthy - camera-node repair burst started (<= %.0fs)' % REPAIR_BURST_MAX_S)
+
+    def _end_repair_burst(self):
+        self._repair_active = False
+        if self._repair_timer is not None:
+            self._repair_timer.cancel()
+            try:
+                self.destroy_timer(self._repair_timer)
+            except Exception:                                     # noqa: BLE001
+                pass
+            self._repair_timer = None
+
+    def _repair_tick(self):
+        # Repair ONLY - never prune in flight (delete can race a mid-enumeration device;
+        # chmod/chown cannot disturb an already-open stream). Guarded: an escape would be
+        # re-raised out of spin().
+        try:
+            _repair_camera_nodes(self.rs_usb_pids, self.get_logger())
+        except Exception as exc:                                  # noqa: BLE001
+            self.get_logger().warn(
+                'camera-node repair tick failed (%s: %s)' % (type(exc).__name__, exc))
+        if time.monotonic() >= self._repair_deadline:
+            self._repair_active = False
+            if self._repair_timer is not None:
+                self._repair_timer.cancel()
 
     def _land_cb(self, msg):
         self._landed = bool(msg.landed)
@@ -565,6 +714,7 @@ class AridSupervisor(Node):
                     self.get_logger().warn(
                         'only %d/%d RealSense on USB after /reset_usb - relaunching anyway; devices: %s'
                         % (len(devs), CAM_COUNT, '; '.join(devs) or '(none)'))
+            _repair_camera_nodes(self.rs_usb_pids, self.get_logger())
             log = self.vslam.start()
             self.get_logger().info(f'vslam relaunched (log: {log}); re-running camera gate')
             ok, elapsed, report2 = self._watch_vslam_log(log)
@@ -675,6 +825,10 @@ class AridSupervisor(Node):
 
     def _usb_precheck(self):
         # A camera absent from USB cannot be fixed by launching drivers: one /reset_usb, then fail.
+        # Bus is quiescent here (pre-launch), so it is safe to clear orphaned nodes before
+        # repairing the camera nodes that survive.
+        _prune_orphan_nodes(self.get_logger())
+        _repair_camera_nodes(self.rs_usb_pids, self.get_logger())
         devs = _usb_rs_devices(self.rs_usb_pids)
         self.get_logger().info(
             'usb pre-check: %d/%d RealSense (VID %s) on the bus'
@@ -691,6 +845,8 @@ class AridSupervisor(Node):
                 'recover; not launching vslam. devices: %s'
                 % (len(devs), CAM_COUNT, reset_out, '; '.join(devs) or '(none)'))
         if self._wait_usb_rs():
+            # Re-enumeration hands the cameras new devnums, so re-check the new nodes.
+            _repair_camera_nodes(self.rs_usb_pids, self.get_logger())
             self.get_logger().info(
                 'usb pre-check: %d/%d RealSense back after /reset_usb' % (CAM_COUNT, CAM_COUNT))
             return True, ''
@@ -764,10 +920,6 @@ class AridSupervisor(Node):
                     return False, elapsed, self._gate_report(
                         buf, f"'{CAM_PLUGIN_ERR}' in vslam log "
                              '(image_transport plugin load failed - publishers dead)', elapsed)
-                if CAM_ERR_MARKER in buf:
-                    return False, elapsed, self._gate_report(
-                        buf, f"'{CAM_ERR_MARKER}' in vslam log "
-                             '(terminal per camera - retry patch reverted)', elapsed)
                 ups = _distinct_cam_ups(buf)
                 if ups >= CAM_COUNT:
                     return True, elapsed, ''
@@ -778,7 +930,7 @@ class AridSupervisor(Node):
                 if elapsed >= CAM_GATE_BACKSTOP_S:
                     return False, elapsed, self._gate_report(
                         buf, f'backstop: only {ups}/{CAM_COUNT} up after '
-                             f'{int(CAM_GATE_BACKSTOP_S)}s (silent hang, no driver error)', elapsed)
+                             f'{int(CAM_GATE_BACKSTOP_S)}s', elapsed)
                 time.sleep(CAM_GATE_POLL_S)
 
     def _gate_report(self, buf, reason, elapsed):

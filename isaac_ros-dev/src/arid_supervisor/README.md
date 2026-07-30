@@ -21,7 +21,7 @@ The node subscribes to `/fmu/out/vehicle_land_detected` for the interlock. Subpr
 
 1. Unowned vslam trees are reaped before spinup when landed is proven, and the call is refused otherwise.
 2. USB pre-check: three RealSense must be on the bus, else one `/reset_usb` and a recheck. Still short, and the stack is never launched; the response carries per-device USB evidence.
-3. Log watch: success once that many distinct cameras log `RealSense Node Is Up!`. It fails fast on `Error starting device` (terminal for that camera) and on `no factory exists` (the `image_transport` plugin load failed, so the markers still print but the publishers are dead). A 40 s backstop covers silent hangs.
+3. Log watch: success once that many distinct cameras log `RealSense Node Is Up!`. It fails fast on `no factory exists` (the `image_transport` plugin load failed, so the markers still print but the publishers are dead) and on a dead launch process; a 40 s backstop bounds everything else. `Error starting device` does not fail the gate: the driver retries a lost claim every 6 s, so a camera can log it and still come up.
 4. One recovery cycle on failure: teardown, `/reset_usb`, respawn, re-watch. A second failure stops the stack and returns `success=false`.
 
 Failure messages carry verbatim driver evidence clipped to about 500 characters, with the full detail in the node journal. Relay them unchanged.
