@@ -206,8 +206,10 @@ Running `./setup.sh` with no arguments opens the interactive menu. Every step de
 | **8** | Build the Isaac container image |
 | **9** | Build the Isaac workspace and restart `arid_supervisor.service` |
 | **10** | Build `local_ws` |
-| **11** | ZeroTier join or switch |
-| **12** | Uninstall, keeping the repo, the OS and the Docker engine |
+| **11** | Install or reinstall ARK-OS |
+| **12** | Install or reinstall ROS 2 |
+| **13** | ZeroTier join or switch |
+| **14** | Uninstall, keeping the repo, the OS and the Docker engine |
 
 Option **9** requires the container to be running.
 
@@ -229,7 +231,7 @@ Menu **7** starts the selected CSI pipelines and the Foxglove bridge, then confi
 
 ## Full setup
 
-`./setup.sh --full` walks the questionnaire once, then provisions everything unattended. If a build ran and the reboot was not declined, setup reboots before the smoke test so the test validates a clean boot; to resume after that reboot, open a bash terminal and answer the prompt. `--resume` is the same continuation invoked manually, and `--continue` re-enters the tail with finished steps skipped.
+`./setup.sh --full` walks the questionnaire once, then provisions everything unattended. Reboots are automatic and happen at most twice: once after the install steps if ARK-OS, ROS 2 or JetPack was installed, and once before the smoke test if anything was built and that reboot was not declined. After each one, open a bash terminal and answer the prompt to resume. `--resume` is the same continuation invoked manually, and `--continue` re-enters the tail with finished steps skipped.
 
 ```bash
 ./setup.sh --full
@@ -252,6 +254,7 @@ The first steps run once per invocation. Phase A (install and host configuration
 | **enable_user_linger** | Creates `/run/user/<uid>` at boot for headless NoMachine. |
 | **clean_nvidia_desktop** | Removes NVIDIA first-boot icons and the L4T-README automount. |
 | **disable_updates** | Turns off unattended-upgrades and the apt timers. |
+| **ark_os** | Clones ARK-OS, then runs its `install.sh` and `install_ros2.sh` unattended from a generated `user.env`. Installs JetPack when absent, reinstalls it on request. A failed install prompts retry, skip or exit. |
 | *Phase A, checkpointed* | |
 | **repos** | ROS, NVIDIA and Docker apt repos; CDI configuration. |
 | **apt** | Apt packages: chrony, Foxglove bridge, OpenCV, camera calibration, net tools. |
