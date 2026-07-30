@@ -51,10 +51,10 @@
     # engage). Two-tier engage: one gap >= cadence_gate_hard_s, OR cadence_gate_sustained_samples
     # consecutive gaps in cadence_gate_s..hard_s. Telemetry: /reactor/cadence_gate_count
     # (engagements, latched) + /reactor/cadence_gated (live state, latched).
-    cadence_gate_s: 0.15               # s, VO header.stamp gap counted as degraded (above benign-jitter p95; keep < 0.2 s EV_MAX_INTERVAL)
+    cadence_gate_s: 0.18               # s, VO header.stamp gap counted as degraded (above benign-jitter p95; keep < 0.2 s EV_MAX_INTERVAL)
     cadence_gate_hard_s: 0.40          # s, absolute single-gap engage - EKF2's own arrival de-latch point; lesser gaps are valid-late poses it absorbs
     cadence_gate_sustained_samples: 5  # consecutive lesser gaps (gate_s..hard_s) that engage - persistent degraded cadence; any nominal sample resets the streak
-    cadence_release_samples: 5         # consecutive nominal-cadence samples to release (~83 ms at 60 Hz, ~165 ms at 30 Hz)
+    cadence_release_samples: 5         # nominal-cadence samples to release (~83 ms at 60 Hz); anomalous stamps are skipped, not counted and not streak-breaking
     set_pose_busy_timeout_s: 3.0     # s, clear vslam_busy if a SetSlamPose response never arrives (cuVSLAM died
                                      #    mid-call); without this the EV stream is dead for the rest of the
                                      #    flight. 3.0 not 5.0: must land CLEAR of CADENCE_ANOMALY_CEILING_S

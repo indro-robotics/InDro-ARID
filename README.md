@@ -22,15 +22,15 @@ The system breaks down into these functional blocks.
 - **USB recovery** (`reset_ark_usb`): the `/reset_usb` Trigger service.
 - **PX4 firmware**: the InDro fork with the `4026_arid_quad_v1_2` airframe, plus a prebuilt binary.
 
-> ROS 2 traffic stays on the drone (`ROS_DOMAIN_ID=23`, `ROS_LOCALHOST_ONLY=1`). Remote
-> visualization goes through the Foxglove bridge.
+ROS 2 traffic stays on the drone (`ROS_DOMAIN_ID=23`, `ROS_LOCALHOST_ONLY=1`), and remote
+visualization goes through the Foxglove bridge.
 
 ---
 
 ## At login
 
-A booted drone gives you the Isaac container running, the TF tree up, the camera and LiDAR idle,
-`/arid_supervisor/vslam_enable` on the graph, and `local_ws` sourced.
+On a booted drone the Isaac container is running, the TF tree is up, the camera and LiDAR are
+idle, `/arid_supervisor/vslam_enable` is on the graph, and `local_ws` is sourced.
 
 ## Aliases
 
@@ -118,7 +118,7 @@ layout is under the LiDAR diagnostic below.
 
 The front RealSense IR pair feeds Isaac cuVSLAM, the reactor filters and re-seats that solution,
 and `vio_transform` publishes it to PX4 on `/fmu/in/vehicle_visual_odometry`. Both infra streams
-are required: a single camera is the whole VO input, so no stream loss is survivable.
+are required, and the loss of either stops VO.
 
 | Alias | Action |
 |---|---|
@@ -128,9 +128,8 @@ are required: a single camera is the whole VO input, so no stream loss is surviv
 | `sentry` | Per-camera and VO health JSON. |
 
 The **supervisor** manages the VSLAM lifecycle behind a camera-proven bringup gate and a
-landed-state interlock. Bringup pre-checks the USB bus, watches the driver log for
-`RealSense Node Is Up!`, fails fast on `Error starting device`, and runs one `reset_usb` recovery
-cycle before giving up. Teardown requires a fresh `landed == True` sample. Each launch writes
+landed-state interlock. Bringup runs one `reset_usb` recovery cycle before
+reporting failure, and teardown requires a fresh `landed == True` sample. Each launch writes
 `run_logs/vslam/vslam.log`. See
 [`arid_supervisor/README.md`](isaac_ros-dev/src/arid_supervisor/README.md).
 
@@ -464,9 +463,8 @@ rslidar_status
 status
 ```
 
-Expect no `pgrep` match and `vslam: stopped`. `rslidar_status` must be unchanged: the reap pattern
-carries the `px4_vslam` token so the host LiDAR, camera-manager and description units are
-untouched. Survivors of the vslam tree mean the reap failed and they still hold the camera. The
+Expect no `pgrep` match and `vslam: stopped`, with `rslidar_status` unchanged. Any remaining
+process in the vslam tree means the reap failed and it still holds the camera. The
 supervisor respawns within 5 s; more than 5 restarts in 60 s leaves the unit failed, so read
 `journalctl -u arid_supervisor -n 100`.
 
@@ -496,6 +494,8 @@ Building produces `build/ark_fmu-v6x_default/ark_fmu-v6x_default.px4`:
 cd local_ws/auxiliary/PX4-Autopilot
 make ark_fmu-v6x_default
 ```
+
+Flashing is done from the ARK-OS web interface, which takes the `.px4` file directly.
 
 After flashing, select the airframe from a MAVLink shell:
 
@@ -616,7 +616,7 @@ both.
 | Submodule | Class | Role |
 |---|---|---|
 | [`PX4-Autopilot`](local_ws/auxiliary/PX4-Autopilot/) | LIVE `PX4-InDro` | PX4 fork with the ARID airframe. |
-| [`realsense-ros`](isaac_ros-dev/src/realsense-ros/) | LIVE `v4.51.1` | RealSense driver fork: `hw_reset` service, hot-removal guards, `color_format`, log aggregation. |
+| [`realsense-ros`](isaac_ros-dev/src/realsense-ros/) | LIVE `v4.51.1` | RealSense driver fork: `hw_reset` service, hot-removal guards, `color_format`, log aggregation, claim retry. |
 | [`isaac_ros_visual_slam`](isaac_ros-dev/src/isaac_ros_visual_slam/) | LIVE `v3.2-14` | cuVSLAM backend fork: stale-tolerant image synchronizer. |
 | [`px4_msgs`](isaac_ros-dev/src/px4_msgs/) | LIVE `release/1.15` | PX4 messages; `local_ws/src/px4_msgs` symlinks to it. |
 | [`isaac_ros_common`](isaac_ros-dev/src/isaac_ros_common/) | PINNED `v3.2-14` | Isaac base image chain. |
@@ -625,6 +625,3 @@ both.
 | [`px4-ros2-interface-lib`](isaac_ros-dev/src/px4-ros2-interface-lib/) | PINNED `1.4.0` | Auterion PX4 SDK. |
 | [`rslidar_sdk`](local_ws/src/rslidar_sdk/) | PINNED `v1.5.19` | RoboSense SDK; builds `rslidar_sdk_node`. |
 | [`rslidar_msg`](local_ws/src/rslidar_msg/) | PINNED `v1.5.10` | RoboSense message definitions. |
-
-> The two forks track branches whose names look like tags. A bare checkout would prefer the
-> same-named tag, so `--update` uses `git checkout -B <branch> origin/<branch>`.

@@ -13,7 +13,7 @@ front_realsense/front_realsense_link:
       power_line_frequency: 1  # 60 Hz
     enable_gyro: false
     enable_accel: false
-    initial_reset: true
+    initial_reset: false
     serial_no: ""               # front RS serial number (no leading underscore)
     camera_name: "front_realsense"
     use_intra_process_comms: true

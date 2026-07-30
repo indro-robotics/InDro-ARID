@@ -2,10 +2,10 @@
 
 The sentry is the device-plane watchdog for the VSLAM stack. It watches the `camera_info` rate of
 the front D435 infra1 and infra2 streams alongside VO cadence, classifies which layer broke, and
-hardware-resets a wedged camera.
+reports the verdict. Automatic reset is off on this airframe; recovery is operator-issued.
 
-It never restarts VSLAM, never gates launch, and never touches fusion. In steady state it touches
-the USB bus only to issue a reset.
+It never restarts VSLAM, never gates launch, and never touches fusion. In steady state it does not
+touch the USB bus.
 
 ## Camera states
 
@@ -63,9 +63,13 @@ the USB bus only to issue a reset.
 | `escalated_retry_s` | `600.0` | Re-arm one attempt after this long; `0` stays sticky. |
 | `status_period_s` | `15.0` | Latched status refresh. |
 
-The launch sets `reset_defer_max_s` to `0`, so on this drone an automatic reset is never deferred.
+The launch sets `auto_reset` to `false`, so no reset is issued automatically, and
+`reset_defer_max_s` to `0`, which takes effect only when automatic reset is enabled.
 
 ## Reset policy
+
+The policy below governs automatic reset. A manual `/vslam_sentry/reset_<cam>` is neither spaced
+nor deferred.
 
 - One camera at a time; concurrent resets are never issued.
 - The primary path is the driver `hw_reset` service, with a direct rs2 fallback only when that
@@ -75,7 +79,7 @@ The launch sets `reset_defer_max_s` to `0`, so on this drone an automatic reset 
 - `reset_dead_time_s` passes before the `reset_verify_s` verify window opens; streams back at rate
   are the proof of recovery.
 - `post_reset_quarantine_s` spaces any two attempts bus-wide.
-- A single targeted reset is airborne-safe, and positive stream evidence clears any bad state.
+- Positive stream evidence clears any bad state.
 
 ## Log
 
@@ -83,7 +87,7 @@ The node writes `$ISAAC_ROS_WS/run_logs/sentry/sentry.log`, falling back to
 `/workspaces/isaac_ros-dev/run_logs/sentry/sentry.log`, and mirrors to the journal. A blank serial
 in the config produces `NO CAMERAS parsed` and the node idles.
 
-## Disable
+## Enable automatic reset
 
-Launching with `auto_reset:=false` keeps monitoring and status reporting while suppressing every
-reset.
+Setting `auto_reset` to `true` in the launch restores automatic recovery. On a single camera a
+reset removes the only VO source, and the node applies no airborne guard.

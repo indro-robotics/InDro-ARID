@@ -51,10 +51,8 @@ def generate_launch_description():
         executable='vio_transform'
     )
 
-    # Device-plane watchdog: per-camera stream health + targeted hardware_reset
-    # recovery (one camera at a time). Reads the same vslam_config.yaml for serials.
-    # Single camera: a reset here is a real VO outage, no second camera to carry
-    # it. EKF2 coasts on ARK flow + rangefinder for the re-enumeration.
+    # Device-plane watchdog: per-camera stream health, observe-only on this
+    # airframe. Reads the same vslam_config.yaml for serials.
     vslam_sentry_node = Node(
         package='vslam_sentry',
         executable='vslam_sentry_node',
@@ -64,6 +62,11 @@ def generate_launch_description():
             'config_path': os.path.join(
                 get_package_share_directory('px4_vslam'), 'config',
                 'vslam_config.yaml'),
+            # Autonomous reset off: the node has no airborne guard, and a DEGRADED
+            # stream is reset while VO is still nominal. With one camera that
+            # removes the only VO source in flight. /vslam_sentry/reset_<cam>
+            # remains; landed recovery is arid_supervisor /reset_usb.
+            'auto_reset': False,
             # Calm-window deferral off: with one camera a dead stream IS the VO
             # outage, so waiting for a calm VO window only delays the one recovery
             # available (the calm streak can never accrue while VO is down).
