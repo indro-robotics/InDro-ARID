@@ -27,9 +27,10 @@ caller about 15 s on a healthy bringup and up to about 3 min on a double failure
 
 1. USB pre-check. The RealSense must be on the bus, otherwise one `/reset_usb` and a recheck. If
    it is still absent the stack is never launched and the response carries per-device USB evidence.
-2. Log watch. Success on `RealSense Node Is Up!`; fail-fast on `Error starting device` (terminal)
-   and on `no factory exists` (an `image_transport` plugin race where markers print but no images
-   flow); a 40 s backstop catches silent hangs.
+2. Log watch. Success on `RealSense Node Is Up!`; fail-fast on `no factory exists` (an
+   `image_transport` plugin race where markers print but no images flow) and on a dead launch
+   process; a 40 s backstop bounds everything else. `Error starting device` does not fail the gate:
+   the driver retries a lost claim every 6 s, so the camera can log it and still come up.
 3. One recovery cycle on failure: teardown, `/reset_usb`, respawn, re-watch. A second failure stops
    the stack and returns `success=false`. There is no retry ladder.
 

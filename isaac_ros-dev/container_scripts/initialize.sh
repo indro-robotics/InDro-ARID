@@ -1,9 +1,9 @@
 #!/bin/bash
 # initialize.sh - start the VSLAM stack via the supervisor:
 #   /arid_supervisor/vslam_enable -> true   (BLOCKING + CAMERA-PROVEN: the supervisor runs
-#                                            the USB pre-check, the RealSense up-gate with
-#                                            fail-fast on "Error starting device", and ONE
-#                                            reset_usb recovery. Allow up to ~3 min.)
+#                                            the USB pre-check, the RealSense up-gate bounded
+#                                            by a 40 s backstop, and ONE reset_usb recovery.
+#                                            Allow up to ~3 min.)
 # Idempotent: on top of an already-running vslam the supervisor answers "vslam already
 # running (...)" and this exits ok. The supervisor is started at boot by
 # arid_supervisor.service on the host.
