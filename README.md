@@ -416,16 +416,16 @@ Both back up to `settings.json.bak`. If the parse fails on `//` comments, restor
 
 | Submodule | Class | Role |
 |---|---|---|
-| [`PX4-Autopilot`](local_ws/auxiliary/PX4-Autopilot/) | LIVE `PX4-InDro` | PX4 fork with the ARID airframe. |
-| [`realsense-ros`](isaac_ros-dev/src/realsense-ros/) | LIVE `v4.51.1` | RealSense driver: `hw_reset` service, hot-removal guards, `color_format`, noise log filter, claim retry. |
-| [`isaac_ros_visual_slam`](isaac_ros-dev/src/isaac_ros_visual_slam/) | LIVE `v3.2-14` | cuVSLAM backend with the stale-tolerant image synchronizer. |
-| [`px4_msgs`](isaac_ros-dev/src/px4_msgs/) | LIVE `release/1.15` | PX4 messages; `local_ws/src/px4_msgs` symlinks to it. |
-| [`isaac_ros_common`](isaac_ros-dev/src/isaac_ros_common/) | PINNED `v3.2-14` | Isaac base image and Dockerfile chain. |
-| [`isaac_ros_nitros`](isaac_ros-dev/src/isaac_ros_nitros/) | PINNED `v3.2-14` | Zero-copy transport. |
-| [`isaac_ros_image_pipeline`](isaac_ros-dev/src/isaac_ros_image_pipeline/) | PINNED `v3.2-14` | GPU image processing. |
-| [`px4-ros2-interface-lib`](isaac_ros-dev/src/px4-ros2-interface-lib/) | PINNED `1.4.0` | Auterion PX4 SDK. |
-| [`rslidar_sdk`](local_ws/src/rslidar_sdk/) | PINNED `v1.5.19` | RoboSense SDK; builds `rslidar_sdk_node`. |
-| [`rslidar_msg`](local_ws/src/rslidar_msg/) | PINNED `v1.5.10` | RoboSense message definitions. |
+| [`PX4-Autopilot`](https://github.com/indro-robotics/PX4-Autopilot/tree/PX4-InDro) | LIVE `PX4-InDro` | PX4 fork with the ARID airframe. |
+| [`realsense-ros`](https://github.com/indro-robotics/realsense-ros/tree/v4.51.1) | LIVE `v4.51.1` | RealSense driver: `hw_reset` service, hot-removal guards, `color_format`, noise log filter, claim retry. |
+| [`isaac_ros_visual_slam`](https://github.com/indro-robotics/isaac_ros_visual_slam/tree/v3.2-14) | LIVE `v3.2-14` | cuVSLAM backend with the stale-tolerant image synchronizer. |
+| [`px4_msgs`](https://github.com/PX4/px4_msgs/tree/release/1.15) | LIVE `release/1.15` | PX4 messages; `local_ws/src/px4_msgs` symlinks to it. |
+| [`isaac_ros_common`](https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_common/tree/v3.2-14) | PINNED `v3.2-14` | Isaac base image and Dockerfile chain. |
+| [`isaac_ros_nitros`](https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_nitros/tree/v3.2-14) | PINNED `v3.2-14` | Zero-copy transport. |
+| [`isaac_ros_image_pipeline`](https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_image_pipeline/tree/v3.2-14) | PINNED `v3.2-14` | GPU image processing. |
+| [`px4-ros2-interface-lib`](https://github.com/Auterion/px4-ros2-interface-lib/tree/1.4.0) | PINNED `1.4.0` | Auterion PX4 SDK. |
+| [`rslidar_sdk`](https://github.com/RoboSense-LiDAR/rslidar_sdk/tree/v1.5.19) | PINNED `v1.5.19` | RoboSense SDK; builds `rslidar_sdk_node`. |
+| [`rslidar_msg`](https://github.com/RoboSense-LiDAR/rslidar_msg/tree/v1.5.10) | PINNED `v1.5.10` | RoboSense message definitions. |
 
 ---
 
