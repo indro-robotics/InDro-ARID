@@ -215,6 +215,20 @@ setup_repos() {
         skip "ROS keyring already present"
     fi
 
+    # ROS 2 apt source. The keyring alone resolves nothing: without this list every
+    # ros-humble-* package below fails with "Unable to locate package". Match on the repo
+    # URL, not a fixed filename, so an image that already ships the ROS repo (e.g. ARK-OS)
+    # is left alone instead of adding a duplicate source.
+    if ! grep -rqs "packages.ros.org/ros2" /etc/apt/sources.list /etc/apt/sources.list.d/; then
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
+http://packages.ros.org/ros2/ubuntu \
+$(. /etc/os-release && echo "$UBUNTU_CODENAME") main" \
+            | sudo tee /etc/apt/sources.list.d/ros2.list >/dev/null
+        ok "ROS 2 apt source added"
+    else
+        skip "ROS 2 apt source already present"
+    fi
+
     # Nvidia CDI (regenerate each run). Jetson needs --mode=csv; auto-detect picks nvml
     # and errors out on the iGPU. Non-fatal: a CDI failure must not abort provisioning.
     if sudo nvidia-ctk cdi generate --mode=csv --output=/etc/cdi/nvidia.yaml; then
@@ -719,6 +733,14 @@ setup_ros_workspace() {
         warn "ROS2 not installed - skipping local workspace build"
         STEPS_SKIPPED+=("ros_workspace")
         return 0
+    fi
+
+    # ark_os installs ROS in this same run, so this shell has never sourced it and colcon
+    # would build with no underlay (ament setup files need set -u disabled).
+    if [[ -z "${ROS_DISTRO:-}" ]]; then
+        set +u
+        source /opt/ros/humble/setup.bash
+        set -u
     fi
 
     ensure_pip_pkg "pyudev==0.24.3"     "pyudev"     "0.24.3"
