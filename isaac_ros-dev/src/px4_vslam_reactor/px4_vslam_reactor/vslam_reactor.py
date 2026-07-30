@@ -46,10 +46,11 @@ class vslam_reactor(Node):
         self.vslam_status = 0
         self.vslam_busy = False
         self._vslam_busy_since = self.get_clock().now()
-        self._seat_seq = 0   # re-seat generation: straggler SetSlamPose responses must not touch the successor's state
+        self._seat_seq = 0
+        self._seat_is_init = False   # kind of the in-flight seat: only ORIGIN seats bump the epoch   # re-seat generation: straggler SetSlamPose responses must not touch the successor's state
         self.new_set_pose_call = False
         self.ev_fusion_started = False                      # PX4 EV fusion
-        self._vio_reset_epoch = 0                           # bumped on each committed re-seat -> EKF2 reset_counter
+        self._vio_reset_epoch = 0                           # bumped on committed ORIGIN seats only -> EKF2 reset_counter
         self.last_set_pose_time = self.get_clock().now()
 
         # Post-re-seat jump-gate bypass: odom_velocity_gate only refreshes last_vslam_odom_msg on
@@ -92,7 +93,7 @@ class vslam_reactor(Node):
         # cadence proves nominal again.
         self._last_cadence_stamp = None       # rclpy Time of previous VO header.stamp
         self._cadence_gated = False           # currently withholding
-        self._cadence_nominal_run = 0         # consecutive nominal-cadence samples while gated
+        self._cadence_nominal_run = 0         # nominal-cadence samples while gated (anomalies skipped)
         self._cadence_over_run = 0            # consecutive lesser-gap samples while ungated (two-tier engage)
         self._cadence_gate_t0 = None          # node-clock time the current gate engaged
         self._cadence_gated_frames = 0        # frames seen during the current gated window
@@ -509,8 +510,15 @@ class vslam_reactor(Node):
         try:
             response = future.result()
             if response.success:
-                self._vio_reset_epoch = (self._vio_reset_epoch + 1) & 0xFF
-                self.pub_vio_reset_epoch_.publish(UInt8(data=self._vio_reset_epoch))
+                if self._seat_is_init:
+                    # ORIGIN seats only. A jump re-seat writes the FMU's OWN pose into
+                    # cuVSLAM, so post-seat EV already agrees with EKF2 and there is
+                    # nothing for a reset flag to force - bumping here commanded a full
+                    # EKF2 vertical reset in flight for a value EKF2 already held. Any
+                    # residual step is ordinary innovation; worst case EV de-latches and
+                    # the re-latch performs the reset through the fusion-start path.
+                    self._vio_reset_epoch = (self._vio_reset_epoch + 1) & 0xFF
+                    self.pub_vio_reset_epoch_.publish(UInt8(data=self._vio_reset_epoch))
                 # Opens the jump-gate bypass window here, on SUCCESS only: a refused/failed
                 # re-seat moved nothing, so the pre-re-seat baseline is still the truth and the
                 # gate must stay live against it.
@@ -899,6 +907,7 @@ class vslam_reactor(Node):
         # fire an instant spurious force-clear.
         self._vslam_busy_since = self.get_clock().now()
         self.vslam_busy = True
+        self._seat_is_init = init
         self.new_set_pose_call = True
         # Settle ownership: only an 'origin' settle may escalate to an origin re-injection on
         # settle timeout (slam_odom_callback). A 'reseat' settle that fails to align is abandoned

@@ -541,30 +541,49 @@ class AridSupervisor(Node):
             self.get_logger().error('vslam camera gate FAIL (attempt 1/2):\n' + report1)
 
             # ONE recovery, no ladder. No land gate: pre-mission bringup, cameras already unusable.
-            self.get_logger().warn('recovery: vslam teardown + /reset_usb + relaunch (single attempt)')
             self.vslam.stop()
-            reset_ok, _ = self._reset_usb()
-            if not reset_ok:
-                self.get_logger().warn('/reset_usb failed - relaunching on the un-cycled bus anyway')
-            if not self._wait_usb_rs():
-                devs = _usb_rs_devices(self.rs_usb_pids)
+            # Proportional recovery: a bus power cycle costs ~20 s of re-enumeration and only
+            # helps a camera that is ABSENT. Every camera still enumerated means the bringup
+            # lost a driver-side claim or an image_transport plugin load; the driver retries
+            # the claim itself and a relaunch clears both.
+            devs = _usb_rs_devices(self.rs_usb_pids)
+            bus_cycled = len(devs) < CAM_COUNT
+            if not bus_cycled:
                 self.get_logger().warn(
-                    'only %d/%d RealSense on USB after /reset_usb - relaunching anyway; devices: %s'
+                    'recovery: %d/%d RealSense still enumerated - claim-side failure; '
+                    'relaunching without /reset_usb (single attempt)' % (len(devs), CAM_COUNT))
+            else:
+                self.get_logger().warn(
+                    'recovery: only %d/%d RealSense enumerated - /reset_usb + relaunch '
+                    '(single attempt); devices: %s'
                     % (len(devs), CAM_COUNT, '; '.join(devs) or '(none)'))
+                reset_ok, _ = self._reset_usb()
+                if not reset_ok:
+                    self.get_logger().warn('/reset_usb failed - relaunching on the un-cycled bus anyway')
+                if not self._wait_usb_rs():
+                    devs = _usb_rs_devices(self.rs_usb_pids)
+                    self.get_logger().warn(
+                        'only %d/%d RealSense on USB after /reset_usb - relaunching anyway; devices: %s'
+                        % (len(devs), CAM_COUNT, '; '.join(devs) or '(none)'))
             log = self.vslam.start()
             self.get_logger().info(f'vslam relaunched (log: {log}); re-running camera gate')
             ok, elapsed, report2 = self._watch_vslam_log(log)
             if ok:
                 resp.success = True
+                how = 'reset_usb + relaunch' if bus_cycled else 'relaunch, no bus cycle'
                 resp.message = (f'vslam up: {CAM_COUNT}/{CAM_COUNT} cameras in {elapsed:.0f}s '
-                                '(after one reset_usb recovery)')
+                                f'(after one recovery: {how})')
                 self.get_logger().info(resp.message)
                 return resp
             self.get_logger().error('vslam camera gate FAIL (attempt 2/2):\n' + report2)
             self.vslam.stop()
+            stage2 = 'post-reset_usb' if bus_cycled else 'post-relaunch, bus NOT cycled'
+            tail = ('' if bus_cycled else
+                    ' All cameras stayed enumerated, so no bus cycle was attempted; call '
+                    '/reset_usb and retry if a camera is wedged rather than unclaimed.')
             full = ('vslam camera bringup failed twice (single-recovery policy); stack stopped. '
                     '=== FAILURE 1 (initial) === ' + _squash(report1)
-                    + ' === FAILURE 2 (post-reset_usb) === ' + _squash(report2))
+                    + f' === FAILURE 2 ({stage2}) === ' + _squash(report2) + tail)
             resp.success = False
             resp.message = _clip(full)
             return resp

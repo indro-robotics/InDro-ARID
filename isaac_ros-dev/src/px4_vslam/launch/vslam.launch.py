@@ -80,8 +80,9 @@ def generate_launch_description():
 
     # RealSense claim race: sibling RealSenseNodeFactory instances cross-probe every
     # attached RealSense during enumeration, and a collision yields RS2_USB_STATUS_BUSY
-    # ("failed to set power state") from which that factory never recovers. Recovery is
-    # the arid_supervisor vslam_enable gate, not a launch-time stagger.
+    # ("failed to set power state"). The driver fork retries the claim until it wins.
+    # A launch-time stagger does not help: the cross-probe recurs on every enumeration
+    # event, not only at startup. The arid_supervisor vslam_enable gate is the backstop.
     vslam_container = ComposableNodeContainer(
         name='vslam_container',
         namespace='',

@@ -11,8 +11,18 @@ P='ros2 launch px4_vslam vslam[.]launch[.]py'
 # from a shell (dev alias) is not its own group leader, so -pid would ESRCH and the
 # fallback single kill leaves the container children holding the cameras - and a pid
 # that happens to equal an unrelated group's pgid would signal that innocent group.
+# Orphan-safe discovery: an orphaned component container carries no 'ros2 launch' token,
+# so matching parents alone reports "nothing to reap" while the container is still up
+# holding the cameras and the ROS graph (proven live: a killed launch parent left
+# component_container_mt running and this script reported nothing to do). Match the
+# containers by their own node name too; both sets reduce to pgids below. The node
+# names belong to the launches in P above, so this cannot widen the blast radius.
+C='component_container.*__node:=vslam_container'
 pgids=""
-for p in $(pgrep -f "${P}"); do
+for p in $(pgrep -f "${P}"; pgrep -f "${C}"); do
+    # never signal our own group: this script and its shell must survive the reap
+    [ "${p}" = "$$" ] && continue
+    [ "${p}" = "${PPID}" ] && continue
     g=$(ps -o pgid= -p "${p}" 2>/dev/null | tr -d ' ')
     [ -n "${g}" ] || continue
     case " ${pgids} " in *" ${g} "*) ;; *) pgids="${pgids} ${g}" ;; esac

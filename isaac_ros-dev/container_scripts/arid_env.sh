@@ -38,6 +38,7 @@ alias vslam='ros2 launch px4_vslam vslam.launch.py'
 alias initialize='_supervisor_up && /bin/bash ${ISAAC_ROS_WS}/container_scripts/initialize.sh'
 alias status='_supervisor_up && ros2 service call /arid_supervisor/status std_srvs/srv/Trigger "{}"'
 alias deinitialize='_supervisor_up && /bin/bash ${ISAAC_ROS_WS}/container_scripts/deinitialize.sh'
+alias reset_usb='_reset_usb_up && ros2 service call /reset_usb std_srvs/srv/Trigger "{}"'
 alias foxglove_bridge='ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765'
 
 help() {

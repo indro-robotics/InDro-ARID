@@ -24,7 +24,7 @@ Every VSLAM frame runs through `slam_odom_callback`. A frame reaches PX4 only wh
 
 **Displacement and settle gate.** After an origin injection the reactor keeps injecting until the VSLAM and FMU poses agree within `align_yaw_deg` and `align_pos_m`, and re-injects if `set_origin_settle_time` elapses first.
 
-**Cadence gate.** VO is withheld from EKF2 while cuVSLAM stamp cadence is degraded. Engagement is two-tier on VO header-stamp gaps: one gap at or over `cadence_gate_hard_s`, or `cadence_gate_sustained_samples` consecutive gaps between `cadence_gate_s` and `cadence_gate_hard_s`. A lone lesser gap does not engage, and any nominal sample breaks the lesser-gap streak. `cadence_release_samples` consecutive nominal frames release the gate; there is no timed escape. Stamp gaps over 5 s are treated as stamp anomalies and reseed the tracker instead of engaging. While gated, all settles are withheld and the settle countdown pauses, but jump detection stays live so a genuine jump still re-seats and bumps the epoch. The withhold itself never bumps the epoch. State is latched on `/reactor/cadence_gated` and engagements count on `/reactor/cadence_gate_count`.
+**Cadence gate.** VO is withheld from EKF2 while cuVSLAM stamp cadence is degraded. Engagement is two-tier on VO header-stamp gaps: one gap at or over `cadence_gate_hard_s`, or `cadence_gate_sustained_samples` consecutive gaps between `cadence_gate_s` and `cadence_gate_hard_s`. A lone lesser gap does not engage, and any nominal sample breaks the lesser-gap streak. `cadence_release_samples` nominal frames release the gate; there is no timed escape. Anomalous stamps carry no cadence information: they neither count toward release nor break a release streak in progress. Stamp gaps over 5 s are treated as stamp anomalies and reseed the tracker instead of engaging. While gated, all settles are withheld and the settle countdown pauses, but jump detection stays live so a genuine jump still re-seats. The withhold never bumps the epoch. State is latched on `/reactor/cadence_gated` and engagements count on `/reactor/cadence_gate_count`.
 
 **Re-seat burst limit.** Jump re-seats are budgeted at `reseat_burst_max` committed re-seats per rolling `reseat_burst_window_s`. Once the budget is spent, further jump re-seats are blocked, because re-seating at that rate cannot recover cuVSLAM and only feeds EKF2 a reset storm. Blocking a re-seat never bumps the reset epoch. Origin re-injections are bounded by the settle timeout and are not counted against the budget.
 
@@ -36,7 +36,7 @@ A `SetSlamPose` call that never returns would suppress EV publishing indefinitel
 
 ## Epochs and reset_counter
 
-Each committed re-seat bumps the epoch on `/reactor/vio_reset_epoch`. `vio_transform` forwards it into `VehicleOdometry.reset_counter`, which tells EKF2 to reset its EV-aided states onto the new pose instead of gating the discontinuity. Only the `SetSlamPose` success path bumps the epoch.
+Only a committed ORIGIN seat bumps the epoch on `/reactor/vio_reset_epoch`. `vio_transform` forwards it into `VehicleOdometry.reset_counter`, which tells EKF2 to reset its EV-aided states onto the new origin. A jump re-seat writes the FMU's own pose into cuVSLAM, so post-seat EV already agrees with EKF2 and no reset flag is sent; any residual step is ordinary innovation.
 
 ## Origin injection
 
@@ -68,7 +68,7 @@ The reactor publishes the filtered stream plus its gate and health telemetry.
 | `/visual_slam/filt_slam_odometry` | `nav_msgs/Odometry` | Jump-filtered VSLAM odometry; downstream consumers should prefer this. |
 | `/reactor/drone_odom` | `nav_msgs/Odometry` | PX4 odom in ROS conventions (FRD to FLU). |
 | `/reactor/drone_pose` | `geometry_msgs/PoseStamped` | Same, pose only, for RViz or Foxglove. |
-| `/reactor/vio_reset_epoch` | `std_msgs/UInt8` (latched) | Committed-re-seat epoch. |
+| `/reactor/vio_reset_epoch` | `std_msgs/UInt8` (latched) | Origin-seat epoch. |
 | `/reactor/cadence_gated` | `std_msgs/Bool` (latched) | True while VO is withheld for degraded cadence. |
 | `/reactor/cadence_gate_count` | `std_msgs/UInt32` (latched) | Cumulative cadence-gate engagements. |
 | `/reactor/vo_healthy` | `std_msgs/Bool` (latched) | False on an exhausted re-seat budget or EV publish silence. |

@@ -53,7 +53,7 @@
     cadence_gate_s: 0.15             # s, floor of the lesser-gap tier (above benign-jitter p95; keep < 0.2 s EV_MAX_INTERVAL)
     cadence_gate_hard_s: 0.40        # s, single-gap engage - EKF2's own arrival de-latch point; lesser gaps are valid-late poses it absorbs
     cadence_gate_sustained_samples: 5  # consecutive lesser gaps (gate_s..hard_s) that engage - persistent degraded cadence
-    cadence_release_samples: 5       # consecutive nominal-cadence samples to release (~83 ms at 60 Hz, ~165 ms at 30 Hz)
+    cadence_release_samples: 5       # nominal-cadence samples to release (~83 ms at 60 Hz); anomalous stamps are skipped, not counted and not streak-breaking
     # NO timed release: a degraded stream stays withheld until cadence proves nominal. EKF2 coasts
     # on flow+rng after its native 400 ms EV de-latch; if ALL horizontal aiding dies, PX4's own
     # ladder ends in failsafe. /reactor/cadence_gated latches True for the whole withhold so

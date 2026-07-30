@@ -1,6 +1,6 @@
 # ARID
 
-The ARID (Autonomous Research Indoor Drone) is an indoor quadrotor built on an NVIDIA Jetson Orin with an ARK PAB carrier, running ROS 2 Humble, NVIDIA Isaac ROS and PX4. This repository provisions the drone, builds both workspaces, and operates the flight stack.
+The ARID (Autonomous Research Indoor Drone) is an indoor quadrotor built on an NVIDIA Jetson Orin with an ARK PAB carrier, running ROS 2 Humble, NVIDIA Isaac ROS and PX4. This repository provisions the drone, builds both workspaces, and operates the flight stack. ROS 2 traffic is restricted to the drone (`ROS_DOMAIN_ID=23`, `ROS_LOCALHOST_ONLY=1`), and remote visualization goes through Foxglove.
 
 - `setup.sh` with `setup/`: provisioning, from a fresh Ubuntu 22.04 install to flight-ready.
 - `arid_description`: robot description, publishing `/robot_description` and `/tf_static`.
@@ -18,8 +18,6 @@ The airframe carries three sensor groups.
 | 3x RealSense D435 | front, left, right; IR stereo feeding VSLAM |
 | 2x IMX219 CSI | `cam_front` forward, `cam_down` downward; operator video only |
 | ARK optical flow + rangefinder | bottom pod |
-
-> ROS 2 traffic is restricted to the drone (`ROS_DOMAIN_ID=23`, `ROS_LOCALHOST_ONLY=1`). Remote visualization goes through Foxglove.
 
 ---
 
@@ -42,7 +40,20 @@ Stopping `arid_supervisor.service` is airborne-gated. While flight is proven the
 On a drone whose container workspace has never been built, the supervisor cannot start. `setup.sh --full` covers this; otherwise run menu **9**, or build and start it by hand:
 
 ```bash
-start_isaac && isaac_bash && colcon_isaac && exit
+start_isaac
+isaac_bash
+```
+
+Inside the container, build and leave:
+
+```bash
+colcon_isaac
+exit
+```
+
+Back on the host, clear the failure count and start the unit:
+
+```bash
 sudo systemctl reset-failed arid_supervisor.service && sudo systemctl start arid_supervisor.service
 ```
 
@@ -159,6 +170,7 @@ It checks that the services are active, the aliases resolve, the Foxglove port a
 
 ```bash
 ver_cv_cams
+ver_cv_cams front
 ```
 
 ---
@@ -182,7 +194,7 @@ Expect three distinct non-empty serials. Blank serials mean bringup cannot map c
 update_submods
 ```
 
-Expect `All submodules verified.` A `commit is NOT on origin/<branch>` line means a fork has drifted: run `scripts/update_submods.sh --update`. On upstream instead of the InDro forks there is no `hw_reset` service for the sentry to call, and no `stale_stream_timeout_ms`, so one dead camera stalls VO.
+Expect `All submodules verified.` A `commit is NOT on origin/<branch>` line means a fork has drifted: run `scripts/update_submods.sh --update`.
 
 **3. Build**
 
@@ -202,7 +214,7 @@ sudo reboot
 Then, back on the drone:
 
 ```bash
-systemctl is-active start_isaac_docker arid_supervisor arid_description gst_camera_manager usb_ros_reset
+systemctl is-active usbfs-memory start_isaac_docker arid_supervisor arid_description gst_camera_manager usb_ros_reset
 local_test
 ```
 
@@ -256,7 +268,7 @@ pgrep -af 'ros2 launch px4_vslam vslam[.]launch[.]py'
 status
 ```
 
-Expect no `pgrep` match and `vslam: stopped`. Survivors mean the reap failed and they still hold the cameras. More than 5 supervisor restarts in 60 s leaves the unit failed: read `journalctl -u arid_supervisor -n 100`.
+Expect no `pgrep` match and `vslam: stopped`. A match means the reap failed and those processes still hold the cameras. More than 5 supervisor restarts in 60 s leaves the unit failed: read `journalctl -u arid_supervisor -n 100`.
 
 **10. Reap before spinup**
 
@@ -298,7 +310,7 @@ Option 9 requires the container to be running.
 
 ### Camera calibration
 
-Pass `front` or `down`; menu **6** prompts for it:
+`cam_calibrate` takes `front` or `down`; menu **6** prompts for the camera:
 
 ```bash
 cam_calibrate front
@@ -372,6 +384,8 @@ Building produces `build/ark_fmu-v6x_default/ark_fmu-v6x_default.px4`:
 cd local_ws/auxiliary/PX4-Autopilot
 make ark_fmu-v6x_default
 ```
+
+Flashing is done from the ARK-OS web interface, which takes the `.px4` file directly.
 
 Select the airframe from a MAVLink shell:
 
@@ -458,7 +472,7 @@ The two workspaces carry these first-party components.
 | Submodule | Class | Role |
 |---|---|---|
 | [`PX4-Autopilot`](local_ws/auxiliary/PX4-Autopilot/) | LIVE `PX4-InDro` | PX4 fork with the ARID airframe. |
-| [`realsense-ros`](isaac_ros-dev/src/realsense-ros/) | LIVE `v4.51.1` | RealSense driver: `hw_reset` service, hot-removal guards, `color_format`. |
+| [`realsense-ros`](isaac_ros-dev/src/realsense-ros/) | LIVE `v4.51.1` | RealSense driver: `hw_reset` service, hot-removal guards, `color_format`, claim retry. |
 | [`isaac_ros_visual_slam`](isaac_ros-dev/src/isaac_ros_visual_slam/) | LIVE `v3.2-14` | cuVSLAM backend with the stale-tolerant image synchronizer. |
 | [`px4_msgs`](isaac_ros-dev/src/px4_msgs/) | LIVE `release/1.15` | PX4 messages; `local_ws/src/px4_msgs` is a symlink to it. |
 | [`isaac_ros_common`](isaac_ros-dev/src/isaac_ros_common/) | PINNED `v3.2-14` | Isaac base and Dockerfile chain. |

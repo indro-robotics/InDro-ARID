@@ -87,7 +87,7 @@ These are the keys that change in normal development.
 
 ## `vio_transform`
 
-`vio_transform` converts the filtered VSLAM solution into the PX4 visual-odometry message. It forwards the latched `/reactor/vio_reset_epoch` into `VehicleOdometry.reset_counter`, so EKF2 re-anchors on a committed re-seat instead of gating the discontinuity.
+`vio_transform` converts the filtered VSLAM solution into the PX4 visual-odometry message. It forwards the latched `/reactor/vio_reset_epoch` into `VehicleOdometry.reset_counter`, so EKF2 re-anchors on a committed origin seat instead of gating the discontinuity.
 
 | Subscribed | Type |
 |---|---|
