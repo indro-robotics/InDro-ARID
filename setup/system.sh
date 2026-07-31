@@ -637,10 +637,15 @@ setup_permissions() {
     step "Sudoers, udev, polkit, groups"
 
     local _sudtmp; _sudtmp=$(mktemp)
+    # BOTH /bin/ and /usr/bin/ forms are listed. /bin is a symlink to /usr/bin, but sudo matches
+    # the RESOLVED path as a literal string - so a bare `sudo systemctl` (which resolves to
+    # /usr/bin/systemctl) does NOT match a /bin/systemctl rule. Every call site in this repo
+    # writes it bare, so a /bin-only list grants nothing: the 15 `sudo -n systemctl` calls fail
+    # outright and the rest prompt. nmcli is required by config_lidar and the LiDAR dispatcher.
     tee "${_sudtmp}" > /dev/null << EOF
-${USERNAME} ALL=(ALL) NOPASSWD: /usr/sbin/uhubctl, /usr/bin/gpioset, /bin/systemctl start *, /bin/systemctl stop *, /bin/systemctl restart *, /bin/systemctl kill *, /bin/systemctl reset-failed *, /bin/systemctl enable *, /bin/systemctl disable *, ${WORKSPACES}/scripts/usb_reset.sh, /usr/sbin/zerotier-cli, /usr/sbin/reboot, /sbin/reboot
+${USERNAME} ALL=(ALL) NOPASSWD: /usr/sbin/uhubctl, /usr/bin/gpioset, /bin/systemctl start *, /bin/systemctl stop *, /bin/systemctl restart *, /bin/systemctl kill *, /bin/systemctl reset-failed *, /bin/systemctl enable *, /bin/systemctl disable *, /usr/bin/systemctl start *, /usr/bin/systemctl stop *, /usr/bin/systemctl restart *, /usr/bin/systemctl kill *, /usr/bin/systemctl reset-failed *, /usr/bin/systemctl enable *, /usr/bin/systemctl disable *, /usr/bin/nmcli, ${WORKSPACES}/scripts/usb_reset.sh, /usr/sbin/zerotier-cli, /usr/sbin/reboot, /sbin/reboot
 EOF
-    if ! visudo -cf "${_sudtmp}" >/dev/null; then
+    if ! sudo visudo -c -f "${_sudtmp}" >/dev/null 2>&1; then
         err "Sudoers rule failed visudo validation - not installed"
         rm -f "${_sudtmp}"
         return 1
@@ -662,13 +667,31 @@ EOL
 SUBSYSTEM=="gpio", GROUP=="gpio", MODE=="0660"
 EOL
 
+    # RealSense host-side libusb access. setup installs pyrealsense2 from a pip wheel, which
+    # ships bindings and no udev rules; librealsense's own source install is what normally drops
+    # them, and that is not part of provisioning. Without this the node stays 0664 root:root,
+    # pyrealsense2 enumerates 0 devices as ${USERNAME}, and config_realsense writes a blank
+    # serial_no. The Isaac container covers itself separately (image rules + plugdev in the
+    # entrypoint + arid_supervisor._repair_camera_nodes); none of that applies on the host.
+    # PIDs match the set arid_supervisor gates on.
+    sudo tee /etc/udev/rules.d/99-realsense-libusb.rules > /dev/null << 'EOL'
+SUBSYSTEM=="usb", ATTRS{idVendor}=="8086", ATTRS{idProduct}=="0b07", MODE:="0666", GROUP:="plugdev"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="8086", ATTRS{idProduct}=="0b3a", MODE:="0666", GROUP:="plugdev"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="8086", ATTRS{idProduct}=="0b3d", MODE:="0666", GROUP:="plugdev"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="8086", ATTRS{idProduct}=="0b5c", MODE:="0666", GROUP:="plugdev"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="8086", ATTRS{idProduct}=="0b64", MODE:="0666", GROUP:="plugdev"
+KERNEL=="iio*", ATTRS{idVendor}=="8086", ATTRS{idProduct}=="0b3a", MODE:="0777", GROUP:="plugdev"
+KERNEL=="iio*", ATTRS{idVendor}=="8086", ATTRS{idProduct}=="0b5c", MODE:="0777", GROUP:="plugdev"
+EOL
+
     sudo udevadm control --reload-rules
     sudo udevadm trigger
     ok "udev rules written, reloaded, and triggered against current devices"
 
     # Groups
-    sudo usermod -aG dialout,gpio "${USERNAME}"
-    ok "Groups: dialout, gpio"
+    # plugdev: the group the RealSense udev rules above assign.
+    sudo usermod -aG dialout,gpio,plugdev "${USERNAME}"
+    ok "Groups: dialout, gpio, plugdev"
 
     # Polkit rule for reset_usb.service
     sudo tee "$POLKIT_RULE_FILE" > /dev/null << EOF

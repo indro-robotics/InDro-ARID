@@ -45,8 +45,14 @@ fi
 
 # Source ROS if PATH lacks rs-enumerate-devices (setup.sh invokes this before the
 # user's shell sources ROS).
-command -v rs-enumerate-devices >/dev/null 2>&1 \
-    || { [[ -f /opt/ros/humble/setup.bash ]] && source /opt/ros/humble/setup.bash; }
+# set +u around the source: ament's setup files read unbound variables, so under `set -u`
+# this line aborts the whole script with "AMENT_TRACE_SETUP_FILES: unbound variable" - which is
+# why setup.sh only ever reported "config_realsense failed" and left serial_no blank.
+if ! command -v rs-enumerate-devices >/dev/null 2>&1 && [[ -f /opt/ros/humble/setup.bash ]]; then
+    set +u
+    source /opt/ros/humble/setup.bash
+    set -u
+fi
 
 # Output helpers
 if [[ -t 1 ]]; then
@@ -118,6 +124,29 @@ else
     fix  "python3 -m pip install pyrealsense2    # self-contained wheel, no apt librealsense"
     exit 1
 fi
+
+step "3b. Host libusb access (udev rules)"
+what     "librealsense claims the device over libusb, not just /dev/video*. Without a rule the node is 0664 root:root."
+why      "setup installs pyrealsense2 from a pip wheel, which ships no udev rules, and librealsense's own source install is not part of provisioning. Missing rules present as 'no devices' even though lsusb sees the camera."
+RS_RULES="/etc/udev/rules.d/99-realsense-libusb.rules"
+if [[ -f "${RS_RULES}" ]]; then
+    ok "${RS_RULES} present"
+else
+    what "installing ${RS_RULES} (same content setup_permissions writes)"
+    sudo tee "${RS_RULES}" > /dev/null << 'EOL'
+SUBSYSTEM=="usb", ATTRS{idVendor}=="8086", ATTRS{idProduct}=="0b07", MODE:="0666", GROUP:="plugdev"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="8086", ATTRS{idProduct}=="0b3a", MODE:="0666", GROUP:="plugdev"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="8086", ATTRS{idProduct}=="0b3d", MODE:="0666", GROUP:="plugdev"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="8086", ATTRS{idProduct}=="0b5c", MODE:="0666", GROUP:="plugdev"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="8086", ATTRS{idProduct}=="0b64", MODE:="0666", GROUP:="plugdev"
+KERNEL=="iio*", ATTRS{idVendor}=="8086", ATTRS{idProduct}=="0b3a", MODE:="0777", GROUP:="plugdev"
+KERNEL=="iio*", ATTRS{idVendor}=="8086", ATTRS{idProduct}=="0b5c", MODE:="0777", GROUP:="plugdev"
+EOL
+    sudo udevadm control --reload-rules && sudo udevadm trigger
+    sleep 3
+    ok "rules installed, reloaded and triggered"
+fi
+id -nG | grep -qw plugdev || warn "${USER} is not in 'plugdev' - log out and back in for the group to apply"
 
 step "4. Query RealSense serial"
 what     "First librealsense 'Serial Number' (the librealsense ID, not the USB iSerial)."

@@ -644,7 +644,7 @@ setup_uninstall() {
     step "Remove sudoers, polkit, udev"
     sudo rm -f "${SUDOERS_FILE}" 2>/dev/null || true
     sudo rm -f "${POLKIT_RULE_FILE}" 2>/dev/null || true
-    sudo rm -f /etc/udev/rules.d/52-usb.rules /etc/udev/rules.d/99-gpio.rules 2>/dev/null || true
+    sudo rm -f /etc/udev/rules.d/52-usb.rules /etc/udev/rules.d/99-gpio.rules /etc/udev/rules.d/99-realsense-libusb.rules 2>/dev/null || true
     sudo udevadm control --reload-rules 2>/dev/null || true
     ok "Sudoers + polkit + udev rules removed"
 
