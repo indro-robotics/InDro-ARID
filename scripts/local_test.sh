@@ -361,7 +361,9 @@ step "5c. rslidar_status should report RUNNING"
 STATUS=$(_trigger /rslidar_coordinator/status)
 raw "${STATUS}"
 if echo "${STATUS}" | grep -q 'RUNNING'; then
-    pass "status reports RUNNING"
+    # RUNNING means the forked rslidar_sdk_node process is alive. The SDK starts happily with no
+    # LiDAR attached, so this says nothing about the hardware - 5f is the only check that does.
+    pass "coordinator reports RUNNING (SDK subprocess alive; not proof of cloud flow - see 5f)"
 else
     fail "status not RUNNING"
 fi
@@ -375,7 +377,9 @@ note     "rslidar-related topics in the graph:"
 echo "${TOPICS}" | grep -E 'rslidar' | sed 's/^/         /'
 for t in /rslidar_points /rslidar_coordinator/alive; do
     if echo "${TOPICS}" | grep -q "^$t$"; then
-        pass "topic $t published"
+        # Advertised, not necessarily carrying data - a publisher appears on the graph whether or
+        # not the LiDAR is attached. Say "advertised" so the summary cannot be read as data flow.
+        pass "topic $t advertised"
     else
         fail "topic $t missing"
     fi
@@ -389,22 +393,26 @@ ALIVE_OUT=$(_latched_bool /rslidar_coordinator/alive)
 raw "${ALIVE_OUT}"
 ALIVE_VAL=$(echo "${ALIVE_OUT}" | grep -oE 'data: (true|false)' | head -1)
 case "${ALIVE_VAL}" in
+    # 'false' is NOT a pass: the watchdog is telling us no cloud is flowing. The topic being
+    # readable only proves DDS works, which 5d already covered. Scored FAIL to match 5f and the
+    # cam_down_alive check above - a fitted sensor that delivers nothing is a defect, not an
+    # inapplicable check.
     "data: true")  pass "alive == true (watchdog confirms cloud flow; LiDAR is reachable)" ;;
-    "data: false") pass "alive == false (latched topic readable; LiDAR not flowing data, which matches reality)" ;;
+    "data: false") fail "alive == false (watchdog reports no cloud flow; LiDAR powered off / unreachable)" ;;
     *)             fail "alive topic unreadable in 10 s (DDS discovery problem?)" ;;
 esac
 
 # 5f. cloud data flow (informational)
 step "5f. Cloud-data flow on /rslidar_points (hardware-dependent)"
 what     "Count messages over 6 s (RSAIRY nominal ~10 Hz)."
-why      "Tests whether the LiDAR is physically reachable. SKIP (not FAIL) if zero: that's a hardware issue, not a software defect."
+why      "The RSAIRY ships on the airframe, so a silent LiDAR is a FAIL, not a SKIP. SKIP means 'check does not apply'; a sensor that is fitted but delivering nothing is a defect of the system under test, whether the cause is cabling, power or software. Skipping it buries a grounded drone in a count nobody reads."
 COUNT=$(count_msgs /rslidar_points 6)
 HZ=$(awk "BEGIN {printf \"%.1f\", $COUNT/6}")
 raw "messages: ${COUNT}    over: 6 s    rate: ${HZ} Hz"
 if [[ "${COUNT}" -ge 1 ]]; then
     pass "cloud flowing at ~${HZ} Hz (${COUNT} msgs / 6 s): LiDAR reachable"
 else
-    skip "no cloud messages; LiDAR likely powered off / unreachable. Run 'lidar_diag' to debug network/hardware."
+    fail "no cloud messages on /rslidar_points; LiDAR powered off / unreachable. Run 'lidar_diag' to debug network/hardware."
 fi
 
 # 5g. restart
