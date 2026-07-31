@@ -488,7 +488,6 @@ alias update_submods='/bin/bash @@WORKSPACES@@/scripts/update_submods.sh'
 alias cam_calibrate='/bin/bash @@WORKSPACES@@/local_ws/auxiliary/camera_calibration/camera_calibration_auto/camera_calibrate.sh'
 alias zt_join='/bin/bash @@WORKSPACES@@/scripts/zt_join.sh'
 alias status='ros2 service call /arid_supervisor/status std_srvs/srv/Trigger "{}"'
-alias sentry='ros2 service call /vslam_sentry/status_now std_srvs/srv/Trigger "{}"'
 alias initialize='/bin/bash @@ISAAC_ROS_WS@@/container_scripts/initialize.sh'
 alias deinitialize='/bin/bash @@ISAAC_ROS_WS@@/container_scripts/deinitialize.sh'
 help() {
@@ -513,9 +512,9 @@ ARID host commands:
     config_realsense   Auto-detect the front RealSense serial -> vslam_config.yaml
     config_lidar       Auto-detect the RSAIRY LiDAR IPs -> network profiles
     lidar_diag         RSAIRY LiDAR network diagnostic
-    ver_cv_cams        Stream the downward IMX219 feed (q to quit)
-    cam_down_start     Start the downward IMX219 pipeline
-    cam_down_stop      Stop the downward IMX219 pipeline
+    ver_cv_cams        Stream the downward IMX477 feed (q to quit)
+    cam_down_start     Start the downward IMX477 pipeline
+    cam_down_stop      Stop the downward IMX477 pipeline
     cam_down_status    Downward pipeline status
     cam_down_alive     Downward pipeline liveness topic
     cam_refresh        Re-read gst_camera_manager pipelines.yaml (stops running pipelines first)
@@ -534,7 +533,6 @@ ARID host commands:
     initialize         Enable VSLAM via /arid_supervisor/vslam_enable
     deinitialize       Disable VSLAM (refused while airborne - landed gate)
     status             Supervisor status - vslam running (true/false) + land state
-    sentry             vslam_sentry status JSON (per-camera + VO health)
 ARIDHELP
 }
 # Resume-after-reboot hook; the shim keeps this block free of command substitution.

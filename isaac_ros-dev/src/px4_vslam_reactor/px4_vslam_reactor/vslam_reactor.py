@@ -4,11 +4,10 @@ import rclpy
 import numpy as np
 from collections import deque
 
-CADENCE_ANOMALY_CEILING_S = 5.0   # stamp gap beyond this = stamp anomaly, never a gate trigger
 RESEAT_BYPASS_MIN_FRAMES = 2      # post-commit frames the baseline must rebase onto before the
                                   # bypass window may close: a wall-clock-only close can expire
-                                  # with ZERO admitted frames in the degraded-cadence regime
-                                  # (0.4..5 s gaps), re-arming the pre-re-seat baseline loop
+                                  # with ZERO admitted frames when the stream is degraded,
+                                  # re-arming the pre-re-seat baseline loop
 RESEAT_BYPASS_CEILING_S = 3.0     # hard cap so a dead/stale stream cannot pin the bypass open
 import message_filters
 from rclpy.node import Node
@@ -82,22 +81,6 @@ class vslam_reactor(Node):
 
 
 
-        # Cadence-health gate: withholds VO from EKF2 while the cuVSLAM frame cadence is broken
-        # (camera-swap starvation produces smooth-but-stale poses that vo_state and the jump gate
-        # cannot see; fusing them causes a lag -> failover -> reset cascade). Dedicated stamp var:
-        # last_vslam_odom_msg's stamp can be frozen by the jump path, so it is NOT a valid cadence
-        # reference. Nothing on this platform consumes /reactor/cadence_gated (no failsafe
-        # consumer), so a withhold is unbounded: EKF2 rides ARK flow + rangefinder until
-        # cadence proves nominal again.
-        self._last_cadence_stamp = None       # rclpy Time of previous VO header.stamp
-        self._cadence_gated = False           # currently withholding
-        self._cadence_nominal_run = 0         # nominal-cadence samples while gated (anomalies skipped)
-        self._cadence_over_run = 0            # consecutive lesser-gap samples while ungated (two-tier engage)
-        self._cadence_gate_t0 = None          # node-clock time the current gate engaged
-        self._cadence_gated_frames = 0        # frames seen during the current gated window
-        self._cadence_gate_count = 0          # cumulative gate events (telemetry)
-        self._cadence_trigger_gap_ms = 0.0    # gap that engaged the current gate (silence accounting)
-
         self.R_FRD_TO_FLU = R.from_euler('x', np.pi)
 
         ### TF BUFFERING ###########################################################################
@@ -150,22 +133,6 @@ class vslam_reactor(Node):
                                                           qos_profile=self.qos_transient,
                                                           callback_group=self.vslam_cbg)
         self.pub_vio_reset_epoch_.publish(UInt8(data=self._vio_reset_epoch))
-
-        # Cadence-gate event counter (latched): post-flight forensics can read how many times the
-        # gate engaged without scraping logs. Bumped once per gate ENGAGEMENT, not per frame.
-        self.pub_cadence_gate_count_ = self.create_publisher(UInt32,
-                                                             '/reactor/cadence_gate_count',
-                                                             qos_profile=self.qos_transient,
-                                                             callback_group=self.vslam_cbg)
-        self.pub_cadence_gate_count_.publish(UInt32(data=0))
-
-        # Live gate state (latched): True while the gate is withholding. /visual_slam/status stays
-        # healthy during starvation, so without this an observer cannot see EV being withheld at all.
-        self.pub_cadence_gated_ = self.create_publisher(Bool,
-                                                        '/reactor/cadence_gated',
-                                                        qos_profile=self.qos_transient,
-                                                        callback_group=self.vslam_cbg)
-        self.pub_cadence_gated_.publish(Bool(data=False))
 
         # VO-health latch: FALSE once jump re-seats exhaust reseat_burst_max inside
         # reseat_burst_window_s, i.e. cuVSLAM is not recoverable BY re-seating and continuing would
@@ -260,10 +227,6 @@ class vslam_reactor(Node):
             ('set_pose_max_odom_age', 0.030),
             ('set_origin_settle_time', 10.0),
             ('fmu_stamp_max_skew_s', 0.5),
-            ('cadence_gate_s', 0.18),
-            ('cadence_gate_hard_s', 0.40),
-            ('cadence_gate_sustained_samples', 5),
-            ('cadence_release_samples', 5),
             ('set_pose_busy_timeout_s', 5.0),
             ('reseat_burst_max', 5),
             ('reseat_burst_window_s', 10.0),
@@ -365,113 +328,6 @@ class vslam_reactor(Node):
 
         # publish drone posestamped
         self.pub_drone_pose_.publish(drone_pose_msg)
-
-    def _cadence_update(self, vslam_odom_msg):
-        """Track VO header.stamp cadence and maintain the gate state. Called on EVERY frame
-        arriving at slam_odom_callback, BEFORE any processing guard, so busy/vo_state windows keep
-        the bookkeeping warm and cannot fabricate a gap on resume.
-
-        Stamps are camera-frame acquisition time (cuVSLAM override_publishing_stamp=false), so
-        consecutive-stamp deltas ARE the frame cadence; a starvation gap surfaces as one large
-        delta on the next sample. Stamp deltas are a LOWER BOUND on the silence EKF2 experiences
-        (EKF2 de-latches on ARRIVAL silence; a pure arrival stall with contiguous stamps is
-        invisible here and is handled natively by EKF2's own 400 ms de-latch + clean re-anchor).
-        The gate's protected class is degraded-cadence starvation bursts with advancing stamps.
-        It is severity reduction, not prevention.
-        """
-        stamp = rclpy.time.Time.from_msg(vslam_odom_msg.header.stamp)
-        prev = self._last_cadence_stamp
-        self._last_cadence_stamp = stamp
-        if prev is None:
-            return
-        dt = (stamp - prev).nanoseconds * 1e-9
-        if dt <= 0:
-            # Stamp anomaly, not a gap; break the sustained streak (not evidence).
-            self._cadence_over_run = 0
-            return
-        if dt > CADENCE_ANOMALY_CEILING_S:
-            # A gap this large is a stamp-regime anomaly (rogue future stamp, clock jump, cuVSLAM
-            # restart), not starvation: engaging on it would wedge the gate until wall-clock
-            # overtakes the rogue stamp. Reseed and move on; genuine outages this long are already
-            # EKF2-de-latched and jump-gate territory.
-            self._cadence_over_run = 0
-            return
-
-        now = self.get_clock().now()
-        if dt > self.cadence_gate_s:
-            if not self._cadence_gated:
-                # A re-seat is PURPOSEFUL injection - no gate may trigger off its transient. From
-                # dispatch (vslam_busy) through the bypass window (_last_reseat_commit held),
-                # engagement AND the sustained-tier streak are suppressed; EKF2's native 400 ms
-                # arrival de-latch still covers a genuine starvation gap landing inside the window.
-                # Release logic untouched.
-                if self.vslam_busy or self._last_reseat_commit is not None:
-                    self._cadence_over_run = 0
-                    self.get_logger().info(
-                        f"CADENCE GATE: {dt*1000:.0f}ms gap during re-seat - engage suppressed",
-                        throttle_duration_sec=1.0)
-                    return
-                # Two-tier engage: one hard gap >= cadence_gate_hard_s (EKF2's own arrival
-                # de-latch point; lone 150-400 ms gaps are valid-late poses it absorbs, and the
-                # gate's job past 400 is preventing a re-latch onto the stale burst), or
-                # sustained_samples consecutive lesser gaps. Jump gate separate, always live.
-                hard = dt >= self.cadence_gate_hard_s
-                if not hard:
-                    self._cadence_over_run += 1
-                if hard or self._cadence_over_run >= self.cadence_gate_sustained_samples:
-                    self._cadence_gated = True
-                    self._cadence_gate_t0 = now
-                    self._cadence_trigger_gap_ms = dt * 1000.0
-                    self._cadence_gated_frames = 0
-                    self._cadence_gate_count += 1
-                    self._cadence_over_run = 0
-                    self.pub_cadence_gate_count_.publish(UInt32(data=self._cadence_gate_count))
-                    self.pub_cadence_gated_.publish(Bool(data=True))
-                    self.get_logger().warn(
-                        f"CADENCE GATE: {'HARD gap' if hard else 'sustained degraded cadence'} "
-                        f"{dt*1000:.0f}ms (gate {self.cadence_gate_s*1000:.0f}ms, hard "
-                        f"{self.cadence_gate_hard_s*1000:.0f}ms) "
-                        f"- withholding EV (event #{self._cadence_gate_count})",
-                        throttle_duration_sec=1.0)
-                return
-            self._cadence_nominal_run = 0
-            self._cadence_gated_frames += 1
-            self.get_logger().warn(
-                f"CADENCE GATE: VO stamp gap {dt*1000:.0f}ms > {self.cadence_gate_s*1000:.0f}ms "
-                f"- withholding EV (event #{self._cadence_gate_count})",
-                throttle_duration_sec=1.0)
-        elif self._cadence_gated:
-            self._cadence_over_run = 0
-            self._cadence_nominal_run += 1
-            self._cadence_gated_frames += 1
-            if self._cadence_nominal_run >= self.cadence_release_samples:
-                held_ms = (now - self._cadence_gate_t0).nanoseconds * 1e-6
-                self._cadence_release(held_ms)
-        else:
-            # Clean delta while ungated: a lesser-gap streak must be CONSECUTIVE -
-            # any nominal sample breaks it.
-            self._cadence_over_run = 0
-
-        # NO timed escape: the gate never releases on a clock - only proven-nominal cadence
-        # readmits VO. A degraded stream stays withheld indefinitely; EKF2 coasts on flow+rng
-        # after its native 400 ms EV de-latch, and if ALL horizontal aiding is lost PX4's own
-        # ladder takes over (1 s aid-timeout -> inertial dead-reckon -> EKF2_NOAID_TOUT 5 s ->
-        # local position invalid -> commander position-loss failsafe). Feeding one degraded
-        # sample per window would re-anchor EKF2 onto lagged poses repeatedly.
-        # Prolonged-withhold visibility: /reactor/cadence_gated stays latched True.
-
-    def _cadence_release(self, held_ms):
-        total_ms = held_ms + self._cadence_trigger_gap_ms
-        self._cadence_gated = False
-        self._cadence_nominal_run = 0
-        self.pub_cadence_gated_.publish(Bool(data=False))
-        note = (" - EV silence exceeded EKF2's 400ms de-latch: expect a clean re-anchor reset "
-                "on resume" if total_ms > 400.0 else "")
-        self.get_logger().info(
-            f"CADENCE GATE: released after {held_ms:.0f}ms hold "
-            f"(+{self._cadence_trigger_gap_ms:.0f}ms trigger gap = {total_ms:.0f}ms EV silence), "
-            f"{self._cadence_gated_frames} frames withheld (event #{self._cadence_gate_count}){note}")
-        # The releasing frame streams in this same callback pass.
 
     # Potentially switch to message_filters.ApproximateTimeSynchronizer to trigger main odom callback
     def sync_msg(self, target_time: rclpy.time.Time, target_msg_cache: message_filters.Cache):
@@ -658,19 +514,10 @@ class vslam_reactor(Node):
         # self.get_logger().info(f"LINEAR VELOCITY: {linear_velocity}")
         # self.get_logger().info(f"ANGULAR VELOCITY: {angular_velocity}")
         
-        # The pos-delta AND-term catches slow teleports at normal cadence. It is SUPPRESSED while
-        # the cadence gate is engaged: it needs delta_time > VO_rate_lim (0.5 s), and any stamp gap
-        # >= cadence_gate_hard_s (0.40 s) has already engaged the gate on this very frame, so the
-        # term could only fire inside a gated window - where a vehicle moving a normal 0.5 m/s
-        # covers VO_pos_delta_lim in one gap and would be declared a jump, manufacturing the very
-        # re-seat loop the bypass exists to contain. lin/ang velocity gates stay live while gated,
-        # so genuine fast jumps still re-seat. Gaps > CADENCE_ANOMALY_CEILING_S reseed the cadence
-        # tracker WITHOUT engaging, so the term stays live there - a post-outage resync re-seat is
-        # the desired outcome.
+        # The pos-delta AND-term catches slow teleports at normal cadence.
         jump = (linear_velocity >= self.lin_vel_gate or \
                 angular_velocity >= self.ang_vel_gate or \
-                (delta_position > self.VO_pos_delta_lim and delta_time > self.VO_rate_lim
-                 and not self._cadence_gated))
+                (delta_position > self.VO_pos_delta_lim and delta_time > self.VO_rate_lim))
 
         if not jump:
             for field in Odometry.__slots__:
@@ -693,7 +540,7 @@ class vslam_reactor(Node):
 
         WINDOW CLOSE is frame-count + wall-clock, not wall-clock alone: it needs BOTH
         vslam_stabilization_time elapsed AND >= RESEAT_BYPASS_MIN_FRAMES frames stamped after the
-        commit rebased into the baseline. In the degraded-cadence regime (stamp gaps 0.4..5 s) a
+        commit rebased into the baseline. When the stream is degraded a
         pure wall-clock window can expire with ZERO admitted frames, re-arming the loop it exists
         to break. RESEAT_BYPASS_CEILING_S caps it so a dead stream cannot pin the bypass open.
 
@@ -748,7 +595,7 @@ class vslam_reactor(Node):
         # Publish-silence observable: every other monitor watches the pipe's INPUT (cuVSLAM stamps,
         # /visual_slam/status, camera rates). A burst blackout or a bypass wedge leaves EKF2
         # EV-starved while all of them read healthy. Alarm only when frames are ARRIVING and
-        # fusion is expected; input silence belongs to the cadence gate.
+        # fusion is expected; EKF2's own EV de-latch covers input silence.
         now = self.get_clock().now()
         frames_flowing = (self._last_vslam_rx is not None
                           and (now - self._last_vslam_rx).nanoseconds * 1e-9 < 2.0)
@@ -951,16 +798,10 @@ class vslam_reactor(Node):
         _p = vslam_odom_msg.pose.pose.position
         _q = vslam_odom_msg.pose.pose.orientation
         if not self.pose_ingress_ok((_p.x, _p.y, _p.z), (_q.x, _q.y, _q.z, _q.w)):
-            # Dropped BEFORE cadence bookkeeping: a burst of degenerate frames reads as a stamp
-            # gap and engages the cadence gate, which is the correct degraded-stream response.
             self.get_logger().error("VSLAM ingress: non-finite/zero-norm pose dropped",
                                     throttle_duration_sec=1.0)
             return
         self._last_vslam_rx = self.get_clock().now()
-        # Cadence bookkeeping runs on EVERY frame BEFORE any guard: busy/vo_state windows must not
-        # freeze the stamp reference (a stale reference would read the whole window as one giant
-        # gap and spuriously gate the first resumed frame).
-        self._cadence_update(vslam_odom_msg)
         if self._reseat_burst:
             # Decay the burst window even when no jump fires, so /reactor/vo_healthy re-latches
             # once the storm ends. Guarded because the deque is empty in normal flight.
@@ -978,27 +819,6 @@ class vslam_reactor(Node):
                     for field in Odometry.__slots__:
                         setattr(self.last_vslam_odom_msg, field, getattr(vslam_odom_msg, field))
                     self.publish_vslam_to_px4(vslam_odom_msg)
-            elif self._cadence_gated:
-                # ENFORCED WITHHOLD: starvation-cadence VO must not reach EKF2 (smooth-but-stale
-                # poses pass vo_state AND the jump gate). ALL settles are withheld with the settle
-                # countdown paused (no init bypass - the settle-timeout re-inject can fire mid-
-                # flight and would disable the gate around a fresh airborne origin). NEVER touches
-                # vslam_busy or the reset epoch - a withhold is not a re-seat.
-                if self.new_set_pose_call:
-                    # Settle in progress while gated: rebase the countdown so gate-induced
-                    # starvation cannot fire the settle-timeout re-inject; alignment evaluation
-                    # resumes on gate release.
-                    self.last_set_pose_time = self.get_clock().now()
-                bypass, _ = self.reseat_bypass_gate(vslam_odom_msg)
-                if not bypass and self.odom_velocity_gate(vslam_odom_msg):
-                    # Jump detection stays LIVE during the gate: a genuine cuVSLAM jump inside a
-                    # gated window must re-seat via the lin/ang velocity gates (the pos-delta
-                    # AND-term is suppressed while gated - see odom_velocity_gate). The non-jump
-                    # path refreshes last_vslam_odom_msg so the release-edge delta is computed
-                    # against the newest gated pose. The post-re-seat bypass still applies here:
-                    # a re-seat's own step is purposeful in any gate state.
-                    self._reseat_on_jump()
-                # else: frame withheld - no publish
             else:
                 bypass, bypass_fresh = self.reseat_bypass_gate(vslam_odom_msg)
                 if bypass or not self.odom_velocity_gate(vslam_odom_msg):

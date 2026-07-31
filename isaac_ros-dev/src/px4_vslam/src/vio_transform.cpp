@@ -15,7 +15,7 @@ explicit VioTransform() : Node("vio_transform")
 {
 	// PX4 topics need sensor-data QoS
 	rmw_qos_profile_t qos_profile = rmw_qos_profile_sensor_data;
-	auto qos = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, 5), qos_profile);
+	auto qos = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, 30), qos_profile);
 
 	_vio_pub = this->create_publisher<px4_msgs::msg::VehicleOdometry>("/fmu/in/vehicle_visual_odometry", 10);
 

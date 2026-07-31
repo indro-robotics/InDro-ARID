@@ -2,7 +2,7 @@
 
 This package launches the RealSense-based visual SLAM stack and bridges its solution into PX4. One
 `ros2 launch` brings up the RealSense driver, [Isaac ROS Visual
-SLAM](https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_visual_slam), the reactor, the sentry, and the
+SLAM](https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_visual_slam), the reactor and the
 PX4 bridge.
 
 - **`vslam.launch.py`**: the stack launch graph.
@@ -32,10 +32,9 @@ In order, the launch:
    two-stream stereo SLAM on the front IR pair.
 3. Starts `vslam_reactor_node`.
 4. Starts `vio_transform`.
-5. Starts `vslam_sentry` with `reset_defer_max_s: 0.0`, so a camera reset is never deferred.
 
 The camera driver and `VisualSlamNode` share one `component_container_mt` process for
-intra-process comms, while `vslam_reactor_node`, `vio_transform` and `vslam_sentry` run as separate
+intra-process comms, while `vslam_reactor_node` and `vio_transform` run as separate
 processes. The container gets a 25 s SIGTERM grace so the sensor close finishes before SIGKILL.
 
 ---

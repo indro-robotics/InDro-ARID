@@ -19,9 +19,6 @@ crashed supervisor left holding the camera - are reaped on BOTH paths, but only 
 fresh landed proof; airborne or unknown refuses instead. Same rule on shutdown: a
 supervisor stop while provably airborne leaves the stack flying.
 
-Subscribes /vslam_sentry/healthy: on the unhealthy edge it runs a bounded camera-node repair
-burst (repair only, never prune) so a camera re-enumerated mid-flight onto a stale devnum
-becomes reopenable without waiting for the next bringup.
 Subprocess log: /workspaces/isaac_ros-dev/run_logs/<name>/<name>.log, truncated per launch.
 """
 
@@ -58,7 +55,7 @@ VSLAM_CONFIG = '/workspaces/isaac_ros-dev/src/px4_vslam/config/vslam_config.yaml
 
 def _cam_count_from_config(path=VSLAM_CONFIG, fallback=1):
     """Physical cameras = *_realsense sections carrying a serial - the same rule
-    vslam_sentry applies to the same file. NOT visual_slam num_cameras (2 = the one
+    the drivers apply to the same file. NOT visual_slam num_cameras (2 = the one
     camera's two IR streams). Unprovisioned/unreadable config -> fallback."""
     try:
         import yaml as _yaml
@@ -83,12 +80,6 @@ CAM_ERR_MARKER = 'Error starting device'
 CAM_GATE_BACKSTOP_S = 40.0   # healthy bringup completes in 14-26 s
 CAM_GATE_POLL_S = 0.25
 USB_REENUM_WAIT_S = 20.0     # /reset_usb: ~5 s power cycle + ~10 s re-enumeration
-# Mid-flight camera-node repair: a sentry hw_reset can re-enumerate a camera onto a devnum
-# whose /dev node was left root:root by a dropped hotplug event. On the /vslam_sentry/healthy
-# False edge, repair (never prune) across the recovery window so the driver's open-retry
-# succeeds; the burst self-terminates on recovery or at the deadline.
-REPAIR_BURST_PERIOD_S = 5.0
-REPAIR_BURST_MAX_S = 70.0    # just past vslam_sentry reset_verify_s (60 s)
 RESET_USB_TIMEOUT_S = 30.0   # subprocess `ros2 service call /reset_usb` hard cap
 RESP_MSG_MAX = 500           # SetBool response clip; full evidence always in the node log
 LEGACY_SCAN_TIMEOUT_S = 20.0  # `ros2 node list --no-daemon` fresh-discovery hard cap
@@ -480,12 +471,6 @@ class AridSupervisor(Node):
         self._landed = None
         self._landed_at = 0.0
 
-        # Event-driven mid-flight camera-node repair (see REPAIR_BURST_* above).
-        self._repair_on_unhealthy = bool(
-            self.declare_parameter('repair_on_unhealthy', True).value)
-        self._repair_timer = None
-        self._repair_deadline = 0.0
-        self._repair_active = False
 
         px4_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -500,63 +485,8 @@ class AridSupervisor(Node):
         self.create_service(SetBool, '~/vslam_enable', self._vslam_cb)
         self.create_service(Trigger, '~/status', self._status_cb)
 
-        if self._repair_on_unhealthy:
-            # Match vslam_sentry's latched publisher (reliable + transient_local).
-            sentry_qos = QoSProfile(
-                reliability=ReliabilityPolicy.RELIABLE,
-                durability=DurabilityPolicy.TRANSIENT_LOCAL,
-                history=HistoryPolicy.KEEP_LAST,
-                depth=1,
-            )
-            self.create_subscription(
-                Bool, '/vslam_sentry/healthy', self._sentry_health_cb, sentry_qos)
 
         self.get_logger().info('arid_supervisor up - vslam_enable + status available')
-
-    def _sentry_health_cb(self, msg):
-        # False = a camera is failing to recover; a sentry hw_reset may have re-enumerated it
-        # onto a devnum whose /dev node is root:root. Repair (never prune) across the recovery
-        # window. True cancels the burst. An escape here is re-raised out of spin().
-        try:
-            if msg.data:
-                self._end_repair_burst()
-            elif not self._repair_active:
-                self._begin_repair_burst()
-        except Exception as exc:                                   # noqa: BLE001
-            self.get_logger().warn(
-                'sentry-health handler failed (%s: %s)' % (type(exc).__name__, exc))
-
-    def _begin_repair_burst(self):
-        self._end_repair_burst()   # destroy any prior timer (safe: not from within a tick)
-        self._repair_deadline = time.monotonic() + REPAIR_BURST_MAX_S
-        self._repair_active = True
-        self._repair_timer = self.create_timer(REPAIR_BURST_PERIOD_S, self._repair_tick)
-        self.get_logger().warn(
-            'sentry unhealthy - camera-node repair burst started (<= %.0fs)' % REPAIR_BURST_MAX_S)
-
-    def _end_repair_burst(self):
-        self._repair_active = False
-        if self._repair_timer is not None:
-            self._repair_timer.cancel()
-            try:
-                self.destroy_timer(self._repair_timer)
-            except Exception:                                     # noqa: BLE001
-                pass
-            self._repair_timer = None
-
-    def _repair_tick(self):
-        # Repair ONLY - never prune in flight (delete can race a mid-enumeration device;
-        # chmod/chown cannot disturb an already-open stream). Guarded: an escape would be
-        # re-raised out of spin().
-        try:
-            _repair_camera_nodes(self.rs_usb_pids, self.get_logger())
-        except Exception as exc:                                  # noqa: BLE001
-            self.get_logger().warn(
-                'camera-node repair tick failed (%s: %s)' % (type(exc).__name__, exc))
-        if time.monotonic() >= self._repair_deadline:
-            self._repair_active = False
-            if self._repair_timer is not None:
-                self._repair_timer.cancel()
 
     def _land_cb(self, msg):
         self._landed = bool(msg.landed)

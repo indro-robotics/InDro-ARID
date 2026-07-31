@@ -51,29 +51,6 @@ def generate_launch_description():
         executable='vio_transform'
     )
 
-    # Device-plane watchdog: per-camera stream health, observe-only on this
-    # airframe. Reads the same vslam_config.yaml for serials.
-    vslam_sentry_node = Node(
-        package='vslam_sentry',
-        executable='vslam_sentry_node',
-        name='vslam_sentry',
-        output='screen',
-        parameters=[{
-            'config_path': os.path.join(
-                get_package_share_directory('px4_vslam'), 'config',
-                'vslam_config.yaml'),
-            # Autonomous reset off: the node has no airborne guard, and a DEGRADED
-            # stream is reset while VO is still nominal. With one camera that
-            # removes the only VO source in flight. /vslam_sentry/reset_<cam>
-            # remains; landed recovery is arid_supervisor /reset_usb.
-            'auto_reset': False,
-            # Calm-window deferral off: with one camera a dead stream IS the VO
-            # outage, so waiting for a calm VO window only delays the one recovery
-            # available (the calm streak can never accrue while VO is down).
-            'reset_defer_max_s': 0.0,
-        }],
-    )
-
     vslam_reactor_config = os.path.join(
         get_package_share_directory('px4_vslam_reactor'),
         'config', 'px4_vslam_reactor.yaml')
@@ -132,7 +109,6 @@ def generate_launch_description():
                 vslam_container,
                 vslam_reactor_node,
                 vio_transform_node,
-                vslam_sentry_node,
             ],
         )),
     ])
