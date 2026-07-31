@@ -89,7 +89,7 @@ menu_install_ros2() {
 # ARK-OS installed: the sentinel, or the repo + ROS Humble both present.
 ark_installed() {
     [[ -f "${HOME_DIR}/.arid_ark_os_installed" ]] && return 0
-    [[ -d "${HOME_DIR}/ARK-OS" && -f /opt/ros/humble/setup.bash ]]
+    [[ -d "${HOME_DIR}/ARK-OS" && -x /opt/ros/humble/bin/ros2 ]]
 }
 
 ark_os() {

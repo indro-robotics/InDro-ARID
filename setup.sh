@@ -396,9 +396,9 @@ collect_answers() {
         PRE_ARK=install
     fi
 
-    # ROS2 - isolated; ask to reinstall if present, else install. A bare /opt/ros/humble
-    # directory is left behind by a partial install, so test the setup script itself.
-    if [[ -f /opt/ros/humble/setup.bash ]]; then
+    # ROS2 - isolated; ask to reinstall if present, else install. A failed install leaves
+    # /opt/ros/humble and even its setup.bash behind, so test the ros2 executable.
+    if [[ -x /opt/ros/humble/bin/ros2 ]]; then
         ask_yn "  Reinstall ROS2? (y/n, Enter = skip): " n && PRE_ARK_ROS2=yes || PRE_ARK_ROS2=skip
     else
         PRE_ARK_ROS2=install
