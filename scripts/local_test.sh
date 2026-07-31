@@ -206,7 +206,7 @@ else
     fi
 fi
 
-hdr "Section 4: cam_down lifecycle (CSI IMX219, sensor-id=0)"
+hdr "Section 4: cam_down lifecycle (CSI IMX477, sensor-id=0)"
 
 # 4a. clean stopped state
 step "4a. Force initial STOPPED state"

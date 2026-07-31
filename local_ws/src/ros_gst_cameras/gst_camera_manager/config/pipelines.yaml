@@ -31,19 +31,16 @@
 pipelines:
 
   cam_down:
-    # Supported IMX219 Modes
-    # 3280x2464	21fps
-    # 3280x1848	28fps
-    # 1920x1080	30fps
-    # 1640x1232	30fps
-    # 1280x720	60fps
+    # IMX477 down camera, centre-cropped to a 1080x1080 square by the VIC with no scaling.
+    # The crop is left=420 right=1500 top=0 bottom=1080 out of the 1920x1080 sensor mode,
+    # which is what IMX477_1080sq.yaml is derived for. ee-mode=0 leaves the frame unsharpened.
     gst_pipeline:
-      nvarguscamerasrc sensor-id=0 wbmode=1 aelock=false ee-mode=2 tnr-mode=2
+      nvarguscamerasrc sensor-id=0 wbmode=1 aelock=false ee-mode=0 tnr-mode=2
       ! video/x-raw(memory:NVMM),width=1920,height=1080,framerate=15/1,format=NV12
-      ! nvvidconv flip-method=0 interpolation-method=1
-      ! video/x-raw,format=GRAY8
+      ! nvvidconv flip-method=0 left=420 right=1500 top=0 bottom=1080
+      ! video/x-raw,format=GRAY8,width=1080,height=1080
       ! appsink sync=false
-    calibration: ""
+    calibration: "IMX477_1080sq"
     topic: "cam_down"
     frame_id: "bottom_visual_link"
     encoding: ""

@@ -1,5 +1,5 @@
 #!/bin/bash
-# verify_cv_cams.sh - live visual check of the downward IMX219 CSI camera via gst_camera_manager:
+# verify_cv_cams.sh - live visual check of the downward IMX477 CSI camera via gst_camera_manager:
 #   down (sensor-id=0) -> cam_down -> /cam_down/image_raw/compressed
 # Usage: ver_cv_cams  (any key in this terminal advances)
 # Requires gst_camera_manager.service, a NoMachine session, cv2 + rclpy.
@@ -24,7 +24,7 @@ err()  { echo -e "  ${RED}[ERROR]${NC} $*" >&2; }
 TTY="/dev/tty"; { : > "${TTY}"; } 2>/dev/null || TTY="/dev/stdout"
 tnote() { printf '%b\n' "$*" > "${TTY}"; }
 
-step "CV camera feed verification (downward IMX219)"
+step "CV camera feed verification (downward IMX477)"
 
 # cv2 + rclpy are required; the display can be waited for (open NoMachine after starting).
 python3 -c 'import cv2' >/dev/null 2>&1 || { err "cv2 (OpenCV) not importable - cannot display the feed"; exit 1; }
@@ -134,7 +134,7 @@ ensure_manager || { err "gst_camera_manager could not be started - cannot stream
 # Is the pipeline currently streaming?
 pipe_running() { timeout 6 ros2 service call "/gst_camera_manager/$1/status" std_srvs/srv/Trigger 2>/dev/null | grep -q 'success=True'; }
 
-# Live = a frame within $2 s AND still delivering ~4 s later: a cold IMX219 commonly emits
+# Live = a frame within $2 s AND still delivering ~4 s later: a cold IMX477 commonly emits
 # one frame then stalls, which a one-shot --once check misreads as live.
 stream_sustained() {   # $1 = compressed topic, $2 = first-frame budget (s)
     timeout "$2" ros2 topic echo --once --qos-reliability best_effort "$1" >/dev/null 2>&1 || return 1
@@ -268,13 +268,13 @@ PY
       exit $? ) 2>/dev/null
 }
 
-step "Downward IMX219 (cam_down) - live; press any key to continue, q to quit"
-run_feed "DOWNWARD IMX219 (cam_down)" cam_down /cam_down/image_raw/compressed; rc=$?
+step "Downward IMX477 (cam_down) - live; press any key to continue, q to quit"
+run_feed "DOWNWARD IMX477 (cam_down)" cam_down /cam_down/image_raw/compressed; rc=$?
 case "$rc" in
     0)  ok "cam_down: stream OK" ;;
     10) exit 0 ;;
     2)  warn "cam_down: gst_camera_manager pipeline not registered yet (still starting) - skipped" ;;
-    *)  warn "cam_down: no live frames - IMX219 absent / nvargus-daemon issue, or another consumer holds sensor-id=0 (window not opened)" ;;
+    *)  warn "cam_down: no live frames - IMX477 absent / nvargus-daemon issue, or another consumer holds sensor-id=0 (window not opened)" ;;
 esac
 
 exit 0

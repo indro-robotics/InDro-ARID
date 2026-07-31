@@ -7,7 +7,7 @@ desktop, so connect a session before starting.
 ## Running
 
 `camera_calibration_auto/camera_calibrate.sh` takes no arguments and is also reachable as the
-`cam_calibrate` alias and as setup menu option **8**.
+`cam_calibrate` alias and as setup menu option **9**.
 
 ```bash
 ./camera_calibration_auto/camera_calibrate.sh

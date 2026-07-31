@@ -37,7 +37,7 @@ PRE_HOST=""; PRE_PASS=""
 PRE_WIFI=""; PRE_WIFI_SSID=""; PRE_WIFI_PASS=""
 PRE_NOMACHINE=""; PRE_PX4=""; PRE_ZTNET=""
 PRE_ARK=""; PRE_ARK_ROS2=""; PRE_JETPACK=""; PRE_POST_ARK_REBOOT=""
-PRE_REALSENSE=""; PRE_VERIFY=""; PRE_FOCUS=""
+PRE_REALSENSE=""; PRE_CSI=""; PRE_VERIFY=""; PRE_FOCUS=""
 PRE_BUILD_ISAAC=""; PRE_COLCON=""; PRE_LOCAL_WS=""
 PRE_SMOKE=""; PRE_REBOOT=""
 
@@ -136,6 +136,77 @@ preflight() {
 }
 
 # Front RealSense serial -> vslam_config.yaml.
+csi_pin_config() {
+    step "CSI overlay"
+
+    local tool="/opt/nvidia/jetson-io/config-by-hardware.py"
+    if [[ ! -x "$tool" ]]; then
+        skip "jetson-io not found - skipping CSI overlay"
+        STEPS_SKIPPED+=("csi_overlay")
+        return
+    fi
+
+    local ans
+    if (( PRE )); then ans="${PRE_CSI}"; else ask_yn "  Configure CSI overlay (IMX477)? (y/n, Enter = skip): " n && ans=yes || ans=skip; fi
+    if ! is_yes "${ans}"; then
+        skip "CSI overlay skipped"
+        STEPS_SKIPPED+=("csi_overlay")
+        return
+    fi
+
+    # Parse the live hardware list into parallel (header-number, module-name) arrays for the
+    # IMX477 modules jetson-io offers (the CSI connector may not be header 1).
+    local listing hdr=0 line
+    local -a names=() hdrs=()
+    listing=$(sudo "$tool" -l 2>/dev/null || true)
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^Header[[:space:]]+([0-9]+) ]]; then
+            hdr="${BASH_REMATCH[1]}"
+        elif [[ "$line" =~ ^[[:space:]]+[0-9]+\.[[:space:]]+(.*[Ii][Mm][Xx]477.*)$ ]]; then
+            names+=("${BASH_REMATCH[1]%$'\r'}"); hdrs+=("$hdr")
+        fi
+    done <<< "$listing"
+
+    if (( ${#names[@]} == 0 )); then
+        warn "no IMX477 module offered by jetson-io - CSI overlay unchanged"
+        STEPS_SKIPPED+=("csi_overlay")
+        return
+    fi
+
+    # Prefer the 2-lane single ("Camera ARK IMX477 Single"): the 15-pin RPi camera connectors
+    # are 2-lane, so a 4-lane overlay never streams. Else present the options to pick.
+    local sel=-1 i
+    for i in "${!names[@]}"; do
+        if [[ "${names[$i]}" == *[Ss]ingle* && "${names[$i]}" != *4*[Ll]ane* ]]; then sel="$i"; break; fi
+    done
+    if (( sel < 0 )); then
+        echo "  Compatible IMX477 modules:"
+        for i in "${!names[@]}"; do printf "    %d) %s\n" "$((i+1))" "${names[$i]}"; done
+        local pick
+        read -r -p "  Select the module (number, Enter = 1): " pick || pick=""
+        [[ -z "$pick" ]] && pick=1
+        if [[ "$pick" =~ ^[0-9]+$ ]] && (( pick >= 1 && pick <= ${#names[@]} )); then
+            sel="$((pick-1))"
+        else
+            warn "invalid selection - CSI overlay unchanged"
+            STEPS_SKIPPED+=("csi_overlay")
+            return
+        fi
+    fi
+
+    local name="${names[$sel]}" header="${hdrs[$sel]}"
+    ok "applying: ${name} (header ${header})"
+    if sudo "$tool" -n "${header}=${name}" >/dev/null 2>&1; then
+        ok "CSI overlay set - IMX477 will be on sensor-id=0 after reboot"
+        INSTALL_GROUP_REBOOT=1   # the overlay is only live after a reboot
+        STEPS_RUN+=("csi_overlay")
+    else
+        warn "jetson-io could not apply '${name}' - CSI overlay unchanged"
+        STEPS_SKIPPED+=("csi_overlay")
+    fi
+}
+
+
 setup_realsense() {
     step "Front RealSense serial → vslam_config.yaml"
 
@@ -444,6 +515,9 @@ collect_answers() {
     ask_yn "  Assign RealSense cameras? (y/n, Enter = skip): " n \
         && PRE_REALSENSE=yes || PRE_REALSENSE=skip
 
+    ask_yn "  Configure CSI overlay (IMX477)? (y/n, Enter = skip): " n \
+        && PRE_CSI=yes || PRE_CSI=skip
+
     ask_yn "  Verify the camera feed at the end? (y/n, Enter = skip): " n \
         && PRE_VERIFY=yes || PRE_VERIFY=skip
 
@@ -506,7 +580,7 @@ _persist_questionnaire() {
         echo "PRE=1"
         for var in PRE_HOST PRE_WIFI PRE_WIFI_SSID PRE_NOMACHINE PRE_PX4 PRE_ZTNET \
                    PRE_ARK PRE_ARK_ROS2 PRE_JETPACK PRE_POST_ARK_REBOOT \
-                   PRE_REALSENSE PRE_VERIFY PRE_FOCUS \
+                   PRE_REALSENSE PRE_CSI PRE_VERIFY PRE_FOCUS \
                    PRE_BUILD_ISAAC PRE_COLCON PRE_LOCAL_WS PRE_SMOKE PRE_REBOOT; do
             printf '%s=%q\n' "$var" "${!var-}"
         done
@@ -746,6 +820,7 @@ _run_phase_a_install() {
     run_step setup_docker
     run_step setup_systemd
     run_step setup_realsense
+    run_step csi_pin_config
 }
 
 # PHASE B - container builds + live checks. Not checkpointed: these are the steps an
@@ -911,18 +986,19 @@ menu() {
         echo "  2) Smoke test"
         echo "  3) RealSense assignment"
         echo "  4) Camera feed check"
-        echo "  5) LiDAR diagnostic"
-        echo "  6) LiDAR auto-detect"
-        echo "  7) Wi-Fi connect"
-        echo "  8) Camera calibration"
-        echo "  9) Camera focus"
-        echo "  10) Build Isaac container"
-        echo "  11) Build Isaac workspace"
-        echo "  12) Build local workspace"
-        echo "  13) Install ARK-OS"
-        echo "  14) Install ROS2"
-        echo "  15) ZeroTier join/switch"
-        echo "  16) Uninstall"
+        echo "  5) CSI overlay"
+        echo "  6) LiDAR diagnostic"
+        echo "  7) LiDAR auto-detect"
+        echo "  8) Wi-Fi connect"
+        echo "  9) Camera calibration"
+        echo "  10) Camera focus"
+        echo "  11) Build Isaac container"
+        echo "  12) Build Isaac workspace"
+        echo "  13) Build local workspace"
+        echo "  14) Install ARK-OS"
+        echo "  15) Install ROS2"
+        echo "  16) ZeroTier join/switch"
+        echo "  17) Uninstall"
         echo "  q) Quit"
         echo -e "${BOLD}========================================${NC}"
         echo "  (Ctrl+C ends setup at any time)"
@@ -933,18 +1009,19 @@ menu() {
             2) run_smoke_test                                    || true ;;
             3) bash "${WORKSPACES}/scripts/config_realsense.sh"  || true ;;
             4) verify_cameras_menu                               || true ;;
-            5) bash "${WORKSPACES}/scripts/lidar_diag.sh"        || true ;;
-            6) sudo bash "${WORKSPACES}/scripts/config_lidar.sh" || true ;;
-            7) bash "${WORKSPACES}/scripts/wifi.sh"              || true ;;
-            8) calibrate_cameras                                 || true ;;
-            9) camera_focus                                      || true ;;
-            10) build_isaac_step                                 || true ;;
-            11) colcon_isaac_step                                || true ;;
-            12) setup_ros_workspace                              || true ;;
-            13) menu_install_ark                                 || true ;;
-            14) menu_install_ros2                                || true ;;
-            15) PRE=0 setup_zerotier                             || true ;;
-            16) setup_uninstall                                  || true ;;
+            5) PRE=0 csi_pin_config                              || true ;;
+            6) bash "${WORKSPACES}/scripts/lidar_diag.sh"        || true ;;
+            7) sudo bash "${WORKSPACES}/scripts/config_lidar.sh" || true ;;
+            8) bash "${WORKSPACES}/scripts/wifi.sh"              || true ;;
+            9) calibrate_cameras                                 || true ;;
+            10) camera_focus                                      || true ;;
+            11) build_isaac_step                                  || true ;;
+            12) colcon_isaac_step                                 || true ;;
+            13) setup_ros_workspace                               || true ;;
+            14) menu_install_ark                                  || true ;;
+            15) menu_install_ros2                                 || true ;;
+            16) PRE=0 setup_zerotier                              || true ;;
+            17) setup_uninstall                                   || true ;;
             q|Q) echo "  Quit."; cleanup_user_exit; break ;;
             *) warn "invalid selection: '${choice}'" ;;
         esac

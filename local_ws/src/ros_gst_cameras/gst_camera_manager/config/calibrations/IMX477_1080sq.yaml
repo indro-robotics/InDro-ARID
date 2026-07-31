@@ -1,0 +1,32 @@
+# IMX477 down camera - 1080x1080 centre-crop geometry (VIC crop, no scaling).
+# Derivation is EXACT (linear transforms of the full-frame calibration; no recalibration):
+#   centre crop 1920x1080 -> 1080x1080:  cx -= 420; fx, fy, cy, distortion unchanged
+#   scale 1080 -> 1080:                 fx, fy, cx, cy x 1080/1080; distortion unchanged
+# RECALIBRATION RULE: calibrate on the cropped square stream at THIS size, or calibrate
+# full-frame and re-apply the transforms above.
+image_width: 1080
+image_height: 1080
+camera_name: cam_down
+camera_matrix:
+  rows: 3
+  cols: 3
+  data: [1269.454046731684, 0.0, 539.1560024041854,
+         0.0, 1267.6118308924583, 491.33676895820304,
+         0.0, 0.0, 1.0]
+distortion_model: plumb_bob
+distortion_coefficients:
+  rows: 1
+  cols: 5
+  data: [0.01054077517792311, -0.038704774547599824, 0.0022607529609841278, -0.0006064665451445611, 0.0]
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data: [1.0, 0.0, 0.0,
+         0.0, 1.0, 0.0,
+         0.0, 0.0, 1.0]
+projection_matrix:
+  rows: 3
+  cols: 4
+  data: [1269.454046731684, 0.0, 539.1560024041854, 0.0,
+         0.0, 1267.6118308924583, 491.33676895820304, 0.0,
+         0.0, 0.0, 1.0, 0.0]
