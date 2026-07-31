@@ -529,12 +529,15 @@ alias foxglove_bridge='@@FOXGLOVE_LAUNCH@@'
 alias cam_down_start='ros2 service call /gst_camera_manager/cam_down std_srvs/srv/SetBool "{data: true}"'
 alias cam_down_stop='ros2 service call /gst_camera_manager/cam_down std_srvs/srv/SetBool "{data: false}"'
 alias cam_down_status='ros2 service call /gst_camera_manager/cam_down/status std_srvs/srv/Trigger "{}"'
-alias cam_down_alive='ros2 topic echo --once --qos-durability transient_local /gst_camera_manager/cam_down/alive'
+# --qos-reliability is NOT redundant: passing any --qos-* flag stops ros2 topic echo using the
+# default profile, and reliability falls back to BEST_EFFORT. Against these RELIABLE publishers
+# the subscription then never matches and the command hangs forever with no error.
+alias cam_down_alive='ros2 topic echo --once --qos-durability transient_local --qos-reliability reliable /gst_camera_manager/cam_down/alive'
 alias cam_refresh='ros2 service call /gst_camera_manager/refresh std_srvs/srv/Trigger'
 alias rslidar_start='ros2 service call /rslidar_coordinator/enable std_srvs/srv/SetBool "{data: true}"'
 alias rslidar_stop='ros2 service call /rslidar_coordinator/enable std_srvs/srv/SetBool "{data: false}"'
 alias rslidar_status='ros2 service call /rslidar_coordinator/status std_srvs/srv/Trigger "{}"'
-alias rslidar_alive='ros2 topic echo --once --qos-durability transient_local /rslidar_coordinator/alive'
+alias rslidar_alive='ros2 topic echo --once --qos-durability transient_local --qos-reliability reliable /rslidar_coordinator/alive'
 alias rslidar_restart='ros2 service call /rslidar_coordinator/restart std_srvs/srv/Trigger "{}"'
 alias lidar_diag='/bin/bash @@WORKSPACES@@/scripts/lidar_diag.sh'
 alias local_test='/bin/bash @@WORKSPACES@@/scripts/local_test.sh'

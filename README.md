@@ -257,6 +257,8 @@ On link-up a NetworkManager dispatcher ARP-probes the LiDAR for up to 8 s. A res
 
 The LiDAR stores its own address and its unicast target in firmware, so a unit configured elsewhere may not sit at the factory defaults. `config_lidar` (menu **7**) sniffs `enP8p1s0`, extracts the LiDAR MAC and addresses, rewrites the `rslidar` profile and the dispatcher to match, and verifies the result by ARP. Run it after a LiDAR swap or reconfiguration.
 
+The capture is promiscuous and includes this host's own probes, so every candidate is checked against the local NIC MAC and addresses first. If the only match is the host itself, `config_lidar` writes **nothing** and exits non-zero. Persisting a self-referential pair is worse than persisting nothing: the generated dispatcher would ARP the Jetson's own address hunting for the LiDAR, never get a reply, and drop the static profile to DHCP on every link-up, leaving the LiDAR permanently unreachable.
+
 ```bash
 config_lidar
 ```
@@ -281,7 +283,7 @@ Menu **10** starts `cam_down` and the Foxglove bridge, then confirms the stream 
 
 ## Full setup
 
-`./setup.sh --full` walks the questionnaire once, then provisions everything unattended. Reboots are automatic and happen at most twice: once after the install steps if ARK-OS, ROS 2 or JetPack was installed, and once before the smoke test if anything was built and that reboot was not declined. After each one, open a bash terminal and answer the prompt to resume. `--resume` is the same continuation invoked manually, and `--continue` re-enters the tail with finished steps skipped.
+`./setup.sh --full` walks the questionnaire once, then provisions everything unattended. Every prompt defaults to skip, so holding Enter through them never starts a build or reboots the machine. Reboots are automatic and happen at most twice: once after the install steps if ARK-OS, ROS 2 or JetPack was installed, and once before the smoke test if anything was built and that reboot was not declined. After each one, open a bash terminal and answer the prompt to resume. `--resume` is the same continuation invoked manually, and `--continue` re-enters the tail with finished steps skipped.
 
 ```bash
 ./setup.sh --full
@@ -303,7 +305,8 @@ The first steps run once per invocation. Phase A (install and host configuration
 | **enable_user_linger** | Creates `/run/user/<uid>` at boot for headless NoMachine. |
 | **clean_nvidia_desktop** | Removes NVIDIA first-boot icons and the L4T-README automount. |
 | **ensure_wifi** | Joins the network from the questionnaire. |
-| **nomachine** | Installs or upgrades the arm64 package. |
+| **nomachine** | Installs the arm64 `.deb` vendored at [`local_ws/auxiliary/nomachine/`](local_ws/auxiliary/nomachine/) (newest wins). Not downloaded: NoMachine's ARM page now serves only `nomachine-personal-edition`, which installs and then refuses connections with an expired-subscription error, so the step rejects any `*personal-edition*` package. |
+| **time_wait_sync guard** | Masks `systemd-time-wait-sync.service` before any apt work. The unit checks the clock once at boot and otherwise waits forever on a `systemd-timesyncd` file that chrony never writes, wedging the systemd job queue and hanging apt silently. Ubuntu ships it disabled; ARK-OS used to enable it. |
 | **ark_os** | Clones ARK-OS, then runs its `install.sh` and `install_ros2.sh` unattended from a generated `user.env`. Installs JetPack when absent, reinstalls it on request. A failed install prompts retry, skip or exit. |
 | *Phase A, checkpointed* | |
 | **repos** | ROS, NVIDIA and Docker apt repos; CDI configuration. |

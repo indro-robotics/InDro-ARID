@@ -1,0 +1,103 @@
+diff --git a/scripts/config_lidar.sh b/scripts/config_lidar.sh
+index db5e5b2..3f10270 100755
+--- a/scripts/config_lidar.sh
++++ b/scripts/config_lidar.sh
+@@ -92,30 +92,61 @@ LIDAR_IP=""
+ HOST_IP=""
+ MATCH_HOW=""
+ 
++# This host's own L2/L3 identity. The capture is promiscuous and unfiltered by direction, so it
++# contains our OWN arping probes and traffic as well as the LiDAR's - see candidate_is_self.
++SELF_MAC=$(cat "/sys/class/net/${NIC}/address" 2>/dev/null | tr 'A-Z' 'a-z')
++SELF_IPS=$(ip -4 -o addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1)
++
++# Reject a candidate that is really this machine. Without this, a single self-originated ARP line
++# ("who-has 192.168.1.102 tell 192.168.1.102", sent by our own arping) is accepted as the LiDAR:
++# LIDAR_IP and LIDAR_MAC come out as the host's own, and every consumer downstream inherits it -
++# rslidar_detected.conf, and worse, the 90-rslidar dispatcher, which then arpings the host's own
++# address looking for the LiDAR, always times out, and tears the static profile down to DHCP on
++# every link-up. The LiDAR link then cannot stay up at all.
++candidate_is_self() {
++    local mac="$1" lidar_ip="$2" host_ip="$3" ip
++    [[ -z "$lidar_ip" || -z "$host_ip" ]]          && return 0   # unusable -> treat as self
++    [[ "$lidar_ip" == "$host_ip" ]]                && return 0   # talking to itself
++    [[ -n "$mac" && "${mac,,}" == "${SELF_MAC}" ]] && return 0   # our own NIC sent it
++    for ip in ${SELF_IPS}; do
++        [[ "$lidar_ip" == "$ip" ]] && return 0                   # "LiDAR" is an address we hold
++    done
++    return 1
++}
++
+ # Search order prefers RoboSense OUI but falls back to any source on LiDAR
+-# ports, catching re-MACed units and non-default OUIs.
++# ports, catching re-MACed units and non-default OUIs. Each walks every matching line rather than
++# taking the first: the first is frequently our own probe, and skipping to the next valid one is
++# what stops a self-match being promoted to "the LiDAR".
+ extract_from_arp() {
+     # Sets LIDAR_MAC / LIDAR_IP / HOST_IP. arg: grep pattern or "." for all.
+-    local pat="$1"
+-    local line
+-    line=$(grep -E "$pat" "${CAP}" | grep -i "who-has.*tell" | head -1)
+-    [[ -z "$line" ]] && return 1
+-    LIDAR_MAC=$(echo "$line" | grep -oE '([0-9a-f]{2}:){5}[0-9a-f]{2}' | head -1)
+-    HOST_IP=$(echo "$line" | grep -oE 'who-has [0-9.]+' | awk '{print $2}')
+-    LIDAR_IP=$(echo "$line" | grep -oE 'tell [0-9.]+'    | awk '{print $2}')
+-    return 0
++    local pat="$1" line mac lip hip
++    while IFS= read -r line; do
++        [[ -z "$line" ]] && continue
++        mac=$(echo "$line" | grep -oE '([0-9a-f]{2}:){5}[0-9a-f]{2}' | head -1)
++        hip=$(echo "$line" | grep -oE 'who-has [0-9.]+' | awk '{print $2}')
++        lip=$(echo "$line" | grep -oE 'tell [0-9.]+'    | awk '{print $2}')
++        candidate_is_self "$mac" "$lip" "$hip" && continue
++        LIDAR_MAC="$mac"; LIDAR_IP="$lip"; HOST_IP="$hip"
++        return 0
++    done < <(grep -E "$pat" "${CAP}" | grep -i "who-has.*tell")
++    return 1
+ }
+ extract_from_udp() {
+     # Sets LIDAR_MAC / LIDAR_IP / HOST_IP. arg: grep pattern or "." for all.
+-    local pat="$1"
+-    local line tuple
+-    line=$(grep -E "$pat" "${CAP}" | grep -E 'UDP, length' | head -1)
+-    [[ -z "$line" ]] && return 1
+-    LIDAR_MAC=$(echo "$line" | grep -oE '([0-9a-f]{2}:){5}[0-9a-f]{2}' | head -1)
+-    tuple=$(echo "$line" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+ > [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+-    LIDAR_IP=$(echo "$tuple" | awk '{print $1}' | sed -E 's/\.[0-9]+$//')
+-    HOST_IP=$(echo "$tuple" | awk '{print $3}' | sed -E 's/\.[0-9]+$//')
+-    return 0
++    local pat="$1" line tuple mac lip hip
++    while IFS= read -r line; do
++        [[ -z "$line" ]] && continue
++        mac=$(echo "$line" | grep -oE '([0-9a-f]{2}:){5}[0-9a-f]{2}' | head -1)
++        tuple=$(echo "$line" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+ > [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
++        [[ -z "$tuple" ]] && continue
++        lip=$(echo "$tuple" | awk '{print $1}' | sed -E 's/\.[0-9]+$//')
++        hip=$(echo "$tuple" | awk '{print $3}' | sed -E 's/\.[0-9]+$//')
++        candidate_is_self "$mac" "$lip" "$hip" && continue
++        LIDAR_MAC="$mac"; LIDAR_IP="$lip"; HOST_IP="$hip"
++        return 0
++    done < <(grep -E "$pat" "${CAP}" | grep -E 'UDP, length')
++    return 1
+ }
+ 
+ if   extract_from_arp "${ROBOSENSE_OUI}";    then MATCH_HOW="ARP from RoboSense OUI"
+@@ -133,6 +164,18 @@ if [[ -z "${LIDAR_IP}" || -z "${HOST_IP}" ]]; then
+     exit 1
+ fi
+ 
++# Belt and braces. Writing a self-referential pair here is worse than writing nothing: the
++# dispatcher generated below would arping the host's own address hunting for the LiDAR, never get
++# a reply, and drop the static profile to DHCP on every single link-up - leaving the LiDAR
++# permanently unreachable and the NIC flapping. Refuse rather than persist that.
++if candidate_is_self "${LIDAR_MAC}" "${LIDAR_IP}" "${HOST_IP}"; then
++    fail "detection matched this host, not the LiDAR (LiDAR ${LIDAR_IP} / host ${HOST_IP}, MAC ${LIDAR_MAC:-none})"
++    note "this machine is ${SELF_MAC} holding: $(echo ${SELF_IPS} | tr '\n' ' ')"
++    note "the capture likely contained only our own ARP probes - the LiDAR may be powered off,"
++    note "on a different segment, or emitting L2-only PTP. Nothing was written."
++    exit 1
++fi
++
+ SUBNET="$(echo "${LIDAR_IP}" | awk -F. '{print $1"."$2"."$3".0/24"}')"
+ ok "discovered LiDAR config (via: ${MATCH_HOW}):"
+ note "LiDAR MAC: ${LIDAR_MAC}"
