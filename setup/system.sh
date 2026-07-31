@@ -729,7 +729,7 @@ setup_ros_workspace() {
         STEPS_SKIPPED+=("ros_workspace")
         return 0
     fi
-    if [[ ! -d /opt/ros/humble ]]; then
+    if [[ ! -f /opt/ros/humble/setup.bash ]]; then
         warn "ROS2 not installed - skipping local workspace build"
         STEPS_SKIPPED+=("ros_workspace")
         return 0

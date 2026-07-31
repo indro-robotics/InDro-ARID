@@ -396,8 +396,9 @@ collect_answers() {
         PRE_ARK=install
     fi
 
-    # ROS2 - isolated; ask to reinstall if present, else install.
-    if [[ -d /opt/ros/humble ]]; then
+    # ROS2 - isolated; ask to reinstall if present, else install. A bare /opt/ros/humble
+    # directory is left behind by a partial install, so test the setup script itself.
+    if [[ -f /opt/ros/humble/setup.bash ]]; then
         ask_yn "  Reinstall ROS2? (y/n, Enter = skip): " n && PRE_ARK_ROS2=yes || PRE_ARK_ROS2=skip
     else
         PRE_ARK_ROS2=install
@@ -440,7 +441,7 @@ collect_answers() {
         ask_yn "  Install PX4 toolchain? (y/n, Enter = no): " n && PRE_PX4=yes || PRE_PX4=no
     fi
 
-    ask_yn "  Assign the RealSense serial into vslam_config.yaml? (y/n, Enter = skip): " n \
+    ask_yn "  Assign RealSense cameras? (y/n, Enter = skip): " n \
         && PRE_REALSENSE=yes || PRE_REALSENSE=skip
 
     ask_yn "  Verify the camera feed at the end? (y/n, Enter = skip): " n \
