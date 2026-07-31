@@ -164,14 +164,10 @@ nomachine() {
         </dev/null >/tmp/nomachine-install.log 2>&1 \
         || { warn "dpkg -i nomachine failed (see /tmp/nomachine-install.log); skipping"; STEPS_SKIPPED+=("nomachine"); return 0; }
     sudo systemctl disable gdm3 --now 2>/dev/null || true
-    # -rf, not -f: docker creates .Xauthority as a *directory* when a container bind-mounts it
-    # and the host path does not exist yet (run_dev.sh does this). Plain rm -f then fails with
-    # "Is a directory", and under `set -euo pipefail` that aborts the entire provisioning run.
-    # None of this X auth housekeeping is worth killing setup over, so it is all non-fatal.
-    sudo rm -rf "${HOME_DIR}/.Xauthority" || true
-    sudo touch "${HOME_DIR}/.Xauthority" || true
-    sudo chown "${USERNAME}:${USERNAME}" "${HOME_DIR}/.Xauthority" 2>/dev/null || true
-    chmod 600 "${HOME_DIR}/.Xauthority" 2>/dev/null || true
+    sudo rm -f "${HOME_DIR}/.Xauthority"
+    sudo touch "${HOME_DIR}/.Xauthority"
+    sudo chown "${USERNAME}:${USERNAME}" "${HOME_DIR}/.Xauthority"
+    chmod 600 "${HOME_DIR}/.Xauthority"
     sudo /usr/NX/bin/nxserver --restart </dev/null >/tmp/nxserver-restart.log 2>&1 \
         || warn "nxserver --restart returned non-zero (see /tmp/nxserver-restart.log)"
 
