@@ -95,7 +95,7 @@ ensure_wifi() {
     fi
 }
 
-# NoMachine: detect install; a fresh install is manual (arm64 .deb).
+# NoMachine: detect install, then install the vendored arm64 .deb.
 nomachine() {
     step "NoMachine remote desktop"
 
@@ -122,29 +122,56 @@ nomachine() {
         warn "NoMachine is not installed - installing"
     fi
 
-    local deb="/tmp/nomachine_arm64.deb"
-    echo "  Downloading the latest NoMachine arm64 .deb..."
-    if ! wget -q -O "${deb}" "https://www.nomachine.com/free/arm/v8/deb"; then
-        warn "NoMachine download failed (no internet?); skipping"
-        rm -f "${deb}"
-        STEPS_SKIPPED+=("nomachine")
+    # The .deb ships with the repo rather than being downloaded. NoMachine's ARM page now serves
+    # only nomachine-personal-edition, which installs happily and then refuses every connection
+    # with "the subscription license on this server has expired" - the free 9.x line is no longer
+    # published there. Vendoring also means a drone with no internet still provisions.
+    # Resolved here, not at file scope: system.sh is sourced before setup.sh defines LOCAL_WS,
+    # and a top-level expansion would trip `set -u` and abort the run before it prints anything.
+    # Newest .deb in the directory wins, so dropping in a newer build is all an upgrade takes.
+    local nm_dir="${LOCAL_WS}/auxiliary/nomachine" deb
+    deb=$(ls -1t "${nm_dir}"/*.deb 2>/dev/null | head -1)
+    if [[ -z "${deb}" ]]; then
+        warn "no .deb found in ${nm_dir}"
+        warn "drop the NoMachine arm64 .deb there and re-run setup"
+        STEPS_SKIPPED+=("nomachine (no package)")
         return 0
     fi
+    if ! dpkg-deb --info "${deb}" >/dev/null 2>&1; then
+        warn "not a Debian package: ${deb} ($(file -b "${deb}" 2>/dev/null | head -c 50))"
+        STEPS_SKIPPED+=("nomachine (bad package)")
+        return 0
+    fi
+    # Guard against the paid edition being dropped in by mistake: it installs, then refuses to
+    # serve. Cheaper to catch here than to debug a licence dialog on a headless drone.
+    local pkg; pkg=$(dpkg-deb -f "${deb}" Package 2>/dev/null)
+    if [[ "${pkg}" == *personal-edition* ]]; then
+        warn "${deb} is ${pkg} - the subscription edition, which will refuse connections."
+        warn "Use the free 'nomachine' package instead."
+        STEPS_SKIPPED+=("nomachine (paid edition)")
+        return 0
+    fi
+
     if (( installed )); then
         warn "removing the existing NoMachine before reinstall (drops any active NoMachine session)"
-        sudo dpkg -r nomachine >/dev/null 2>&1 || sudo apt-get remove -y nomachine >/dev/null 2>&1 || true
+        sudo dpkg -r nomachine nomachine-personal-edition >/dev/null 2>&1 \
+            || sudo apt-get remove -y nomachine nomachine-personal-edition >/dev/null 2>&1 || true
     fi
-    echo "  Installing: ${deb} (log: /tmp/nomachine-install.log)"
+    echo "  Installing: ${deb} ($(dpkg-deb -f "${deb}" Version 2>/dev/null)) - log: /tmp/nomachine-install.log"
     # nxserver daemons inherit our stdio and would hang dpkg; redirect so it returns.
+    # NOTE: no rm afterwards - the .deb is a tracked repo file, not a temp download.
     sudo DEBIAN_FRONTEND=noninteractive dpkg -i --force-confnew "${deb}" \
         </dev/null >/tmp/nomachine-install.log 2>&1 \
-        || { warn "dpkg -i nomachine failed (see /tmp/nomachine-install.log); skipping"; rm -f "${deb}"; STEPS_SKIPPED+=("nomachine"); return 0; }
-    rm -f "${deb}"
+        || { warn "dpkg -i nomachine failed (see /tmp/nomachine-install.log); skipping"; STEPS_SKIPPED+=("nomachine"); return 0; }
     sudo systemctl disable gdm3 --now 2>/dev/null || true
-    sudo rm -f "${HOME_DIR}/.Xauthority"
-    sudo touch "${HOME_DIR}/.Xauthority"
-    sudo chown "${USERNAME}:${USERNAME}" "${HOME_DIR}/.Xauthority"
-    chmod 600 "${HOME_DIR}/.Xauthority"
+    # -rf, not -f: docker creates .Xauthority as a *directory* when a container bind-mounts it
+    # and the host path does not exist yet (run_dev.sh does this). Plain rm -f then fails with
+    # "Is a directory", and under `set -euo pipefail` that aborts the entire provisioning run.
+    # None of this X auth housekeeping is worth killing setup over, so it is all non-fatal.
+    sudo rm -rf "${HOME_DIR}/.Xauthority" || true
+    sudo touch "${HOME_DIR}/.Xauthority" || true
+    sudo chown "${USERNAME}:${USERNAME}" "${HOME_DIR}/.Xauthority" 2>/dev/null || true
+    chmod 600 "${HOME_DIR}/.Xauthority" 2>/dev/null || true
     sudo /usr/NX/bin/nxserver --restart </dev/null >/tmp/nxserver-restart.log 2>&1 \
         || warn "nxserver --restart returned non-zero (see /tmp/nxserver-restart.log)"
 

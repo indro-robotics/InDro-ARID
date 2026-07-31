@@ -45,4 +45,9 @@ pipelines:
     frame_id: "bottom_visual_link"
     encoding: ""
     compress: true
-    alive_threshold: 2.0
+    # 5.0, not 2.0: this value doubles as the startup grace period, and a cold Argus open on the
+    # IMX477 takes just over 2 s to deliver its first frame - measured at 2.04 s, which tripped
+    # the old threshold on literally every launch ("stalled ... frames resumed" one line later).
+    # The false alarm also made verify_cv_cams give up on a camera that was working. At 15 fps a
+    # real stall is still caught inside 5 s (~75 missed frames), so nothing is lost by waiting.
+    alive_threshold: 5.0

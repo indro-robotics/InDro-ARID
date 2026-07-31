@@ -542,12 +542,15 @@ collect_answers() {
 
     # Isaac workspace colcon, whenever an image exists or is queued.
     if [[ "${PRE_BUILD_ISAAC}" == "yes" ]] || docker image inspect isaac_ros_dev-aarch64 >/dev/null 2>&1; then
+        # Every questionnaire prompt defaults to skip. Bare Enter must never start a long build,
+        # a reboot, or anything else destructive - an operator holding Enter through the prompts
+        # should get the least surprising run, not an hour of colcon.
         if [[ -f "${ISAAC_ROS_WS}/install/setup.bash" ]]; then
-            # Enter = rebuild: pulled packages and C++ ship nothing until colcon runs, and
-            # skip-by-default once left a launch pointing at an unbuilt package.
-            ask_yn "  Rebuild the Isaac workspace? (y/n, Enter = rebuild): " y && PRE_COLCON=yes || PRE_COLCON=skip
+            # NOTE: pulled packages and C++ ship nothing until colcon runs, so skipping here can
+            # leave a launch pointing at an unbuilt package. Answer y, or run 'colcon_isaac' later.
+            ask_yn "  Rebuild the Isaac workspace? (y/n, Enter = skip): " n && PRE_COLCON=yes || PRE_COLCON=skip
         else
-            ask_yn "  Build the Isaac workspace? (y/n, Enter = yes): " y && PRE_COLCON=yes || PRE_COLCON=skip
+            ask_yn "  Build the Isaac workspace? (y/n, Enter = skip): " n && PRE_COLCON=yes || PRE_COLCON=skip
         fi
     else
         PRE_COLCON=skip
@@ -556,14 +559,14 @@ collect_answers() {
     if [[ -d "${LOCAL_WS}/install" ]]; then
         ask_yn "  Rebuild the local workspace? (y/n, Enter = skip): " n && PRE_LOCAL_WS=yes || PRE_LOCAL_WS=skip
     else
-        ask_yn "  Build the local workspace? (y/n, Enter = yes): " y && PRE_LOCAL_WS=yes || PRE_LOCAL_WS=skip
+        ask_yn "  Build the local workspace? (y/n, Enter = skip): " n && PRE_LOCAL_WS=yes || PRE_LOCAL_WS=skip
     fi
 
-    ask_yn "  Run the smoke test at the end? (y/n, Enter = y): " y && PRE_SMOKE=yes || PRE_SMOKE=skip
+    ask_yn "  Run the smoke test at the end? (y/n, Enter = skip): " n && PRE_SMOKE=yes || PRE_SMOKE=skip
 
-    # The smoke test is a clean-boot validation, so setup reboots before it when anything
-    # built. Answer n to run it inline instead and finish without a reboot.
-    ask_yn "  Reboot before the smoke test? (y/n, Enter = y): " y && PRE_REBOOT=yes || PRE_REBOOT=no
+    # The smoke test is a clean-boot validation, so setup reboots before it when anything built.
+    # Defaults to skip like everything else: an unattended Enter must not reboot the machine.
+    ask_yn "  Reboot before the smoke test? (y/n, Enter = skip): " n && PRE_REBOOT=yes || PRE_REBOOT=no
 
     ok "Answers recorded - running unattended."
 
