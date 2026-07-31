@@ -303,7 +303,7 @@ The first steps run once per invocation. Phase A (install and host configuration
 | **enable_user_linger** | Creates `/run/user/<uid>` at boot for headless NoMachine. |
 | **clean_nvidia_desktop** | Removes NVIDIA first-boot icons and the L4T-README automount. |
 | **ensure_wifi** | Joins the network from the questionnaire. |
-| **nomachine** | Detects the install; prints a manual hint if missing. |
+| **nomachine** | Installs or upgrades the arm64 package. |
 | **ark_os** | Clones ARK-OS, then runs its `install.sh` and `install_ros2.sh` unattended from a generated `user.env`. Installs JetPack when absent, reinstalls it on request. A failed install prompts retry, skip or exit. |
 | *Phase A, checkpointed* | |
 | **repos** | ROS, NVIDIA and Docker apt repos; CDI configuration. |

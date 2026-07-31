@@ -97,28 +97,59 @@ ensure_wifi() {
 
 # NoMachine: detect install; a fresh install is manual (arm64 .deb).
 nomachine() {
-    step "NoMachine"
-    # A reinstall drops the very session running setup, and this runs with no resume armed.
+    step "NoMachine remote desktop"
+
+    # A reinstall drops the session running setup, and this runs with no resume armed yet.
     if is_inside_nomachine; then
         skip "running inside a NoMachine session - left untouched (upgrade over SSH if needed)"
         STEPS_SKIPPED+=("nomachine")
         return 0
     fi
+
+    local installed=0 ver=""
     if dpkg -s nomachine >/dev/null 2>&1 || [[ -x /usr/NX/bin/nxserver ]]; then
-        if [[ "${PRE_NOMACHINE:-}" == "skip" ]] || (( PRE )); then
-            ok "NoMachine already installed"
+        installed=1
+        ver=$(dpkg-query -W -f='${Version}' nomachine 2>/dev/null || true)
+        ok "NoMachine is installed${ver:+ (version ${ver})}"
+        local up
+        if (( PRE )); then up="${PRE_NOMACHINE}"; else ask_yn "  Reinstall NoMachine? (y/n, Enter = skip): " n && up=yes || up=skip; fi
+        if ! is_yes "${up}"; then
+            skip "NoMachine left as-is"
             STEPS_SKIPPED+=("nomachine")
             return 0
         fi
-        if ! ask_yn "NoMachine already installed. Reinstall? (y/n, Enter = skip): " n; then
-            ok "NoMachine already installed"
-            STEPS_SKIPPED+=("nomachine")
-            return 0
-        fi
+    else
+        warn "NoMachine is not installed - installing"
     fi
-    warn "NoMachine arm64 .deb must be downloaded from https://www.nomachine.com manually."
-    warn "After downloading: sudo dpkg -i nomachine_*_arm64.deb && sudo /usr/NX/bin/nxserver --restart"
-    STEPS_SKIPPED+=("nomachine (manual)")
+
+    local deb="/tmp/nomachine_arm64.deb"
+    echo "  Downloading the latest NoMachine arm64 .deb..."
+    if ! wget -q -O "${deb}" "https://www.nomachine.com/free/arm/v8/deb"; then
+        warn "NoMachine download failed (no internet?); skipping"
+        rm -f "${deb}"
+        STEPS_SKIPPED+=("nomachine")
+        return 0
+    fi
+    if (( installed )); then
+        warn "removing the existing NoMachine before reinstall (drops any active NoMachine session)"
+        sudo dpkg -r nomachine >/dev/null 2>&1 || sudo apt-get remove -y nomachine >/dev/null 2>&1 || true
+    fi
+    echo "  Installing: ${deb} (log: /tmp/nomachine-install.log)"
+    # nxserver daemons inherit our stdio and would hang dpkg; redirect so it returns.
+    sudo DEBIAN_FRONTEND=noninteractive dpkg -i --force-confnew "${deb}" \
+        </dev/null >/tmp/nomachine-install.log 2>&1 \
+        || { warn "dpkg -i nomachine failed (see /tmp/nomachine-install.log); skipping"; rm -f "${deb}"; STEPS_SKIPPED+=("nomachine"); return 0; }
+    rm -f "${deb}"
+    sudo systemctl disable gdm3 --now 2>/dev/null || true
+    sudo rm -f "${HOME_DIR}/.Xauthority"
+    sudo touch "${HOME_DIR}/.Xauthority"
+    sudo chown "${USERNAME}:${USERNAME}" "${HOME_DIR}/.Xauthority"
+    chmod 600 "${HOME_DIR}/.Xauthority"
+    sudo /usr/NX/bin/nxserver --restart </dev/null >/tmp/nxserver-restart.log 2>&1 \
+        || warn "nxserver --restart returned non-zero (see /tmp/nxserver-restart.log)"
+
+    STEPS_RUN+=("nomachine")
+    (( installed )) && ok "NoMachine upgraded; nxserver restarting" || ok "NoMachine installed; nxserver restarting"
 }
 
 # Headless: /run/user/<uid> otherwise gets created root-owned by a boot process, and
