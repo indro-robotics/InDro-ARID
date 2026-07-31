@@ -179,6 +179,29 @@ disable_updates() {
     ok "unattended upgrades disabled"
 }
 
+# systemd-time-wait-sync blocks until /run/systemd/timesync/synchronized appears, and only
+# systemd-timesyncd ever creates it - which enable_clock_sync disables in favour of chrony. The
+# unit then sits in 'activating' forever and jams the systemd job queue: every later
+# deb-systemd-invoke (snapd's postinst is the usual victim) enqueues into that stuck transaction
+# and apt hangs with no output. Mask it before any apt work runs. Masking survives reboots, so
+# this is a no-op on every pass after the first; chrony owns the clock, so nothing is lost.
+guard_time_wait_sync() {
+    step "systemd-time-wait-sync (apt deadlock guard)"
+
+    if [[ "$(systemctl is-enabled systemd-time-wait-sync.service 2>/dev/null)" == "masked" ]]; then
+        skip "systemd-time-wait-sync already masked"
+        return 0
+    fi
+
+    # --no-block is required, not cosmetic: a plain stop waits on the very queue that is jammed.
+    sudo systemctl stop --no-block systemd-time-wait-sync.service 2>/dev/null || true
+    if sudo systemctl mask systemd-time-wait-sync.service >/dev/null 2>&1; then
+        ok "systemd-time-wait-sync masked (chrony disciplines the clock)"
+    else
+        warn "could not mask systemd-time-wait-sync - apt may stall on a blocked systemd job"
+    fi
+}
+
 # PX4 timestamp alignment needs correct wall time after a power cycle. chrony (installed in
 # setup_apt_packages) steps only at boot and slews afterward; systemd-timesyncd is disabled so
 # the two cannot both discipline the clock and step it mid-mission.

@@ -696,6 +696,7 @@ run_smoke_test() {
 # Orchestration
 run_full_setup() {
     preflight
+    guard_time_wait_sync   # before ark_os: its apt work deadlocks on a jammed systemd job queue
     printf '%s\n' "${LOG_FILE}" > "${HOME_DIR}/.arid_setup_log"   # pin this session's log across its reboot
     # Fresh run: nothing checkpointed, no build recorded (a stale .arid_did_build would
     # otherwise force the pre-smoke reboot even when nothing builds this run).
@@ -757,6 +758,7 @@ _run_phase_b_build() {
 }
 
 _run_setup_tail() {
+    guard_time_wait_sync   # resumes skip preflight, and Phase A is all apt
     _run_phase_a_install
 
     # Install reboot: exactly once at the end of Phase A, iff ARK-OS / ROS2 / JetPack installed
