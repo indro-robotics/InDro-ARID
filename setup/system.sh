@@ -502,7 +502,6 @@ alias update_submods='/bin/bash @@WORKSPACES@@/scripts/update_submods.sh'
 alias cam_calibrate='/bin/bash @@WORKSPACES@@/local_ws/auxiliary/camera_calibration/camera_calibration_auto/camera_calibrate.sh'
 alias zt_join='/bin/bash @@WORKSPACES@@/scripts/zt_join.sh'
 alias status='ros2 service call /arid_supervisor/status std_srvs/srv/Trigger "{}"'
-alias sentry='ros2 service call /vslam_sentry/status_now std_srvs/srv/Trigger "{}"'
 alias initialize='/bin/bash @@ISAAC_ROS_WS@@/container_scripts/initialize.sh'
 alias deinitialize='/bin/bash @@ISAAC_ROS_WS@@/container_scripts/deinitialize.sh'
 help() {
@@ -546,7 +545,6 @@ ARID host commands:
     initialize         Enable VSLAM via /arid_supervisor/vslam_enable
     deinitialize       Disable VSLAM (refused while airborne - landed gate)
     status             Supervisor status - vslam running (true/false) + land state
-    sentry             vslam_sentry status JSON (per-camera + VO health)
 ARIDHELP
 }
 # Resume-after-reboot hook; the shim keeps this block free of command substitution.

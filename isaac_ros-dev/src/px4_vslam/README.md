@@ -25,9 +25,8 @@ The launch proceeds in order:
 2. Starts `vslam_container` with three `realsense2_camera::RealSenseNodeFactory` nodes (`left_realsense`, `front_realsense`, `right_realsense`) and `VisualSlamNode` as a 6-stream stereo multicam, one IR pair per camera.
 3. Starts `vslam_reactor_node`.
 4. Starts `vio_transform`.
-5. Starts `vslam_sentry` (see [`vslam_sentry`](../vslam_sentry/README.md)).
 
-The three camera drivers and `VisualSlamNode` share one `component_container_mt` process for intra-process comms. The reactor, `vio_transform` and the sentry run as separate processes.
+The three camera drivers and `VisualSlamNode` share one `component_container_mt` process for intra-process comms. The reactor and `vio_transform` run as separate processes.
 
 ---
 

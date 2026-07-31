@@ -54,18 +54,6 @@ def generate_launch_description():
         executable='vio_transform'
     )
 
-    # Device-plane watchdog: per-camera stream health + targeted hardware_reset
-    # recovery (one camera at a time). Reads the same vslam_config.yaml for serials.
-    vslam_sentry_node = Node(
-        package='vslam_sentry',
-        executable='vslam_sentry_node',
-        name='vslam_sentry',
-        output='screen',
-        parameters=[{'config_path': os.path.join(
-            get_package_share_directory('px4_vslam'), 'config',
-            'vslam_config.yaml')}],
-    )
-
     vslam_reactor_config = os.path.join(
         get_package_share_directory('px4_vslam_reactor'),
         'config', 'px4_vslam_reactor.yaml')
@@ -150,7 +138,6 @@ def generate_launch_description():
                 vslam_container,
                 vslam_reactor_node,
                 vio_transform_node,
-                vslam_sentry_node,
             ],
         )),
     ])

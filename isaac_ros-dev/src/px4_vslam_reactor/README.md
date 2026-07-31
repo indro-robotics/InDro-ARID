@@ -1,6 +1,6 @@
 # px4_vslam_reactor
 
-The reactor coordinates the external visual-SLAM source with PX4. It watches the incoming SLAM solution, gates bad samples such as tracking jumps, teleports and cadence starvation, and re-anchors SLAM onto the PX4 solution when the two diverge.
+The reactor coordinates the external visual-SLAM source with PX4. It watches the incoming SLAM solution, gates bad samples such as tracking jumps and teleports, and re-anchors SLAM onto the PX4 solution when the two diverge.
 
 All sensor fusion stays in PX4. The reactor does not fuse IMU data, run a filter, or cross-check against inertial state; it provides a jump-free visual-odometry stream and signals EKF2 when that stream has moved discontinuously.
 
@@ -18,13 +18,11 @@ The [`px4_vslam`](../px4_vslam/) launch starts it as `vslam_reactor_node`.
 
 Every VSLAM frame runs through `slam_odom_callback`. A frame reaches PX4 only when VSLAM reports tracking (`vslam_status == 1`) and the reactor is not mid-reseat.
 
-**Velocity and jump gate.** A frame exceeding `lin_vel_gate`, `ang_vel_gate_dps`, or the `VO_pos_delta_lim` and `VO_rate_lim` slow-jump pair is rejected, and the rejection triggers an in-flight re-seat. The slow-jump term is suppressed while the cadence gate is engaged, where normal motion across a gated gap would read as a jump.
-
-**Post-re-seat bypass.** A committed re-seat opens a short window in which the jump gate is bypassed and the baseline is rebased onto every arriving frame, so the pose step the re-seat creates is not re-judged as a cuVSLAM jump. The window closes once `vslam_stabilization_time` has elapsed and at least two frames stamped after the commit have rebased the baseline, and it is hard-capped at 3 s. Frames stamped before the commit rebase the baseline but are withheld from PX4, since they may still carry the pre-re-seat pose under the already-bumped reset counter.
+**Velocity and jump gate.** A frame exceeding `lin_vel_gate`, `ang_vel_gate_dps`, or the `VO_pos_delta_lim` and `VO_rate_lim` slow-jump pair is rejected, and the rejection triggers an in-flight re-seat. **Post-re-seat bypass.** A committed re-seat opens a short window in which the jump gate is bypassed and the baseline is rebased onto every arriving frame, so the pose step the re-seat creates is not re-judged as a cuVSLAM jump. The window closes once `vslam_stabilization_time` has elapsed and at least two frames stamped after the commit have rebased the baseline, and it is hard-capped at 3 s. Frames stamped before the commit rebase the baseline but are withheld from PX4, since they may still carry the pre-re-seat pose under the already-bumped reset counter.
 
 **Displacement and settle gate.** After an origin injection the reactor keeps injecting until the VSLAM and FMU poses agree within `align_yaw_deg` and `align_pos_m`, and re-injects if `set_origin_settle_time` elapses first.
 
-**Cadence gate.** VO is withheld from EKF2 while cuVSLAM stamp cadence is degraded. Engagement is two-tier on VO header-stamp gaps: one gap at or over `cadence_gate_hard_s`, or `cadence_gate_sustained_samples` consecutive gaps between `cadence_gate_s` and `cadence_gate_hard_s`. A lone lesser gap does not engage, and any nominal sample breaks the lesser-gap streak. `cadence_release_samples` nominal frames release the gate; there is no timed escape. Anomalous stamps carry no cadence information: they neither count toward release nor break a release streak in progress. Stamp gaps over 5 s are treated as stamp anomalies and reseed the tracker instead of engaging. While gated, all settles are withheld and the settle countdown pauses, but jump detection stays live so a genuine jump still re-seats. The withhold never bumps the epoch. State is latched on `/reactor/cadence_gated` and engagements count on `/reactor/cadence_gate_count`.
+
 
 **Re-seat burst limit.** Jump re-seats are budgeted at `reseat_burst_max` committed re-seats per rolling `reseat_burst_window_s`. Once the budget is spent, further jump re-seats are blocked, because re-seating at that rate cannot recover cuVSLAM and only feeds EKF2 a reset storm. Blocking a re-seat never bumps the reset epoch. Origin re-injections are bounded by the settle timeout and are not counted against the budget.
 
@@ -69,8 +67,6 @@ The reactor publishes the filtered stream plus its gate and health telemetry.
 | `/reactor/drone_odom` | `nav_msgs/Odometry` | PX4 odom in ROS conventions (FRD to FLU). |
 | `/reactor/drone_pose` | `geometry_msgs/PoseStamped` | Same, pose only, for RViz or Foxglove. |
 | `/reactor/vio_reset_epoch` | `std_msgs/UInt8` (latched) | Origin-seat epoch. |
-| `/reactor/cadence_gated` | `std_msgs/Bool` (latched) | True while VO is withheld for degraded cadence. |
-| `/reactor/cadence_gate_count` | `std_msgs/UInt32` (latched) | Cumulative cadence-gate engagements. |
 | `/reactor/vo_healthy` | `std_msgs/Bool` (latched) | False on an exhausted re-seat budget or EV publish silence. |
 
 ## Services
@@ -104,10 +100,6 @@ Values come from [`config/px4_vslam_reactor.yaml`](config/px4_vslam_reactor.yaml
 | `set_origin_settle_time` | s | Injection window before the origin is re-injected. |
 | `set_pose_max_odom_age` | s | Max age of the PX4 odom sample seeding a re-seat. |
 | `fmu_stamp_max_skew_s` | s | Max \|now - FMU stamp\| before re-stamping outputs. |
-| `cadence_gate_s` | s | Floor of the lesser-gap tier; gaps below this are nominal. |
-| `cadence_gate_hard_s` | s | Single-gap engage threshold. |
-| `cadence_gate_sustained_samples` | count | Consecutive lesser gaps that engage. |
-| `cadence_release_samples` | count | Consecutive nominal frames that release. |
 | `set_pose_busy_timeout_s` | s | Clears a hung `SetSlamPose` call. |
 | `reseat_burst_max` | count | Committed jump re-seats allowed in the window. |
 | `reseat_burst_window_s` | s | Rolling window for the re-seat budget. |

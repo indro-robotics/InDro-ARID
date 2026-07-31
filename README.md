@@ -5,7 +5,7 @@ The ARID (Autonomous Research Indoor Drone) is an indoor quadrotor built on an N
 - `setup.sh` with `setup/`: provisioning, from a fresh Ubuntu 22.04 install to flight-ready.
 - `arid_description`: robot description, publishing `/robot_description` and `/tf_static`.
 - `ros_gst_cameras`: the two IMX219 CSI video pipelines.
-- `px4_vslam`, `px4_vslam_reactor`, `vslam_sentry`, `arid_supervisor`: RealSense visual odometry into PX4.
+- `px4_vslam`, `px4_vslam_reactor`, `arid_supervisor`: RealSense visual odometry into PX4.
 - `reset_ark_usb`: the `/reset_usb` service.
 - `PX4-Autopilot`: the InDro PX4 fork carrying the ARID airframe.
 
@@ -85,7 +85,6 @@ Every alias below is available in a host shell, and `help` prints the same set w
 | `wifi` / `zt_join` / `update_submods` | Wi-Fi picker, ZeroTier, submodule sync. |
 | `foxglove_bridge` | Bridge on port 8765. |
 | `initialize` / `deinitialize` / `status` | VSLAM through the supervisor. |
-| `sentry` | `vslam_sentry` status JSON. |
 
 Inside the container the set is smaller: `vslam` (direct launch), `initialize`, `deinitialize`, `status`, `reset_usb`, `colcon_isaac`, `clean_isaac`, `rosdep_isaac`, `foxglove_bridge` and `help`.
 
@@ -126,15 +125,12 @@ Isaac cuVSLAM produces the visual odometry solution. The three RealSense cameras
 | `initialize` | SetBool true on `/arid_supervisor/vslam_enable`. |
 | `deinitialize` | SetBool false, refused unless landed. |
 | `status` | VSLAM running state plus land state. |
-| `sentry` | Per-camera and VO health JSON. |
 
 The supervisor manages the VSLAM lifecycle behind a camera-proven bringup gate and a landed-state interlock. Bringup runs one `reset_usb` recovery cycle before reporting failure, so `initialize` returns in about 15 s on a healthy stack and takes up to about 3 minutes when a camera needs that cycle. Teardown requires a fresh `landed == True` sample. Each launch writes `run_logs/vslam/vslam.log`. See [`arid_supervisor/README.md`](isaac_ros-dev/src/arid_supervisor/README.md).
 
-A direct launch bypasses the supervisor and is the development path. From inside the container, `vslam` blocks until `/robot_description` is up, then starts the RealSense drivers, the VSLAM node, `vio_transform`, `vslam_reactor` and `vslam_sentry`.
+A direct launch bypasses the supervisor and is the development path. From inside the container, `vslam` blocks until `/robot_description` is up, then starts the RealSense drivers, the VSLAM node, `vio_transform` and `vslam_reactor`.
 
-The reactor gates position jumps and velocity outliers, re-seats VSLAM against the PX4 solution, and withholds VO from EKF2 while cuVSLAM frame cadence is degraded. Only a committed origin seat bumps `/reactor/vio_reset_epoch`, which `vio_transform` forwards as `VehicleOdometry.reset_counter`; a jump re-seat writes the flight controller's own pose into cuVSLAM and sends no reset flag. Gate state is latched on `/reactor/cadence_gated`, the engagement count on `/reactor/cadence_gate_count`, and an overall verdict on `/reactor/vo_healthy`, which latches false on an exhausted re-seat budget or on EV publish silence. The three are operator-facing only; no node subscribes to them. Tunables are in [`px4_vslam_reactor/README.md`](isaac_ros-dev/src/px4_vslam_reactor/README.md).
-
-The sentry watches per-stream `camera_info` rate and VO cadence, classifies which layer failed, and hardware-resets one stalled camera at a time. It never restarts VSLAM and takes no part in fusion. Its log is `run_logs/sentry/sentry.log`, and its states, topics and tunables are in [`vslam_sentry/README.md`](isaac_ros-dev/src/vslam_sentry/README.md).
+The reactor gates position jumps and velocity outliers, re-seats VSLAM against the PX4 solution. Only a committed origin seat bumps `/reactor/vio_reset_epoch`, which `vio_transform` forwards as `VehicleOdometry.reset_counter`; a jump re-seat writes the flight controller's own pose into cuVSLAM and sends no reset flag. An overall verdict is latched on `/reactor/vo_healthy`, which goes false on an exhausted re-seat budget or on EV publish silence. It is operator-facing only; no node subscribes to it. Tunables are in [`px4_vslam_reactor/README.md`](isaac_ros-dev/src/px4_vslam_reactor/README.md).
 
 ### RealSense serials
 
@@ -386,6 +382,5 @@ The two workspaces carry these first-party components.
 | [`reset_ark_usb`](local_ws/src/reset_ark_usb/) | The `/reset_usb` service. |
 | [`camera_calibration`](local_ws/auxiliary/camera_calibration/) | `cam_front` and `cam_down` calibrator and pattern. |
 | [`px4_vslam`](isaac_ros-dev/src/px4_vslam/) | Three-camera VSLAM launch and PX4 bridge. |
-| [`px4_vslam_reactor`](isaac_ros-dev/src/px4_vslam_reactor/) | VSLAM jump and cadence gating, re-seat. |
-| [`vslam_sentry`](isaac_ros-dev/src/vslam_sentry/) | Camera and VO watchdog with autonomous per-camera reset. |
+| [`px4_vslam_reactor`](isaac_ros-dev/src/px4_vslam_reactor/) | VSLAM jump gating and re-seat. |
 | [`arid_supervisor`](isaac_ros-dev/src/arid_supervisor/) | VSLAM lifecycle service. |

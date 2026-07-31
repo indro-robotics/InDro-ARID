@@ -15,8 +15,6 @@
     ang_vel_gate_dps: 200.0          # deg/s, reject odometry above this angular velocity (was 900.0)
     VO_rate_lim: 0.5                 # s, jump-gate pos-delta AND-term time threshold: displacement counts as
                                      #    slow-teleport evidence only when the stamp delta exceeds this. Term is
-                                     #    suppressed while the cadence gate is engaged (gaps >=0.4 s are gated
-                                     #    first, and normal motion across such a gap would read as a jump)
     VO_pos_delta_lim: 0.4            # m, position step treated as a slow teleport by the AND-term above
     sync_cache_sz: 300               # message_filters sync cache depth
 
@@ -37,32 +35,9 @@
     # rogue stamp is still monotonic. Normal-path stamps stay untouched.
     fmu_stamp_max_skew_s: 0.5        # s, max |now - FMU stamp| before re-stamping with node clock
 
-    # Cadence-health gate: withhold VO from EKF2 while cuVSLAM frame cadence is broken
-    # (camera-swap starvation makes smooth-but-stale poses that vo_state and the jump gate cannot
-    # see; fusing them feeds a lag -> failover -> reset cascade). Scope: severity reduction for
-    # degraded-cadence starvation BURSTS (stamp deltas are a lower bound on EKF2's arrival-silence
-    # view; pure arrival stalls and total outages are handled by EKF2's own 400 ms de-latch +
-    # clean re-anchor). Enforced in the fusion-active path for ALL settles (countdown pauses while
-    # gated; no init bypass - the settle-timeout re-inject can fire mid-flight). Jump detection
-    # stays live while gated (a genuine jump still re-seats + bumps the epoch); the withhold itself
-    # never bumps the reset epoch. Stamp gaps > 5 s are treated as stamp anomalies (reseed, never
-    # engage). Telemetry: /reactor/cadence_gate_count (engagements, latched) + /reactor/cadence_gated
-    # (live state, latched).
-    # Two-tier engage: ONE gap >= cadence_gate_hard_s, OR cadence_gate_sustained_samples consecutive
-    # gaps in [cadence_gate_s, cadence_gate_hard_s). A lone lesser gap does not engage.
-    cadence_gate_s: 0.15             # s, floor of the lesser-gap tier (above benign-jitter p95; keep < 0.2 s EV_MAX_INTERVAL)
-    cadence_gate_hard_s: 0.40        # s, single-gap engage - EKF2's own arrival de-latch point; lesser gaps are valid-late poses it absorbs
-    cadence_gate_sustained_samples: 5  # consecutive lesser gaps (gate_s..hard_s) that engage - persistent degraded cadence
-    cadence_release_samples: 5       # nominal-cadence samples to release (~83 ms at 60 Hz); anomalous stamps are skipped, not counted and not streak-breaking
-    # NO timed release: a degraded stream stays withheld until cadence proves nominal. EKF2 coasts
-    # on flow+rng after its native 400 ms EV de-latch; if ALL horizontal aiding dies, PX4's own
-    # ladder ends in failsafe. /reactor/cadence_gated latches True for the whole withhold so
-    # prolonged gating is observable.
     set_pose_busy_timeout_s: 3.0     # s, clear vslam_busy if a SetSlamPose response never arrives (cuVSLAM died
                                      #    mid-call); without this the EV stream is dead for the rest of the flight.
                                      #    3.0 not 5.0: must land CLEAR of CADENCE_ANOMALY_CEILING_S (5 s - at which
-                                     #    the cadence gate stands down as a stamp anomaly)
-
     # Jump-re-seat burst limiter: re-seating at multi-Hz cannot recover cuVSLAM, it only feeds EKF2
     # a reset storm. Past the limit the jump path stops re-seating and /reactor/vo_healthy latches
     # False until the rate decays back under it. Operator-facing telemetry only - nothing on this
