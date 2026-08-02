@@ -40,7 +40,7 @@ A login shell has `local_ws` sourced and the alias set installed. The units belo
 | `usb_ros_reset` | Hosts `/reset_usb`. |
 | `arid_supervisor` | VSLAM lifecycle service, inside the container. |
 
-Stopping `arid_supervisor.service` runs `ExecStopPost` on every stop path, crash included, and is airborne-gated: `airborne_check.sh` decides whether flight is proven, and `reap_stack.sh` reaps the orphaned launch tree when it is not. `deinitialize` requires a fresh landed sample and is refused otherwise. Details: [`arid_supervisor/README.md`](isaac_ros-dev/src/arid_supervisor/README.md).
+Stopping `arid_supervisor.service` runs `ExecStopPost` on every stop path, crash included, and is airborne-gated: `airborne_check.sh` decides whether flight is proven, and `reap_stack.sh` reaps the orphaned launch tree when it is not. `deinitialize` requires a fresh landed sample and is refused otherwise. Details are in [`arid_supervisor/README.md`](isaac_ros-dev/src/arid_supervisor/README.md).
 
 On a drone whose container workspace has never been built, the supervisor cannot start. `setup.sh --full` covers this; otherwise run menu **12**, or build and start it by hand:
 
@@ -96,7 +96,7 @@ Inside the container the set is smaller: `vslam` (direct launch), `initialize`, 
 
 ## CSI video
 
-One IMX477 pipeline defined in [`pipelines.yaml`](local_ws/src/ros_gst_cameras/gst_camera_manager/config/pipelines.yaml) runs at 1080x1080 at 15 fps in GRAY8, centre-cropped from the 1920x1080 sensor mode with no rotation and no scaling, and calibrated by `IMX477_1080sq`. It is an operator video feed and nothing in the container subscribes to it. The CSI overlay must be applied once before the sensor appears, which menu **5** does.
+One IMX477 pipeline defined in [`pipelines.yaml`](local_ws/src/ros_gst_cameras/gst_camera_manager/config/pipelines.yaml) runs at 1080x1080 at 15 fps in GRAY8, centre-cropped from the 1920x1080 sensor mode, unrotated and calibrated by `IMX477_1080sq`. It is an operator video feed and nothing in the container subscribes to it. The CSI overlay must be applied once before the sensor appears, which menu **5** does.
 
 | Pipeline | Sensor | Frame | Topic root |
 |---|---|---|---|
@@ -159,7 +159,7 @@ The supervisor manages the VSLAM lifecycle behind a camera-proven bringup gate a
 
 A direct launch bypasses the supervisor and is the development path. From inside the container, `vslam` blocks until `/robot_description` is up, then starts the RealSense driver, the VSLAM node, `vio_transform` and `vslam_reactor`.
 
-The reactor gates position jumps and velocity outliers, re-seats VSLAM against the PX4 solution. Only a committed origin seat bumps `/reactor/vio_reset_epoch`, which `vio_transform` forwards as `VehicleOdometry.reset_counter`; a jump re-seat writes the flight controller's own pose into cuVSLAM and sends no reset flag. An overall verdict is latched on `/reactor/vo_healthy`, which goes false on an exhausted re-seat budget or on EV publish silence. It is operator-facing only; no node subscribes to it. Tunables are in [`px4_vslam_reactor/README.md`](isaac_ros-dev/src/px4_vslam_reactor/README.md).
+The reactor gates position jumps and velocity outliers, and re-seats VSLAM against the PX4 solution. Only a committed origin seat bumps `/reactor/vio_reset_epoch`, which `vio_transform` forwards as `VehicleOdometry.reset_counter`; a jump re-seat writes the flight controller's own pose into cuVSLAM and sends no reset flag. A single health flag is latched on `/reactor/vo_healthy`, which goes false on an exhausted re-seat budget or on EV publish silence. It is operator-facing only; no node subscribes to it. Tunables are in [`px4_vslam_reactor/README.md`](isaac_ros-dev/src/px4_vslam_reactor/README.md).
 
 ### RealSense serial
 
@@ -180,7 +180,7 @@ ros2 service call /reset_usb std_srvs/srv/Trigger '{}'
 
 > Never reset USB in flight. The RealSense streams drop with the hub and visual odometry stops.
 
-Details: [`reset_ark_usb/README.md`](local_ws/src/reset_ark_usb/README.md).
+Details are in [`reset_ark_usb/README.md`](local_ws/src/reset_ark_usb/README.md).
 
 ---
 
@@ -257,7 +257,7 @@ On link-up a NetworkManager dispatcher ARP-probes the LiDAR for up to 8 s. A res
 
 The LiDAR stores its own address and its unicast target in firmware, so a unit configured elsewhere may not sit at the factory defaults. `config_lidar` (menu **7**) sniffs `enP8p1s0`, extracts the LiDAR MAC and addresses, rewrites the `rslidar` profile and the dispatcher to match, and verifies the result by ARP. Run it after a LiDAR swap or reconfiguration.
 
-The capture is promiscuous and includes this host's own probes, so every candidate is checked against the local NIC MAC and addresses first. If the only match is the host itself, `config_lidar` writes **nothing** and exits non-zero. Persisting a self-referential pair is worse than persisting nothing: the generated dispatcher would ARP the Jetson's own address hunting for the LiDAR, never get a reply, and drop the static profile to DHCP on every link-up, leaving the LiDAR permanently unreachable.
+The capture is promiscuous and includes this host's own probes, so every candidate is checked against the local NIC MAC and addresses first. If the only match is the host itself, `config_lidar` writes nothing and exits non-zero.
 
 ```bash
 config_lidar
@@ -273,7 +273,7 @@ If the LiDAR is unreachable the static fallback (`192.168.1.102/24` to `192.168.
 cam_calibrate
 ```
 
-The calibrator runs against the live pipeline and waits for a NoMachine session before starting. The default board is the included 10x7-square, 50 mm PDF. It writes `config/calibrations/cam_down.yaml` plus a timestamped copy; set `calibration: "cam_down"` in `pipelines.yaml` and restart the pipeline to load the new intrinsics. Details: [`camera_calibration/README.md`](local_ws/auxiliary/camera_calibration/README.md).
+The calibrator runs against the live pipeline and waits for a NoMachine session before starting. The default board is the included 10x7-square, 50 mm PDF. It writes `config/calibrations/cam_down.yaml` plus a timestamped copy; set `calibration: "cam_down"` in `pipelines.yaml` and restart the pipeline to load the new intrinsics. Details are in [`camera_calibration/README.md`](local_ws/auxiliary/camera_calibration/README.md).
 
 ### Camera focus
 
@@ -298,6 +298,7 @@ The first steps run once per invocation. Phase A (install and host configuration
 | Step | Does |
 |---|---|
 | **preflight** | Not root; git present; submodules initialized and non-empty. |
+| **time_wait_sync guard** | Masks `systemd-time-wait-sync.service` before any apt work. |
 | **collect_answers** | Questionnaire, persisted for the resume. |
 | **first_boot** | One-time hostname and password. |
 | **power** | nvpmodel maximum; apt-holds critical L4T packages. |
@@ -305,8 +306,7 @@ The first steps run once per invocation. Phase A (install and host configuration
 | **enable_user_linger** | Creates `/run/user/<uid>` at boot for headless NoMachine. |
 | **clean_nvidia_desktop** | Removes NVIDIA first-boot icons and the L4T-README automount. |
 | **ensure_wifi** | Joins the network from the questionnaire. |
-| **nomachine** | Installs the arm64 `.deb` vendored at [`local_ws/auxiliary/nomachine/`](local_ws/auxiliary/nomachine/) (newest wins). Not downloaded: NoMachine's ARM page now serves only `nomachine-personal-edition`, which installs and then refuses connections with an expired-subscription error, so the step rejects any `*personal-edition*` package. |
-| **time_wait_sync guard** | Masks `systemd-time-wait-sync.service` before any apt work. The unit checks the clock once at boot and otherwise waits forever on a `systemd-timesyncd` file that chrony never writes, wedging the systemd job queue and hanging apt silently. Ubuntu ships it disabled; ARK-OS used to enable it. |
+| **nomachine** | Installs the newest arm64 `.deb` vendored at [`local_ws/auxiliary/nomachine/`](local_ws/auxiliary/nomachine/). A `*personal-edition*` package is rejected. |
 | **ark_os** | Clones ARK-OS, then runs its `install.sh` and `install_ros2.sh` unattended from a generated `user.env`. Installs JetPack when absent, reinstalls it on request. A failed install prompts retry, skip or exit. |
 | *Phase A, checkpointed* | |
 | **repos** | ROS, NVIDIA and Docker apt repos; CDI configuration. |
@@ -326,6 +326,7 @@ The first steps run once per invocation. Phase A (install and host configuration
 | **docker** | Engine, NVIDIA runtime, docker group, buildx. |
 | **systemd** | Installs every unit the repo ships and enables all but `reset_usb.service`. |
 | **realsense** | Reseeds `vslam_config.yaml`, then assigns the detected serial. |
+| **csi_pin_config** | Applies the jetson-io CSI overlay for the IMX477. |
 | *Phase B* | |
 | **build_isaac** | Container image build, queued across the reboot. |
 | **colcon_isaac** | Builds the container workspace and restarts `arid_supervisor.service`. |

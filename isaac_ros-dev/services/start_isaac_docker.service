@@ -3,6 +3,11 @@ Description=Starts an ISAAC docker container
 # Order after docker only; After=multi-user.target cycles with WantedBy and drops arid_supervisor's boot job.
 After=docker.service
 Requires=docker.service
+# jtop.service owns /run/jtop.sock, which the container bind-mounts. Start the container first
+# and Docker creates the bind source as a directory, breaking every later start. Wants=, not
+# Requires=, so a machine without jetson_stats still boots.
+Wants=jtop.service
+After=jtop.service
 # Pull in the supervisor whenever this service starts (boot + manual start/restart).
 Wants=arid_supervisor.service
 
@@ -14,6 +19,10 @@ RemainAfterExit=yes
 # Regenerate the CDI spec as root: /dev/nvidia* can change across reboots/driver updates and a
 # stale cached spec breaks container start.
 ExecStartPre=+/usr/bin/nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
+# Root jtop.sock repair. ExecStart is User=jetson and cannot rm in /run or start jtop, so the
+# copy inside start_isaac_docker.sh can only degrade to recreating the container. After= alone
+# is not enough: a stale directory must be removed before jtop can bind there.
+ExecStartPre=+/bin/bash -c 'if [ -e /run/jtop.sock ] && [ ! -S /run/jtop.sock ]; then rm -rf /run/jtop.sock; fi; if [ ! -S /run/jtop.sock ]; then systemctl start --no-block jtop.service >/dev/null 2>&1 || true; for i in $(seq 1 15); do [ -S /run/jtop.sock ] && break; sleep 1; done; fi; exit 0'
 # Bounded wait for the docker daemon; unbounded would remain in "activating" until TimeoutStartSec.
 ExecStartPre=/bin/bash -c 'for i in $(seq 1 60); do docker info >/dev/null 2>&1 && exit 0; sleep 1; done; echo "docker daemon did not come up within 60 s" >&2; exit 1'
 ExecStart=/bin/bash -c "/home/jetson/workspaces/isaac_ros-dev/container_scripts/start_isaac_docker.sh"

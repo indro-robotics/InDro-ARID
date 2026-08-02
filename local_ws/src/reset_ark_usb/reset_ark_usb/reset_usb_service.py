@@ -27,6 +27,11 @@ class ResetUsbService(Node):
         except subprocess.CalledProcessError as e:
             response.success = False
             response.message = f"Failed: {e.stderr}"
+        except OSError as e:
+            # A missing sudo or script raises OSError, which would otherwise leave the
+            # service callback and terminate the node instead of failing the one call.
+            response.success = False
+            response.message = f"Failed to run the reset script: {e}"
         return response
 
 def main():

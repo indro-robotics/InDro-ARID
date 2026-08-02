@@ -1,50 +1,33 @@
 # camera_calibration
 
-This directory holds the `cam_down` calibration launcher, which wraps the ROS 2
-`camera_calibration` GUI in an isolated virtualenv. The GUI renders on the NoMachine remote
-desktop, so connect a session before starting.
+This directory holds the CSI camera calibration launcher, which wraps the ROS 2 `camera_calibration` GUI. The GUI renders over a NoMachine remote display, so connect a session first.
 
-## Running
+## `camera_calibration_auto/camera_calibrate.sh`
 
-`camera_calibration_auto/camera_calibrate.sh` takes no arguments and is also reachable as the
-`cam_calibrate` alias and as setup menu option **9**.
+The script calibrates `cam_down` and is wired into `setup.sh` as menu option 9. It takes no argument, and the script is also reachable as the `cam_calibrate` alias.
 
 ```bash
 ./camera_calibration_auto/camera_calibrate.sh
 ```
 
-The script starts `cam_down` through the `gst_camera_manager` service, starting the systemd unit
-first if it is not running, waits for frames, runs the calibrator, and stops the camera on exit. If
-no NoMachine viewer appears within `NM_WAIT_S` seconds it exits cleanly without calibrating.
+It starts the pipeline through the `gst_camera_manager` service, starting the systemd unit if needed, waits for frames, runs the calibrator, and stops the camera on exit. It waits up to `NM_WAIT_S` seconds, 180 by default, for a NoMachine viewer, then skips cleanly. The result is saved to the store, `camera_calibrations/cam_down/`, as a timestamped record plus the current `cam_down.yaml`, and applied to the live pipeline file at `ros_gst_cameras/gst_camera_manager/config/calibrations/cam_down.yaml`, taking effect on the next pipeline restart.
 
-A successful run saves a timestamped record and the current `cam_down.yaml` under
-`camera_calibrations/cam_down/`, and copies the result into
-`ros_gst_cameras/gst_camera_manager/config/calibrations/cam_down.yaml`. It takes effect on the
-next pipeline restart.
+The script prompts for a board, taking columns and rows in squares plus square size in millimetres. Enter or `n` uses the included 10x7-square, 50 mm board at `../calibration_pattern/calib_pattern.pdf`.
 
-## Board
-
-The script prompts for a custom board (columns and rows in squares, plus square size in
-millimetres). Pressing Enter or answering `n` uses the included 10x7-square, 50 mm board at
-`calibration_pattern/calib_pattern.pdf`.
-
-Setting the environment variables skips the prompt:
+Environment overrides skip the prompt:
 
 ```bash
-SIZE=9x6 SQUARE=0.050 NM_WAIT_S=180 ./camera_calibration_auto/camera_calibrate.sh
+SIZE=9x6 SQUARE=0.050 ROS_DOMAIN_ID=23 NM_WAIT_S=180 \
+    ./camera_calibration_auto/camera_calibrate.sh
 ```
 
-`SIZE` is interior corners (one less than squares in each dimension), `SQUARE` is the side length
-in metres, and `NM_WAIT_S` is the NoMachine wait in seconds, defaulting to 180.
-
-## Applying the result
-
-`pipelines.yaml` ships with an empty `calibration` field for `cam_down`. After the first
-successful run, set `calibration: "cam_down"` on that entry so the pipeline loads the new
-intrinsics.
+`pipelines.yaml` ships `cam_down` with `calibration: "IMX477_1080sq"`. After the first successful run, set `calibration: "cam_down"` so the pipeline loads the new intrinsics.
 
 ## Files
 
-- `camera_calibration_auto/camera_calibrate.sh`: the calibrator.
-- `calibration_pattern/calib_pattern.pdf`: the included checkerboard.
-- `camera_calibrations/`: the per-camera store, created on the first run.
+The directory holds the calibrator, the pattern and two generated trees.
+
+- `camera_calibration_auto/camera_calibrate.sh`: the `cam_down` calibrator.
+- `calibration_pattern/calib_pattern.pdf`: the included 10x7-square, 50 mm checkerboard.
+- `camera_calibrations/`: the per-camera store; the current `<name>.yaml` is tracked and timestamped records are gitignored.
+- `camera_calibration_auto/calib_env/`: an auto-created venv, gitignored.

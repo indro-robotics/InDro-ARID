@@ -24,6 +24,8 @@ subscribers using TRANSIENT_LOCAL QoS.
 
 ## Service interface
 
+The coordinator hosts three services.
+
 | Service | Type | What it does |
 |---|---|---|
 | `/rslidar_coordinator/enable` | `std_srvs/SetBool` | `true` spawns `rslidar_sdk_node`; `false` terminates the process group and returns once it has exited. |
@@ -53,19 +55,21 @@ flips false in two cases:
 It returns to true when frames resume. The timer is seeded at subprocess spawn, so the first
 `alive_threshold` seconds after an enable act as a startup grace window.
 
-There is no auto-restart. On subprocess death the coordinator logs and flips `/alive` false;
-recovery is explicit through `rslidar_start` or `rslidar_restart`.
+There is no auto-restart. When the subprocess exits the coordinator logs it and flips `/alive`
+false; recovery is explicit through `rslidar_start` or `rslidar_restart`.
 
 ---
 
 ## Parameters
+
+The node declares two parameters.
 
 | Parameter | Default | Meaning |
 |---|---|---|
 | `alive_threshold` | `5.0` s | Cloud-topic silence before `/alive` flips false. |
 | `terminate_grace` | `3.0` s | SIGTERM-to-SIGKILL grace on stop. |
 
-Override at launch:
+Override a parameter at launch.
 
 ```bash
 ros2 run rslidar_coordinator rslidar_coordinator_node --ros-args -p alive_threshold:=2.0
@@ -106,6 +110,8 @@ through the TF tree if they need another frame.
 ---
 
 ## Operational reference
+
+These commands cover routine operation of the LiDAR.
 
 | Command | Action |
 |---|---|

@@ -217,9 +217,9 @@ class vslam_reactor(Node):
         # px4_vslam/launch/vslam.launch.py). Angular gates are entered in degrees and converted.
         defaults = [
             ('vslam_stabilization_time', 1.0),   # in-node default matches yaml: it is the bypass-window floor, must not halve if the yaml fails to load
-            ('lin_vel_gate', 15.0),
-            ('ang_vel_gate_dps', 900.0),
-            ('VO_rate_lim', 0.20),
+            ('lin_vel_gate', 5.0),
+            ('ang_vel_gate_dps', 200.0),
+            ('VO_rate_lim', 0.5),
             ('VO_pos_delta_lim', 0.4),
             ('sync_cache_sz', 300),
             ('align_yaw_deg', 2.0),
@@ -227,7 +227,7 @@ class vslam_reactor(Node):
             ('set_pose_max_odom_age', 0.030),
             ('set_origin_settle_time', 10.0),
             ('fmu_stamp_max_skew_s', 0.5),
-            ('set_pose_busy_timeout_s', 5.0),
+            ('set_pose_busy_timeout_s', 3.0),
             ('reseat_burst_max', 5),
             ('reseat_burst_window_s', 10.0),
             ('ev_silence_max_s', 2.0),

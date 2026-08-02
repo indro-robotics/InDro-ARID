@@ -1,164 +1,127 @@
 # px4_vslam_reactor
 
-The reactor coordinates the external visual-SLAM source with PX4. It watches the incoming SLAM
-solution, rejects bad samples (tracking jumps, teleports, mis-syncs), and re-anchors SLAM onto the
-PX4 solution when the two diverge.
+The reactor is the gate between visual SLAM and PX4. It watches the incoming SLAM solution, rejects samples carrying tracking jumps or teleports, and re-anchors SLAM onto the PX4 solution when the two diverge.
 
-All sensor fusion stays in PX4. The reactor does not fuse IMU data, run a filter, or cross-check
-against inertial state. It provides a jump-free visual-odometry stream and signals EKF2 when that
-stream has moved discontinuously.
+All sensor fusion stays in PX4. The reactor does not fuse IMU data, run a filter, or cross-check against inertial state. It provides a jump-free visual-odometry stream and signals EKF2 when that stream has moved discontinuously.
 
-The package contributes one node, `vslam_reactor_node`, launched by
-[`px4_vslam`](../px4_vslam/).
+The package contributes one node, `vslam_reactor_node`, brought up by the [`px4_vslam`](../px4_vslam/) stack launch.
 
 ---
 
 ## Function
 
-1. It filters the SLAM odometry stream. Velocity and position-delta gates reject teleports and
-   tracking glitches, and the clean stream is republished on `/visual_slam/filt_slam_odometry`.
-2. It detects reset misalignment. After a `SetSlamPose` call it keeps injecting the stream until
-   the VSLAM pose agrees with the PX4 estimator within tolerance; if the settle window elapses
-   without alignment, the origin is re-injected and the window restarts.
-3. It hosts a force-reset service that commands a re-injection of the zero origin at any time.
+The reactor filters the SLAM stream, keeps SLAM anchored to the PX4 solution, and exposes a manual origin reset.
 
-Thresholds are configurable through
-[`config/px4_vslam_reactor.yaml`](config/px4_vslam_reactor.yaml).
+- **Filter.** Velocity and position-delta gates reject teleports and tracking glitches; accepted frames go out on `/visual_slam/filt_slam_odometry`.
+- **Re-anchor.** A rejected frame or a manual trigger calls `SetSlamPose` on the SLAM backend, and the reactor keeps injecting the stream until the PX4 estimator agrees with the new pose.
+- **Signal.** A committed origin seat bumps `/reactor/vio_reset_epoch`, which reaches EKF2 as `VehicleOdometry.reset_counter`.
 
 ## Gates
 
-Every VSLAM frame passes through the gate chain. A frame reaches PX4 only when VSLAM reports
-tracking and the reactor is not mid-reseat.
+Every SLAM frame runs through the gate chain. A frame reaches PX4 only when SLAM reports tracking and no re-seat is in flight.
 
-- **Velocity and jump gate.** A frame exceeding `lin_vel_gate`, `ang_vel_gate_dps`, or the
-  `VO_pos_delta_lim` and `VO_rate_lim` slow-jump pair is rejected, and the rejection triggers an
-  in-flight re-seat. Immediately after a committed re-seat the gate is bypassed until the
-  comparison baseline has rebased onto post-re-seat frames, which stops a re-seat loop from
-  sustaining itself.
-- **Displacement and settle gate.** After an origin injection the reactor keeps injecting until
-  the VSLAM and FMU poses agree within `align_yaw_deg` and `align_pos_m`, re-injecting if
-  `set_origin_settle_time` elapses first.
+**Velocity and jump gate.** A frame is rejected when its linear velocity exceeds `lin_vel_gate`, its angular velocity exceeds `ang_vel_gate_dps`, or its position step exceeds `VO_pos_delta_lim` while the stamp interval exceeds `VO_rate_lim`. Rejection withholds the frame from PX4 and triggers an in-flight re-seat onto the FMU pose.
 
+**Post-re-seat bypass.** A committed re-seat opens a window in which the jump gate is bypassed and the comparison baseline is rebased onto every arriving frame, so the pose step the re-seat creates is not judged as a SLAM jump. The window closes once `vslam_stabilization_time` has elapsed and at least two frames stamped after the commit have rebased the baseline, and it is capped at 3 s. Frames stamped before the commit rebase the baseline but are withheld from PX4, since they may still carry the pre-re-seat pose under the already-bumped reset counter.
 
-A `SetSlamPose` call that never returns would suppress EV publishing indefinitely; the
-`set_pose_busy_timeout_s` watchdog clears the hung call.
+**Displacement and settle gate.** After an origin injection the reactor keeps injecting the stream until the SLAM and FMU poses agree within `align_yaw_deg` and `align_pos_m`, and re-injects the origin if `set_origin_settle_time` elapses first. A settle that follows a jump re-seat is abandoned instead of re-injected: it reports an error and keeps streaming, because an origin injection zeroes yaw and would discard the heading datum in flight.
+
+**Re-seat burst limit.** Jump re-seats are budgeted at `reseat_burst_max` committed re-seats per rolling `reseat_burst_window_s`. Once the budget is spent, further jump re-seats are blocked until the rate decays back under it, because re-seating at that rate cannot recover SLAM and only feeds EKF2 repeated resets. Blocking a re-seat never bumps the reset epoch. Origin re-injections are bounded by the settle timeout and are not counted against the budget.
+
+A `SetSlamPose` call that never returns would suppress EV publishing indefinitely; the `set_pose_busy_timeout_s` watchdog clears the stalled call.
 
 ## VO health
 
-Two conditions latch `/reactor/vo_healthy` false, since neither is recoverable by re-seating.
+`/reactor/vo_healthy` latches false on either of two conditions and returns to true when both clear.
 
-- **Re-seat burst.** More than `reseat_burst_max` committed jump re-seats inside
-  `reseat_burst_window_s` blocks further jump re-seats until the rate decays back under the
-  budget. Origin re-injections are not counted.
-- **EV publish silence.** No EV output for `ev_silence_max_s` while cuVSLAM frames are still
-  arriving and EKF2 is fusing EV.
+- Exhausted re-seat budget.
+- EV publish silence: no output for longer than `ev_silence_max_s` while SLAM frames are still arriving and EKF2 is fusing EV.
 
-The topic is latched and carries no consumer on this drone; the reactor never commands a flight
-action off it.
+Nothing consumes the topic on this drone, and the reactor never commands a flight action off it.
 
 ## Epochs and reset_counter
 
-Only a committed ORIGIN seat bumps the epoch on `/reactor/vio_reset_epoch`. A jump re-seat writes
-the FMU's own pose into cuVSLAM, so post-seat EV already agrees with EKF2 and no reset flag is
-sent; any residual step is ordinary innovation. `vio_transform` forwards it
-into `VehicleOdometry.reset_counter`, telling EKF2 to reset its EV-aided states onto the new pose
-instead of gating the discontinuity. The epoch bumps on the `SetSlamPose` success path only, and a
+Only a committed origin seat bumps the epoch on `/reactor/vio_reset_epoch`. `vio_transform` forwards it into `VehicleOdometry.reset_counter`, which tells EKF2 to reset its EV-aided states onto the new origin. A jump re-seat writes the FMU's own pose into SLAM, so post-seat EV already agrees with EKF2 and no reset flag is sent; any residual step is ordinary innovation.
 
 ## Origin injection
 
-The pre-takeoff datum is zero position and zero yaw, retaining the FMU roll and pitch so the frame
-stays gravity-aligned. In-flight re-seats keep the FMU's full orientation so the re-anchor stays
-near zero.
+The pre-takeoff datum is zero position and zero yaw, keeping the FMU roll and pitch so the map frame stays gravity-aligned. In-flight re-seats keep the FMU's full orientation, which holds the re-anchor near zero.
 
 ## FMU stamp clamp
 
-When the FMU timestamp skews from now by more than `fmu_stamp_max_skew_s`, the `map` to `px4` TF
-and `/reactor/drone_odom` and `/reactor/drone_pose` are re-stamped with node time. uXRCE timesync
-excursions can otherwise pass boot-relative or future stamps through and corrupt tf2 buffers.
-Excursions are counted and warned at a throttle.
+When the FMU timestamp skews from now by more than `fmu_stamp_max_skew_s`, the `map` to `px4` TF, `/reactor/drone_odom` and `/reactor/drone_pose` are re-stamped with node time. uXRCE timesync excursions can otherwise pass boot-relative or future stamps through and corrupt tf2 buffers. Excursions are counted and reported at a throttle.
 
 ---
 
 ## Inputs
 
+The reactor takes odometry and tracking state from SLAM, and pose and fusion state from PX4.
+
 | Topic | Type | From | Used for |
 |---|---|---|---|
 | `/visual_slam/vis/slam_odometry` | `nav_msgs/Odometry` | Isaac VSLAM | Raw odometry stream. |
-| `/visual_slam/status` | `isaac_ros_visual_slam_interfaces/VisualSlamStatus` | Isaac VSLAM | Tracking quality and state. |
-| `/fmu/out/vehicle_odometry` | `px4_msgs/VehicleOdometry` | PX4 | Pose for reset-alignment comparison. |
+| `/visual_slam/status` | `isaac_ros_visual_slam_interfaces/VisualSlamStatus` | Isaac VSLAM | Tracking state. |
+| `/fmu/out/vehicle_odometry` | `px4_msgs/VehicleOdometry` | PX4 | Pose for re-seat seeding and alignment comparison. |
 | `/fmu/out/estimator_status_flags` | `px4_msgs/EstimatorStatusFlags` | PX4 | EV-fusion detection. |
 
 ## Outputs
+
+The reactor publishes the filtered stream, the PX4 pose in ROS conventions, and its epoch and health telemetry.
 
 | Topic | Type | Purpose |
 |---|---|---|
 | `/visual_slam/filt_slam_odometry` | `nav_msgs/Odometry` | Jump-filtered odometry; downstream consumers should prefer this. |
 | `/reactor/drone_odom` | `nav_msgs/Odometry` | PX4 odom in ROS conventions (FRD to FLU). |
-| `/reactor/drone_pose` | `geometry_msgs/PoseStamped` | Same, pose only, for RViz or Foxglove. |
+| `/reactor/drone_pose` | `geometry_msgs/PoseStamped` | Same, pose only, for visualization. |
 | `/reactor/vio_reset_epoch` | `std_msgs/UInt8` (latched) | Origin-seat epoch. |
-| `/reactor/vo_healthy` | `std_msgs/Bool` (latched) | False on a re-seat burst or EV publish silence. |
+| `/reactor/vo_healthy` | `std_msgs/Bool` (latched) | False on an exhausted re-seat budget or EV publish silence. |
 
 ## Services
 
+The reactor hosts one service and calls one.
+
 | Interface | Direction | Type | Purpose |
 |---|---|---|---|
-| `visual_slam/set_reactor_pose` | hosts | `std_srvs/Trigger` | Force a zero-origin re-injection. |
-| `visual_slam/set_slam_pose` | calls | `isaac_ros_visual_slam_interfaces/SetSlamPose` | Reset call to the VSLAM backend. |
+| `visual_slam/set_reactor_pose` | hosts | `std_srvs/Trigger` | Force a zero-origin re-injection. Returns false while SLAM is not tracking or a re-seat is in flight. |
+| `visual_slam/set_slam_pose` | calls | `isaac_ros_visual_slam_interfaces/SetSlamPose` | Re-seat call to the SLAM backend. |
 
 ## TF
 
-The node broadcasts the drone pose as `map` to `px4`, and consumes the TF tree for body-frame
-conversions.
+The reactor broadcasts the FMU pose as `map` to `px4`.
 
 ---
 
-## Config
+## Parameters
 
-[`config/px4_vslam_reactor.yaml`](config/px4_vslam_reactor.yaml) is loaded by
-[`px4_vslam/launch/vslam.launch.py`](../px4_vslam/launch/vslam.launch.py). Every key is also
-declared in the node, so the node runs if the file is absent.
+Values come from [`config/px4_vslam_reactor.yaml`](config/px4_vslam_reactor.yaml), loaded by [`px4_vslam/launch/vslam.launch.py`](../px4_vslam/launch/vslam.launch.py). The node declares a default for every key, so it runs if the file is absent or omits a key. Angular gates are entered in degrees and converted in the node.
 
 | Parameter | Units | Controls |
 |---|---|---|
-| `vslam_stabilization_time` | s | Wait window after a reset before accepting new odometry. |
+| `vslam_stabilization_time` | s | Floor of the post-re-seat jump-gate bypass window. |
 | `lin_vel_gate` | m/s | Linear-velocity ceiling for jump detection. |
 | `ang_vel_gate_dps` | deg/s | Angular-velocity ceiling for jump detection. |
-| `VO_rate_lim` + `VO_pos_delta_lim` | s, m | Slow-jump detection; both must hold to reject. |
-| `sync_cache_sz` | count | Cache depth for PX4-to-VSLAM time alignment. |
+| `VO_rate_lim` + `VO_pos_delta_lim` | s, m | Slow-jump detection; the stamp interval and the position step must both exceed these. |
+| `sync_cache_sz` | count | Cache depth for PX4-to-SLAM time alignment. |
 | `align_yaw_deg` | deg | Settle-exit yaw tolerance. |
 | `align_pos_m` | m | Settle-exit 3D position tolerance. |
 | `set_origin_settle_time` | s | Injection window before the origin is re-injected. |
 | `set_pose_max_odom_age` | s | Max age of the PX4 odom sample seeding a re-seat. |
 | `fmu_stamp_max_skew_s` | s | Max \|now - FMU stamp\| before re-stamping outputs. |
-| `set_pose_busy_timeout_s` | s | Clear a hung re-seat if `SetSlamPose` never returns. |
-| `reseat_burst_max` | count | Committed jump re-seats allowed inside the burst window. |
-| `reseat_burst_window_s` | s | Rolling window for the burst count. |
-| `ev_silence_max_s` | s | EV output silence, with frames arriving, that latches `vo_healthy` false. |
+| `set_pose_busy_timeout_s` | s | Clears a stalled `SetSlamPose` call. |
+| `reseat_burst_max` | count | Committed jump re-seats allowed in the window. |
+| `reseat_burst_window_s` | s | Rolling window for the re-seat budget. |
+| `ev_silence_max_s` | s | EV output silence, with frames arriving, before `/reactor/vo_healthy` latches false. |
 
-To change a value, edit the YAML and restart the launch. The package is built with
-`--symlink-install`, so no rebuild is needed.
+Edit the YAML and restart the stack. The workspace is symlink-installed, so a YAML change needs no rebuild.
 
 ---
 
 ## Running
 
-The node normally comes up with the VSLAM stack:
-
-```bash
-ros2 launch px4_vslam vslam.launch.py
-```
-
-Standalone, against an already running VSLAM graph:
+The reactor comes up with the SLAM stack launch. Run it standalone against an already running SLAM graph.
 
 ```bash
 ros2 run px4_vslam_reactor vslam_reactor_node
 ```
 
----
-
-## Dependencies
-
-ROS packages are declared in [`package.xml`](package.xml): `isaac_ros_visual_slam` and
-`isaac_ros_visual_slam_interfaces`, `px4_vslam`, `px4_msgs`, `std_msgs`, `std_srvs`, `nav_msgs`,
-`geometry_msgs`, `sensor_msgs`, `tf2_ros` and `message_filters`. Python dependencies are
-`python3-numpy` and `python3-scipy`.
+> Started without the SLAM backend, the node blocks in construction and logs `waiting for visual_slam/set_slam_pose service...` every 2 s until the service is advertised.

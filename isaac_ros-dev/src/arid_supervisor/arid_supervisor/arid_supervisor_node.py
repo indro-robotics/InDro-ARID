@@ -809,8 +809,9 @@ class AridSupervisor(Node):
     def _reset_usb(self):
         # ros2 CLI subprocess, NOT an rclpy client: a sync client call inside this service
         # callback deadlocks the single-threaded executor.
-        # SAFETY: /reset_usb power-cycles the ARK PAB USB hub the RealSense is on and pulses
-        # the FMU reset line (GPIO85); pre-mission bringup only, drone disarmed on the ground.
+        # SAFETY: /reset_usb power-cycles the ARK PAB USB hub the RealSense is on and the
+        # standalone USB3 port (GPIO85), rebooting the FMU; pre-mission bringup only, drone
+        # disarmed on the ground.
         try:
             out = subprocess.run(
                 ['ros2', 'service', 'call', '/reset_usb', 'std_srvs/srv/Trigger', '{}'],
