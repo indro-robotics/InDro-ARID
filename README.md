@@ -37,7 +37,7 @@ A login shell has `local_ws` sourced and the alias set installed. The units belo
 | `usb_ros_reset` | Hosts `/reset_usb`. |
 | `arid_supervisor` | VSLAM lifecycle service, inside the container. |
 
-Stopping `arid_supervisor.service` runs `ExecStopPost` on every stop path, crash included, and is airborne-gated: `airborne_check.sh` decides whether flight is proven, and `reap_stack.sh` reaps the orphaned launch tree when it is not. `deinitialize` requires a fresh landed sample and is refused otherwise. Details: [`arid_supervisor/README.md`](isaac_ros-dev/src/arid_supervisor/README.md).
+Stopping `arid_supervisor.service` runs `ExecStopPost` on every stop path, crash included, and is airborne-gated: `airborne_check.sh` decides whether flight is proven, and `reap_stack.sh` reaps the orphaned launch tree when it is not. `deinitialize` requires a fresh landed sample and is refused otherwise. Details are in [`arid_supervisor/README.md`](isaac_ros-dev/src/arid_supervisor/README.md).
 
 On a drone whose container workspace has never been built, the supervisor cannot start. `setup.sh --full` covers this; otherwise run menu **9**, or build and start it by hand:
 
@@ -130,7 +130,7 @@ The supervisor manages the VSLAM lifecycle behind a camera-proven bringup gate a
 
 A direct launch bypasses the supervisor and is the development path. From inside the container, `vslam` blocks until `/robot_description` is up, then starts the RealSense drivers, the VSLAM node, `vio_transform` and `vslam_reactor`.
 
-The reactor gates position jumps and velocity outliers, re-seats VSLAM against the PX4 solution. Only a committed origin seat bumps `/reactor/vio_reset_epoch`, which `vio_transform` forwards as `VehicleOdometry.reset_counter`; a jump re-seat writes the flight controller's own pose into cuVSLAM and sends no reset flag. An overall verdict is latched on `/reactor/vo_healthy`, which goes false on an exhausted re-seat budget or on EV publish silence. It is operator-facing only; no node subscribes to it. Tunables are in [`px4_vslam_reactor/README.md`](isaac_ros-dev/src/px4_vslam_reactor/README.md).
+The reactor gates position jumps and velocity outliers, and re-seats VSLAM against the PX4 solution. Only a committed origin seat bumps `/reactor/vio_reset_epoch`, which `vio_transform` forwards as `VehicleOdometry.reset_counter`; a jump re-seat writes the flight controller's own pose into cuVSLAM and sends no reset flag. A single health flag is latched on `/reactor/vo_healthy`, which goes false on an exhausted re-seat budget or on EV publish silence. It is operator-facing only; no node subscribes to it. Tunables are in [`px4_vslam_reactor/README.md`](isaac_ros-dev/src/px4_vslam_reactor/README.md).
 
 ### RealSense serials
 
@@ -151,7 +151,7 @@ ros2 service call /reset_usb std_srvs/srv/Trigger '{}'
 
 > Never reset USB in flight. The RealSense streams drop with the hub and visual odometry stops.
 
-Details: [`reset_ark_usb/README.md`](local_ws/src/reset_ark_usb/README.md).
+Details are in [`reset_ark_usb/README.md`](local_ws/src/reset_ark_usb/README.md).
 
 ---
 
@@ -217,7 +217,7 @@ Option **9** requires the container to be running.
 cam_calibrate front
 ```
 
-The calibrator runs against the live pipeline and waits for a NoMachine session before starting. The default board is the included 10x7-square, 50 mm PDF. It writes `config/calibrations/<cam>.yaml` plus a timestamped copy; set `calibration: "cam_front"` or `"cam_down"` in `pipelines.yaml` and restart that pipeline to load the new intrinsics. Details: [`camera_calibration/README.md`](local_ws/auxiliary/camera_calibration/README.md).
+The calibrator runs against the live pipeline and waits for a NoMachine session before starting. The default board is the included 10x7-square, 50 mm PDF. It writes `config/calibrations/<cam>.yaml` plus a timestamped copy; set `calibration: "cam_front"` or `"cam_down"` in `pipelines.yaml` and restart that pipeline to load the new intrinsics. Details are in [`camera_calibration/README.md`](local_ws/auxiliary/camera_calibration/README.md).
 
 ### Camera focus
 
@@ -227,7 +227,7 @@ Menu **7** starts the selected CSI pipelines and the Foxglove bridge, then confi
 
 ## Full setup
 
-`./setup.sh --full` walks the questionnaire once, then provisions everything unattended. Reboots are automatic and happen at most twice: once after the install steps if ARK-OS, ROS 2 or JetPack was installed, and once before the smoke test if anything was built and that reboot was not declined. After each one, open a bash terminal and answer the prompt to resume. `--resume` is the same continuation invoked manually, and `--continue` re-enters the tail with finished steps skipped.
+`./setup.sh --full` walks the questionnaire once, then provisions everything unattended. Every prompt defaults to skip, so holding Enter through them never starts a build or reboots the machine. Reboots are automatic and happen at most twice: once after the install steps if ARK-OS, ROS 2 or JetPack was installed, and once before the smoke test if anything was built and that reboot was not declined. After each one, open a bash terminal and answer the prompt to resume. `--resume` is the same continuation invoked manually, and `--continue` re-enters the tail with finished steps skipped.
 
 ```bash
 ./setup.sh --full
@@ -246,7 +246,7 @@ The first steps run once per invocation. Phase A (install and host configuration
 | **power** | nvpmodel maximum; apt-holds critical L4T packages. |
 | **first_boot** | One-time hostname and password. |
 | **ensure_wifi** | Joins the network from the questionnaire. |
-| **nomachine** | Installs or upgrades the arm64 package. |
+| **nomachine** | Installs the newest arm64 `.deb` vendored at [`local_ws/auxiliary/nomachine/`](local_ws/auxiliary/nomachine/). A `*personal-edition*` package is rejected. |
 | **enable_user_linger** | Creates `/run/user/<uid>` at boot for headless NoMachine. |
 | **clean_nvidia_desktop** | Removes NVIDIA first-boot icons and the L4T-README automount. |
 | **disable_updates** | Turns off unattended-upgrades and the apt timers. |

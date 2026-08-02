@@ -1,0 +1,96 @@
+<?xml version="1.0"?>
+<robot name="arid_drone_v1-0" xmlns:xacro="http://ros.org/wiki/xacro">
+
+  <xacro:property name="mesh_scale"     value="0.0001"/>
+  <xacro:property name="propeller_span" value="0.0975"/>
+  <xacro:property name="realsense_z"    value="0.092042"/>
+
+  <xacro:macro name="propeller" params="name x y">
+    <link name="${name}_propeller_link"/>
+    <joint name="base_link_to_${name}_propeller_link" type="fixed">
+      <parent link="base_link"/>
+      <child  link="${name}_propeller_link"/>
+      <origin xyz="${x} ${y} 0" rpy="0 0 0"/>
+    </joint>
+  </xacro:macro>
+
+  <xacro:macro name="realsense" params="name x y yaw">
+    <link name="${name}_realsense_link"/>
+    <joint name="base_link_to_${name}_realsense_joint" type="fixed">
+      <parent link="base_link"/>
+      <child  link="${name}_realsense_link"/>
+      <origin xyz="${x} ${y} ${realsense_z}" rpy="0 0 ${yaw}"/>
+    </joint>
+  </xacro:macro>
+
+  <link name="base_footprint"/>
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 0.023842" rpy="${-pi/2} 0 ${pi/2}"/>
+      <geometry>
+        <mesh filename="package://arid_description/meshes/arid_model.stl"
+              scale="${mesh_scale} ${mesh_scale} ${mesh_scale}"/>
+      </geometry>
+      <material name="arid_visual_material">
+        <color rgba="0.5 0.5 0.5 1.0"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0.070192" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.393 0.393 0.2047"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="base_link_to_base_footprint" type="fixed">
+    <parent link="base_footprint"/>
+    <child  link="base_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <link name="autopilot"/>
+  <joint name="base_link_to_autopilot" type="fixed">
+    <parent link="base_link"/>
+    <child  link="autopilot"/>
+    <origin xyz="0.042524 0 0.100499" rpy="0 0 0"/>
+  </joint>
+
+  <xacro:propeller name="front_left"  x="${propeller_span}"  y="${propeller_span}"/>
+  <xacro:propeller name="front_right" x="${propeller_span}"  y="${-propeller_span}"/>
+  <xacro:propeller name="rear_left"   x="${-propeller_span}" y="${propeller_span}"/>
+  <xacro:propeller name="rear_right"  x="${-propeller_span}" y="${-propeller_span}"/>
+
+  <!-- Left/right mounts are rotation-symmetric: x sign flips with yaw, not mirrored. -->
+  <xacro:realsense name="front" x="0.09875"  y="0.0175"   yaw="0"/>
+  <xacro:realsense name="left"  x="-0.0175"  y="0.08875"  yaw="${pi/2}"/>
+  <xacro:realsense name="right" x="0.0175"   y="-0.08875" yaw="${-pi/2}"/>
+
+  <link name="top_visual_link"/>
+  <joint name="base_link_to_top_visual_joint" type="fixed">
+    <parent link="base_link"/>
+    <child  link="top_visual_link"/>
+    <origin xyz="0.077 0.0 0.129792" rpy="${-pi/2} 0 ${-pi/2}"/>
+  </joint>
+
+  <link name="bottom_visual_link"/>
+  <joint name="base_link_to_bottom_visual_joint" type="fixed">
+    <parent link="base_link"/>
+    <child  link="bottom_visual_link"/>
+    <origin xyz="0.025 0.0 0.000842" rpy="0 ${pi} ${pi/2}"/>
+  </joint>
+
+  <link name="flow_link"/>
+  <joint name="base_link_to_flow_joint" type="fixed">
+    <parent link="base_link"/>
+    <child  link="flow_link"/>
+    <origin xyz="0.0 -0.0115 -0.008518" rpy="${pi} 0 0"/>
+  </joint>
+
+  <link name="rangefinder_link"/>
+  <joint name="base_link_to_rangefinder_joint" type="fixed">
+    <parent link="base_link"/>
+    <child  link="rangefinder_link"/>
+    <origin xyz="-0.001322 0.00992 -0.011096" rpy="0 ${pi} 0"/>
+  </joint>
+
+</robot>

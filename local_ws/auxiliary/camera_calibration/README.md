@@ -4,7 +4,7 @@ This directory holds the CSI camera calibration launcher, which wraps the ROS 2 
 
 ## `camera_calibration_auto/camera_calibrate.sh`
 
-The script calibrates `cam_front` or `cam_down` and is wired into `setup.sh` as menu option 6. The camera argument is required:
+The script calibrates `cam_front` or `cam_down` and is wired into `setup.sh` as menu option 6. The camera argument is required, and the script is also reachable as the `cam_calibrate` alias.
 
 ```bash
 ./camera_calibration_auto/camera_calibrate.sh front
@@ -25,6 +25,8 @@ SIZE=9x6 SQUARE=0.050 ROS_DOMAIN_ID=23 NM_WAIT_S=180 \
 After the first successful run, set `calibration: "cam_front"` or `calibration: "cam_down"` in `pipelines.yaml`, since both default to empty, so the pipeline loads the new intrinsics.
 
 ## Files
+
+The directory holds the calibrator, the pattern and two generated trees.
 
 - `camera_calibration_auto/camera_calibrate.sh`: the `front|down` calibrator.
 - `calibration_pattern/calib_pattern.pdf`: the included 10x7-square, 50 mm checkerboard.

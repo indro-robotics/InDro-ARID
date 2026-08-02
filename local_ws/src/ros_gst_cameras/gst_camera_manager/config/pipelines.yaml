@@ -48,7 +48,12 @@ pipelines:
     frame_id: "top_visual_link"
     encoding: ""
     compress: true
-    alive_threshold: 2.0
+    # 5.0, not 2.0: this value doubles as the startup grace period, and a cold Argus open does
+    # not deliver its first frame inside 2 s - on the IMX477 that was measured at 2.04 s, which
+    # tripped the old threshold on every launch ("stalled ... frames resumed" one line later) and
+    # made verify_cv_cams give up on a working camera. Not re-measured on the IMX219; set to 5.0
+    # to match the fleet. A real stall is still caught inside 5 s.
+    alive_threshold: 5.0
 
   cam_down:
     # Supported IMX219 Modes
@@ -68,4 +73,9 @@ pipelines:
     frame_id: "bottom_visual_link"
     encoding: ""
     compress: true
-    alive_threshold: 2.0
+    # 5.0, not 2.0: this value doubles as the startup grace period, and a cold Argus open does
+    # not deliver its first frame inside 2 s - on the IMX477 that was measured at 2.04 s, which
+    # tripped the old threshold on every launch ("stalled ... frames resumed" one line later) and
+    # made verify_cv_cams give up on a working camera. Not re-measured on the IMX219; set to 5.0
+    # to match the fleet. A real stall is still caught inside 5 s.
+    alive_threshold: 5.0

@@ -158,8 +158,36 @@ write_serial() {           # $1 = mount, $2 = serial - block-scoped serial_no ed
 }
 
 # RealSense serial assignment (opt-in). Skips (does not exit) on any precondition miss.
+# librealsense claims the device over libusb, not just /dev/video*, so without a udev rule the
+# node stays 0664 root:root and enumeration returns zero devices as a non-root user - which
+# surfaces as a blank serial_no rather than an error. setup_permissions writes the same file;
+# this re-installs it when config_realsense is run standalone on a host that never had it.
+ensure_libusb_rules() {
+    local rs_rules="/etc/udev/rules.d/99-realsense-libusb.rules"
+    if [[ -f "${rs_rules}" ]]; then
+        ok "${rs_rules} present"
+    else
+        warn "installing ${rs_rules} (same content setup_permissions writes)"
+        sudo tee "${rs_rules}" > /dev/null << 'EOL'
+SUBSYSTEM=="usb", ATTRS{idVendor}=="8086", ATTRS{idProduct}=="0b07", MODE:="0666", GROUP:="plugdev"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="8086", ATTRS{idProduct}=="0b3a", MODE:="0666", GROUP:="plugdev"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="8086", ATTRS{idProduct}=="0b3d", MODE:="0666", GROUP:="plugdev"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="8086", ATTRS{idProduct}=="0b5c", MODE:="0666", GROUP:="plugdev"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="8086", ATTRS{idProduct}=="0b64", MODE:="0666", GROUP:="plugdev"
+KERNEL=="iio*", ATTRS{idVendor}=="8086", ATTRS{idProduct}=="0b3a", MODE:="0777", GROUP:="plugdev"
+KERNEL=="iio*", ATTRS{idVendor}=="8086", ATTRS{idProduct}=="0b5c", MODE:="0777", GROUP:="plugdev"
+EOL
+        sudo udevadm control --reload-rules && sudo udevadm trigger
+        sleep 3
+        ok "rules installed, reloaded and triggered"
+    fi
+    id -nG | grep -qw plugdev || warn "${USER} is not in 'plugdev' - log out and back in for the group to apply"
+}
+
 realsense_assign() {
     step "RealSense serial assignment"
+
+    ensure_libusb_rules
 
     [[ -f "${VSLAM_CONFIG}" ]] || { warn "${VSLAM_CONFIG} not found - skipping RealSense assignment"; return 0; }
     local m missing=()

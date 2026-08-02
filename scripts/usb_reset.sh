@@ -1,5 +1,5 @@
 #!/bin/bash
-# Power-cycle the ARK PAB USB hub (port 1-2) and pulse the FMU reset line on gpiochip0 line 85.
+# Power-cycle the ARK PAB USB hub (port 1-2) and gpiochip0 line 85, the standalone USB3 port.
 set -e
 sudo uhubctl -l 1-2 -a off
 sudo uhubctl -l 1-2 -a on

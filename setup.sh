@@ -37,7 +37,7 @@ PRE_HOST=""; PRE_PASS=""
 PRE_WIFI=""; PRE_WIFI_SSID=""; PRE_WIFI_PASS=""
 PRE_NOMACHINE=""; PRE_PX4=""; PRE_ZTNET=""
 PRE_ARK=""; PRE_ARK_ROS2=""; PRE_JETPACK=""; PRE_POST_ARK_REBOOT=""
-PRE_REALSENSE=""; PRE_VERIFY=""; PRE_FOCUS=""; PRE_SMOKE=""
+PRE_REALSENSE=""; PRE_CSI=""; PRE_VERIFY=""; PRE_FOCUS=""; PRE_SMOKE=""
 PRE_BUILD_ISAAC=""; PRE_COLCON=""; PRE_LOCAL_WS=""; PRE_REBOOT=""
 
 # CONSTANTS
@@ -135,6 +135,78 @@ preflight() {
 }
 
 # RealSense serial assignment (front/left/right)
+csi_pin_config() {
+    step "CSI overlay"
+
+    local tool="/opt/nvidia/jetson-io/config-by-hardware.py"
+    if [[ ! -x "$tool" ]]; then
+        skip "jetson-io not found - skipping CSI overlay"
+        STEPS_SKIPPED+=("csi_overlay")
+        return
+    fi
+
+    local ans
+    if (( PRE )); then ans="${PRE_CSI}"; else ask_yn "  Configure CSI overlay (IMX219)? (y/n, Enter = skip): " n && ans=yes || ans=skip; fi
+    if ! is_yes "${ans}"; then
+        skip "CSI overlay skipped"
+        STEPS_SKIPPED+=("csi_overlay")
+        return
+    fi
+
+    # Parse the live hardware list into parallel (header-number, module-name) arrays for the
+    # IMX219 modules jetson-io offers (the CSI connector may not be header 1).
+    local listing hdr=0 line
+    local -a names=() hdrs=()
+    listing=$(sudo "$tool" -l 2>/dev/null || true)
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^Header[[:space:]]+([0-9]+) ]]; then
+            hdr="${BASH_REMATCH[1]}"
+        elif [[ "$line" =~ ^[[:space:]]+[0-9]+\.[[:space:]]+(.*[Ii][Mm][Xx]219.*)$ ]]; then
+            names+=("${BASH_REMATCH[1]%$'\r'}"); hdrs+=("$hdr")
+        fi
+    done <<< "$listing"
+
+    if (( ${#names[@]} == 0 )); then
+        warn "no IMX219 module offered by jetson-io - CSI overlay unchanged"
+        STEPS_SKIPPED+=("csi_overlay")
+        return
+    fi
+
+    # The carrier ships one pre-compiled IMX219 overlay, "ARK IMX219 Quad", covering all four
+    # 2-lane CSI connectors; this airframe populates two of them. Prefer it, then fall back to
+    # any other offered module, then to the picker.
+    local sel=-1 i
+    for i in "${!names[@]}"; do
+        if [[ "${names[$i]}" == *[Qq]uad* ]]; then sel="$i"; break; fi
+    done
+    if (( sel < 0 )) && (( ${#names[@]} == 1 )); then sel=0; fi
+    if (( sel < 0 )); then
+        echo "  Compatible IMX219 modules:"
+        for i in "${!names[@]}"; do printf "    %d) %s\n" "$((i+1))" "${names[$i]}"; done
+        local pick
+        read -r -p "  Select the module (number, Enter = 1): " pick || pick=""
+        [[ -z "$pick" ]] && pick=1
+        if [[ "$pick" =~ ^[0-9]+$ ]] && (( pick >= 1 && pick <= ${#names[@]} )); then
+            sel="$((pick-1))"
+        else
+            warn "invalid selection - CSI overlay unchanged"
+            STEPS_SKIPPED+=("csi_overlay")
+            return
+        fi
+    fi
+
+    local name="${names[$sel]}" header="${hdrs[$sel]}"
+    ok "applying: ${name} (header ${header})"
+    if sudo "$tool" -n "${header}=${name}" >/dev/null 2>&1; then
+        ok "CSI overlay set - the CSI cameras enumerate after reboot"
+        INSTALL_GROUP_REBOOT=1   # the overlay is only live after a reboot
+        STEPS_RUN+=("csi_overlay")
+    else
+        warn "jetson-io could not apply '${name}' - CSI overlay unchanged"
+        STEPS_SKIPPED+=("csi_overlay")
+    fi
+}
+
 setup_realsense() {
     step "RealSense serial mapping (front/left/right)"
 
@@ -440,7 +512,7 @@ setup_uninstall() {
     step "Remove sudoers, polkit, udev"
     sudo rm -f "${SUDOERS_FILE}" 2>/dev/null || true
     sudo rm -f "${POLKIT_RULE_FILE}" 2>/dev/null || true
-    sudo rm -f /etc/udev/rules.d/52-usb.rules /etc/udev/rules.d/99-gpio.rules 2>/dev/null || true
+    sudo rm -f /etc/udev/rules.d/52-usb.rules /etc/udev/rules.d/99-gpio.rules /etc/udev/rules.d/99-realsense-libusb.rules 2>/dev/null || true
     sudo udevadm control --reload-rules 2>/dev/null || true
     ok "Sudoers + polkit + udev rules removed"
 
@@ -662,6 +734,9 @@ collect_answers() {
     ask_yn "  Assign RealSense cameras? (y/n, Enter = skip): " n \
         && PRE_REALSENSE=yes || PRE_REALSENSE=skip
 
+    ask_yn "  Configure CSI overlay (IMX219)? (y/n, Enter = skip): " n \
+        && PRE_CSI=yes || PRE_CSI=skip
+
     ask_yn "  Verify the camera feeds (front + down) at the end? (y/n, Enter = skip): " n \
         && PRE_VERIFY=yes || PRE_VERIFY=skip
 
@@ -672,7 +747,7 @@ collect_answers() {
     if [[ -d "${LOCAL_WS}/install" ]]; then
         ask_yn "  Rebuild the local workspace? (y/n, Enter = skip): " n && PRE_LOCAL_WS=yes || PRE_LOCAL_WS=skip
     else
-        ask_yn "  Build the local workspace? (y/n, Enter = yes): " y && PRE_LOCAL_WS=yes || PRE_LOCAL_WS=skip
+        ask_yn "  Build the local workspace? (y/n, Enter = skip): " n && PRE_LOCAL_WS=yes || PRE_LOCAL_WS=skip
     fi
 
     echo "  Isaac builds are long - run over NoMachine (survives a disconnect) or skip and"
@@ -689,18 +764,18 @@ collect_answers() {
     # Isaac workspace colcon (when an image exists or is queued).
     if [[ "${PRE_BUILD_ISAAC}" == "yes" ]] || docker image inspect isaac_ros_dev-aarch64 >/dev/null 2>&1; then
         if [[ -f "${ISAAC_ROS_WS}/install/setup.bash" ]]; then
-            # Enter = rebuild: pulled packages ship nothing until colcon runs, and a launch
-            # referencing an unbuilt package is the failure that skip-by-default produced.
-            ask_yn "  Rebuild the Isaac workspace? (y/n, Enter = rebuild): " y && PRE_COLCON=yes || PRE_COLCON=skip
+            # Enter = skip: a bare Enter must never start an hour of colcon. Pulled
+            # packages ship nothing until colcon runs, so answer y after a pull.
+            ask_yn "  Rebuild the Isaac workspace? (y/n, Enter = skip): " n && PRE_COLCON=yes || PRE_COLCON=skip
         else
-            ask_yn "  Build the Isaac workspace? (y/n, Enter = yes): " y && PRE_COLCON=yes || PRE_COLCON=skip
+            ask_yn "  Build the Isaac workspace? (y/n, Enter = skip): " n && PRE_COLCON=yes || PRE_COLCON=skip
         fi
     else
         PRE_COLCON=skip
     fi
 
-    ask_yn "  Run the smoke test at the end? (y/n, Enter = y): " y && PRE_SMOKE=yes || PRE_SMOKE=skip
-    ask_yn "  Reboot before the smoke test if anything was built? (y/n, Enter = y): " y && PRE_REBOOT=yes || PRE_REBOOT=no
+    ask_yn "  Run the smoke test at the end? (y/n, Enter = skip): " n && PRE_SMOKE=yes || PRE_SMOKE=skip
+    ask_yn "  Reboot before the smoke test if anything was built? (y/n, Enter = skip): " n && PRE_REBOOT=yes || PRE_REBOOT=no
 
     ok "Answers recorded - running unattended."
 
@@ -717,7 +792,7 @@ _persist_questionnaire() {
         echo "PRE=1"
         for var in PRE_HOST PRE_WIFI PRE_WIFI_SSID PRE_NOMACHINE PRE_PX4 PRE_ZTNET \
                    PRE_ARK PRE_ARK_ROS2 PRE_JETPACK PRE_POST_ARK_REBOOT \
-                   PRE_REALSENSE PRE_VERIFY PRE_FOCUS PRE_SMOKE \
+                   PRE_REALSENSE PRE_CSI PRE_VERIFY PRE_FOCUS PRE_SMOKE \
                    PRE_BUILD_ISAAC PRE_COLCON PRE_LOCAL_WS PRE_REBOOT; do
             printf '%s=%q\n' "$var" "${!var-}"
         done
@@ -727,18 +802,19 @@ _persist_questionnaire() {
 # ORCHESTRATION
 run_full_setup() {
     preflight
+    guard_time_wait_sync   # before ark_os: its apt work deadlocks on a jammed systemd job queue
     printf '%s\n' "${LOG_FILE}" > "${HOME_DIR}/.arid_setup_log"   # pin this session's log across its reboot
     # Fresh run: no checkpointed sections, and no build recorded yet (a stale .arid_did_build
     # would otherwise force a reboot when nothing builds this run).
     rm -f "${HOME_DIR}/.arid_progress" "${HOME_DIR}/.arid_did_build"
     collect_answers
-    setup_power
     first_boot
-    ensure_wifi
-    nomachine
+    setup_power
+    disable_updates
     enable_user_linger
     clean_nvidia_desktop
-    disable_updates
+    ensure_wifi
+    nomachine
     ark_os            # ARK-OS + ROS2 + JetPack; everything below depends on /opt/ros/humble
     _run_setup_tail   # checkpointed steps; --resume / --continue re-enter here
 }
@@ -773,6 +849,7 @@ _run_phase_a_install() {
     run_step setup_docker
     run_step setup_systemd
     run_step setup_realsense
+    run_step csi_pin_config
 }
 
 # PHASE B - builds + live camera steps.

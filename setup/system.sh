@@ -2,6 +2,23 @@
 # git, bashrc, permissions, desktop cleanup, uhubctl, systemd, pip, local workspace.
 
 # Power mode and package holds
+guard_time_wait_sync() {
+    step "systemd-time-wait-sync (apt deadlock guard)"
+
+    if [[ "$(systemctl is-enabled systemd-time-wait-sync.service 2>/dev/null)" == "masked" ]]; then
+        skip "systemd-time-wait-sync already masked"
+        return 0
+    fi
+
+    # --no-block is required, not cosmetic: a plain stop waits on the very queue that is jammed.
+    sudo systemctl stop --no-block systemd-time-wait-sync.service 2>/dev/null || true
+    if sudo systemctl mask systemd-time-wait-sync.service >/dev/null 2>&1; then
+        ok "systemd-time-wait-sync masked (chrony disciplines the clock)"
+    else
+        warn "could not mask systemd-time-wait-sync - apt may stall on a blocked systemd job"
+    fi
+}
+
 setup_power() {
     step "Power mode & package holds"
 
@@ -128,24 +145,47 @@ nomachine() {
         warn "NoMachine is not installed - installing"
     fi
 
-    local deb="/tmp/nomachine_arm64.deb"
-    echo "  Downloading the latest NoMachine arm64 .deb..."
-    if ! wget -q -O "${deb}" "https://www.nomachine.com/free/arm/v8/deb"; then
-        warn "NoMachine download failed (no internet?); skipping"
-        rm -f "${deb}"
-        STEPS_SKIPPED+=("nomachine")
+    # The .deb ships with the repo rather than being downloaded. NoMachine's ARM page now serves
+    # only nomachine-personal-edition, which installs happily and then refuses every connection
+    # with "the subscription license on this server has expired" - the free 9.x line is no longer
+    # published there, and the old free URL 404s. Vendoring also means a drone with no internet
+    # still provisions. Resolved here, not at file scope: system.sh is sourced before setup.sh
+    # defines LOCAL_WS, and a top-level expansion would trip `set -u` before anything prints.
+    # Newest .deb in the directory wins, so dropping in a newer build is all an upgrade takes.
+    local nm_dir="${LOCAL_WS}/auxiliary/nomachine" deb
+    deb=$(ls -1t "${nm_dir}"/*.deb 2>/dev/null | head -1)
+    if [[ -z "${deb}" ]]; then
+        warn "no .deb found in ${nm_dir}"
+        warn "drop the NoMachine arm64 .deb there and re-run setup"
+        STEPS_SKIPPED+=("nomachine (no package)")
         return 0
     fi
+    if ! dpkg-deb --info "${deb}" >/dev/null 2>&1; then
+        warn "not a Debian package: ${deb} ($(file -b "${deb}" 2>/dev/null | head -c 50))"
+        STEPS_SKIPPED+=("nomachine (bad package)")
+        return 0
+    fi
+    # Guard against the paid edition being dropped in by mistake: it installs, then refuses to
+    # serve. Cheaper to catch here than to debug a licence dialog on a headless drone.
+    local pkg; pkg=$(dpkg-deb -f "${deb}" Package 2>/dev/null)
+    if [[ "${pkg}" == *personal-edition* ]]; then
+        warn "${deb} is ${pkg} - the subscription edition, which will refuse connections."
+        warn "Use the free 'nomachine' package instead."
+        STEPS_SKIPPED+=("nomachine (paid edition)")
+        return 0
+    fi
+
     if (( installed )); then
         warn "removing the existing NoMachine before reinstall (drops any active NoMachine session)"
-        sudo dpkg -r nomachine >/dev/null 2>&1 || sudo apt-get remove -y nomachine >/dev/null 2>&1 || true
+        sudo dpkg -r nomachine nomachine-personal-edition >/dev/null 2>&1 \
+            || sudo apt-get remove -y nomachine nomachine-personal-edition >/dev/null 2>&1 || true
     fi
-    echo "  Installing: ${deb} (log: /tmp/nomachine-install.log)"
+    echo "  Installing: ${deb} ($(dpkg-deb -f "${deb}" Version 2>/dev/null)) - log: /tmp/nomachine-install.log"
     # nxserver daemons inherit our stdio and would hang dpkg; redirect so it returns.
+    # NOTE: no rm afterwards - the .deb is a tracked repo file, not a temp download.
     sudo DEBIAN_FRONTEND=noninteractive dpkg -i --force-confnew "${deb}" \
         </dev/null >/tmp/nomachine-install.log 2>&1 \
-        || { warn "dpkg -i nomachine failed (see /tmp/nomachine-install.log); skipping"; rm -f "${deb}"; STEPS_SKIPPED+=("nomachine"); return 0; }
-    rm -f "${deb}"
+        || { warn "dpkg -i nomachine failed (see /tmp/nomachine-install.log); skipping"; STEPS_SKIPPED+=("nomachine"); return 0; }
     sudo systemctl disable gdm3 --now 2>/dev/null || true
     sudo rm -f "${HOME_DIR}/.Xauthority"
     sudo touch "${HOME_DIR}/.Xauthority"
@@ -621,13 +661,30 @@ EOL
 SUBSYSTEM=="gpio", GROUP=="gpio", MODE=="0660"
 EOL
 
+    # RealSense host-side libusb access. setup installs pyrealsense2 from a pip wheel, which
+    # ships bindings and no udev rules; librealsense's own source install is what normally drops
+    # them, and that is not part of provisioning. Without this the node stays 0664 root:root,
+    # pyrealsense2 enumerates 0 devices as ${USERNAME}, and config_realsense writes a blank
+    # serial_no. The Isaac container covers itself separately (image rules + plugdev in the
+    # entrypoint + arid_supervisor._repair_camera_nodes); none of that applies on the host.
+    # PIDs match the set arid_supervisor gates on.
+    sudo tee /etc/udev/rules.d/99-realsense-libusb.rules > /dev/null << 'EOL'
+SUBSYSTEM=="usb", ATTRS{idVendor}=="8086", ATTRS{idProduct}=="0b07", MODE:="0666", GROUP:="plugdev"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="8086", ATTRS{idProduct}=="0b3a", MODE:="0666", GROUP:="plugdev"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="8086", ATTRS{idProduct}=="0b3d", MODE:="0666", GROUP:="plugdev"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="8086", ATTRS{idProduct}=="0b5c", MODE:="0666", GROUP:="plugdev"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="8086", ATTRS{idProduct}=="0b64", MODE:="0666", GROUP:="plugdev"
+KERNEL=="iio*", ATTRS{idVendor}=="8086", ATTRS{idProduct}=="0b3a", MODE:="0777", GROUP:="plugdev"
+KERNEL=="iio*", ATTRS{idVendor}=="8086", ATTRS{idProduct}=="0b5c", MODE:="0777", GROUP:="plugdev"
+EOL
+
     sudo udevadm control --reload-rules
     sudo udevadm trigger
     ok "udev rules written, reloaded, and triggered against current devices"
 
-    # Groups
-    sudo usermod -aG dialout,gpio "${USERNAME}"
-    ok "Groups: dialout, gpio"
+    # Groups. plugdev: the group the RealSense udev rules above assign.
+    sudo usermod -aG dialout,gpio,plugdev "${USERNAME}"
+    ok "Groups: dialout, gpio, plugdev"
 
     # Polkit rule for reset_usb.service
     sudo tee "$POLKIT_RULE_FILE" > /dev/null << EOF

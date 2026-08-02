@@ -388,8 +388,10 @@ class _Stack:
         try:
             pgid = os.getpgid(self.proc.pid)
         except ProcessLookupError:
+            # Leader vanished between alive() and here - retry via the dead-leader path so
+            # any surviving group member is still reaped.
             self.proc = None
-            return
+            return self.stop()
         # Snapshot owned shm + every group (incl. setsid pipelines) before the kill.
         descendants = _proc_descendants(self.proc.pid)
         owned = _mapped_shm(descendants)
@@ -546,8 +548,9 @@ class AridSupervisor(Node):
                         self.get_logger().warn(resp.message)
                         return resp
                     resp.success = False
-                    resp.message = (f'unowned vslam trees present ({what}) and land state '
-                                    'not proven - land first')
+                    resp.message = _clip(f'unowned vslam trees present ({what}) and land state '
+                                         'not proven - land first')
+                    self.get_logger().warn(resp.message)
                     return resp
                 resp.success = True
                 resp.message = 'vslam already stopped'
@@ -675,8 +678,10 @@ class AridSupervisor(Node):
             try:
                 self.vslam.stop()
             except Exception as stop_exc:
-                # Drop tracking so the next enable(true) cannot no-op; leftover processes trip the legacy guard.
+                # Drop tracking so the next enable(true) cannot no-op; survivors then trip the
+                # unowned-tree guard, which reaps them when landed and refuses otherwise.
                 self.vslam.proc = None
+                self.vslam._pgid = None
                 cleanup = (f'stack stop ALSO failed ({type(stop_exc).__name__}: {stop_exc}); '
                            'tracking dropped - leftover processes will be refused by the legacy-node guard')
                 self.get_logger().error(cleanup)
@@ -799,8 +804,8 @@ class AridSupervisor(Node):
     def _reset_usb(self):
         # ros2 CLI subprocess, NOT an rclpy client: a sync client call inside this service
         # callback deadlocks the single-threaded executor.
-        # SAFETY: /reset_usb power-cycles the camera USB hub and pulses the FMU reset line
-        # (GPIO85); pre-mission bringup only, drone disarmed on the ground.
+        # SAFETY: /reset_usb power-cycles the camera USB hub and the standalone USB3 port
+        # (GPIO85), rebooting the FMU; pre-mission bringup only, drone disarmed on the ground.
         try:
             out = subprocess.run(
                 ['ros2', 'service', 'call', '/reset_usb', 'std_srvs/srv/Trigger', '{}'],

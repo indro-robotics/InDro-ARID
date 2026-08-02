@@ -11,7 +11,7 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     pkg_share = get_package_share_directory('arid_description')
-    xacro_path = os.path.join(pkg_share, 'urdf', 'arid.xacro')
+    xacro_path = os.path.join(pkg_share, 'xacro', 'arid.xacro')
     rviz_config = os.path.join(pkg_share, 'rviz', 'arid.rviz')
 
     robot_desc = xacro.process_file(xacro_path).toxml()
