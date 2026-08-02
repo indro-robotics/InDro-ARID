@@ -37,6 +37,12 @@ is_inside_nomachine() {
     [[ -n "${NX_SESSION_ID:-}${NXSESSIONID:-}${NX_RUNNER:-}${NX_CONNECTION:-}${NX_CLIENT:-}" ]]
 }
 
+# True when wired NIC $1 carries the default route, i.e. setup is running over it.
+# Carrier alone would false-trip: a plugged-in LiDAR raises carrier too.
+is_provisioning_link() {
+    ip route show default 2>/dev/null | grep -qE "^default .* dev ${1}( |$)"
+}
+
 # Clear resume hooks on a user-initiated exit. Never called from the ERR trap.
 cleanup_user_exit() {
     local home="${HOME_DIR:-$HOME}"

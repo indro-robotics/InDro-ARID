@@ -22,6 +22,7 @@ unset _lib
 # Global state
 STEPS_RUN=()
 STEPS_SKIPPED=()
+STEPS_DEFERRED=()
 DID_BUILD=0         # gates the pre-smoke reboot: set when any build ran this session
 INSTALL_GROUP_REBOOT=0  # gates the install reboot: set by ark_os when ARK-OS / ROS2 / JetPack installed
 RUN_FULL=0          # --full: skip the menu and run the whole setup
@@ -415,6 +416,18 @@ print_summary() {
         echo ""
         echo -e "  ${YELLOW}Skipped:${NC}"
         for s in "${STEPS_SKIPPED[@]}"; do echo "    - ${s}"; done
+    fi
+
+    if [[ ${#STEPS_DEFERRED[@]} -gt 0 ]]; then
+        echo ""
+        echo -e "  ${YELLOW}Deferred (setup is running over the wired port):${NC}"
+        for s in "${STEPS_DEFERRED[@]}"; do echo "    - ${s}"; done
+        echo ""
+        echo "  Finish these over Wi-Fi:"
+        echo "    1. Join the intended Wi-Fi network: connect to the drone's hotspot, open the"
+        echo "       ARK-OS web UI, select the network. Once per new Wi-Fi network."
+        echo "    2. config_lidar   Configure the wired LiDAR link"
+        echo "    3. local_test     Smoke test"
     fi
 
     echo -e "${BOLD}======================================${NC}"

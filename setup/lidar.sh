@@ -29,6 +29,13 @@ EOF
 setup_lidar_network() {
     step "RSAIRY LiDAR network (NetworkManager)"
 
+    if is_provisioning_link "${RSLIDAR_NIC}"; then
+        warn "setup is running over ${RSLIDAR_NIC} - deferring the LiDAR network configuration"
+        warn "configuring it now drops this connection; join Wi-Fi first, then run 'config_lidar'"
+        STEPS_DEFERRED+=("lidar_network")
+        return
+    fi
+
     for con_name in rslidar dev; do
         if nmcli -t -f NAME connection show 2>/dev/null | grep -qxF "$con_name"; then
             nmcli connection delete "$con_name" >/dev/null
