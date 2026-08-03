@@ -1,15 +1,14 @@
 #!/bin/bash
-# verify_cv_cams.sh - live visual check of the IMX219 CSI cameras via gst_camera_manager:
+# verify_cv_cams.sh - live visual check of the IMX219 CSI cameras via gst_camera_manager.
+# Mount to sensor-id, which appears nowhere in the code below:
 #   front (sensor-id=0) -> cam_front -> /cam_front/image_raw/compressed
 #   down  (sensor-id=1) -> cam_down  -> /cam_down/image_raw/compressed
-# Usage: ver_cv_cams [front|down|both]  (default both; any key advances, q quits)
-# Requires gst_camera_manager.service, a NoMachine session, cv2 + rclpy.
-# Pipelines this script started are stopped again on exit.
+# A NoMachine session is required: the feed is shown in a cv2 window on the drone's X display.
+# Pipelines this script started are stopped again on exit; ones already running are left alone.
 
 set -u
-ulimit -c 0 2>/dev/null || true   # no core files if a probe's cv2/Qt aborts on a half-ready display
+ulimit -c 0 2>/dev/null || true   # cv2/Qt aborts on a half-ready display; no core dumps for it
 
-# Output helpers
 if [[ -t 1 ]]; then
     RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[1;34m'; BOLD='\033[1m'; NC='\033[0m'
 else
@@ -20,8 +19,8 @@ ok()   { echo -e "  ${GREEN}[OK]${NC}   $*"; }
 warn() { echo -e "  ${YELLOW}[WARN]${NC} $*"; }
 err()  { echo -e "  ${RED}[ERROR]${NC} $*" >&2; }
 
-# Operator-facing lines that precede a blocking wait must bypass setup's `tee` (which block-buffers
-# stdout), or they stay invisible until the wait ends. Write them straight to the controlling terminal.
+# setup runs this under a `tee` pipe, which block-buffers stdout: an operator-facing line printed
+# before a blocking wait stays invisible until the wait ends, so those lines go to the terminal.
 TTY="/dev/tty"; { : > "${TTY}"; } 2>/dev/null || TTY="/dev/stdout"
 tnote() { printf '%b\n' "$*" > "${TTY}"; }
 
@@ -38,17 +37,14 @@ case "${WHICH}" in
     *)     step "CV camera feed verification (front + down IMX219)" ;;
 esac
 
-# cv2 + rclpy are required; the display can be waited for (open NoMachine after starting).
 python3 -c 'import cv2' >/dev/null 2>&1 || { err "cv2 (OpenCV) not importable - cannot display the feed"; exit 1; }
 python3 -c 'import rclpy, sensor_msgs.msg' >/dev/null 2>&1 || { err "rclpy / sensor_msgs not importable - cannot subscribe to the camera topics"; exit 1; }
 
-# NEVER modify the real ~/.Xauthority: a stale cookie there breaks the whole NoMachine
-# desktop. cv2 uses a throwaway file instead.
+# Never write ~/.Xauthority: a stale cookie there breaks the whole NoMachine desktop.
 REAL_XAUTH="${XAUTHORITY:-$HOME/.Xauthority}"
 CAM_XAUTH="$(mktemp /tmp/arid_camxauth.XXXXXX)"
 export XAUTHORITY="${CAM_XAUTH}"
 
-# The pipeline is left stopped on exit if THIS script started it; also restore terminal + xauth.
 STARTED_PIPES=()
 cleanup() {
     stty sane 2>/dev/null || true
@@ -60,8 +56,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Re-key the display's live cookie into the temp authority (persists across a hostname rename)
-# without touching ~/.Xauthority.
+# Both the hostname/unix and the bare-colon form of the cookie are added, so the entry still
+# matches after a hostname change.
 apply_xauth() {
     command -v xauth >/dev/null 2>&1 || return 0
     local dnum="${DISPLAY##*:}"; dnum="${dnum%%.*}"
@@ -74,22 +70,22 @@ apply_xauth() {
     xhost +local: >/dev/null 2>&1 || true
 }
 
-# True only if cv2 can ACTUALLY open a window on $1; wrapped subprocess contains the Qt/X
-# abort when a NoMachine socket exists but the session is not yet ready.
+# A NoMachine socket can exist while the session is not yet ready, in which case Qt aborts the
+# process rather than returning an error. The subprocess contains that abort.
 probe_display() {
     timeout 8 bash -c 'DISPLAY=$1 XAUTHORITY=$2 python3 -c "import cv2; cv2.namedWindow(\"_p\"); cv2.destroyAllWindows()"; exit $?' \
         _ "$1" "${XAUTHORITY}" >/dev/null 2>&1
 }
 
-# Attached viewer = ESTABLISHED on the NX port; the virtual X server stays up with no
-# viewer attached, so a live display is not proof anyone is watching.
+# The virtual X server stays up with no viewer attached, so a live display is not proof anyone is
+# watching. An ESTABLISHED connection on the NX port is.
 NX_PORT=4000
 nx_attached() {
     ss -tn state established 2>/dev/null | awk '{print $3}' | grep -q ":${NX_PORT}$"
 }
 
-# Pick a cv2-usable display: inherited $DISPLAY first, then sockets highest-number-first
-# (NoMachine sessions are :1000+ and increment, so the newest is preferred over a stale one).
+# Sockets are tried highest-number-first: NoMachine numbers its sessions from :1000 upward, so
+# the highest is the newest and a stale socket is left for last.
 find_ready_display() {
     local n
     if [[ -n "${DISPLAY:-}" ]]; then apply_xauth; probe_display "${DISPLAY}" && return 0; fi
@@ -101,10 +97,8 @@ find_ready_display() {
     return 1
 }
 
-# Ready = a NoMachine viewer is actually connected AND cv2 can open on its display.
 display_ready() { nx_attached && find_ready_display; }
 
-# Wait until a NoMachine session is connected; continue automatically once it is. Enter skips.
 if ! display_ready; then
     if [[ ! -t 0 ]]; then warn "no NoMachine session and no terminal to prompt - skipping"; exit 0; fi
     warn "No NoMachine session connected."
@@ -120,12 +114,12 @@ if ! display_ready; then
 fi
 ok "NoMachine connected - using display ${DISPLAY}"
 
-# ROS setup files reference unbound vars: disable -u during sourcing.
+# ROS setup.bash expands unguarded variables, so nounset stays off across the source.
 [[ -f /opt/ros/humble/setup.bash ]] || { err "ROS 2 Humble not found"; exit 1; }
 set +u; source /opt/ros/humble/setup.bash; set -u
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-23}"
 
-# Start gst_camera_manager.service if not up; left running afterward.
+# The service is left running on exit even when this script started it. Only pipelines are stopped.
 ensure_manager() {
     ros2 service list 2>/dev/null | grep -q '^/gst_camera_manager/' && return 0
     if systemctl is-active --quiet gst_camera_manager.service 2>/dev/null; then
@@ -143,18 +137,17 @@ ensure_manager() {
 }
 ensure_manager || { err "gst_camera_manager could not be started - cannot stream the camera topics"; exit 1; }
 
-# Is the pipeline currently streaming?
 pipe_running() { timeout 6 ros2 service call "/gst_camera_manager/$1/status" std_srvs/srv/Trigger 2>/dev/null | grep -q 'success=True'; }
 
-# Live = a frame within $2 s AND still delivering ~4 s later: a cold IMX219 commonly emits
-# one frame then stalls, which a one-shot --once check misreads as live.
-stream_sustained() {   # $1 = compressed topic, $2 = first-frame budget (s)
+# A cold IMX219 commonly emits one frame and then stalls, which a single --once check reads as
+# live, so delivery has to be confirmed a second time about 4 s later.
+stream_sustained() {   # $1 = compressed topic, $2 = first-frame budget in seconds
     timeout "$2" ros2 topic echo --once --qos-reliability best_effort "$1" >/dev/null 2>&1 || return 1
     timeout 4  ros2 topic echo --once --qos-reliability best_effort "$1" >/dev/null 2>&1
 }
 
-# Cold nvargus bring-up routinely exceeds 10 s: warm up, then restart a stalled pipeline
-# once before failing. Returns 0 once live.
+# Cold nvargus bring-up routinely exceeds 10 s, so a stalled pipeline is restarted once before
+# it is called dead.
 wait_for_stream() {    # $1 = compressed topic, $2 = pipe
     stream_sustained "$1" 22 && return 0
     tnote "  ${2}: no sustained stream in ~22s (cold start) - restarting the pipeline once and waiting..."
@@ -164,29 +157,29 @@ wait_for_stream() {    # $1 = compressed topic, $2 = pipe
     stream_sustained "$1" 18
 }
 
-# run_feed: stream the pipeline's compressed topic in a cv2 window; 0 = frame shown, 3 = none.
-# Viewer fed via process substitution so stdin stays on the terminal for the advance keypress;
-# the subshell keeps a stray cv2/Qt abort quiet.
+# Exit codes: 0 frame shown, 2 pipeline service never appeared, 3 no frames, 10 operator quit.
+# The viewer script arrives by process substitution rather than a pipe, so stdin stays on the
+# terminal and the advance keypress reaches it.
 run_feed() {                       # $1 = label, $2 = pipe, $3 = compressed topic
     local label="$1" pipe="$2" topic="$3"
-    # Per-pipeline services register gradually after boot; wait for THIS pipeline's service
-    # instead of failing in the startup race.
+    # Per-pipeline services register one at a time after boot, so this pipeline's own service is
+    # waited for rather than the manager's presence.
     local i svc=0
     for i in $(seq 1 15); do
         ros2 service list 2>/dev/null | grep -q "/gst_camera_manager/${pipe}\$" && { svc=1; break; }
         sleep 1
     done
-    (( svc )) || return 2   # pipeline service never appeared; caller reports "manager still starting"
+    (( svc )) || return 2
 
     local was=0; pipe_running "${pipe}" && was=1
     ros2 service call "/gst_camera_manager/${pipe}" std_srvs/srv/SetBool "{data: true}" >/dev/null 2>&1
-    (( was )) || STARTED_PIPES+=("${pipe}")     # only stop on exit what we started
+    (( was )) || STARTED_PIPES+=("${pipe}")
 
-    # Confirm a frame arrives before opening a window, so a dead camera is reported
-    # instead of leaving a blank window.
+    # A frame must arrive before the window opens, or a dead camera shows as a blank window
+    # instead of an error.
     tnote "  ${label}: pipeline started - waiting for a live stream (a cold start after a reboot can take ~40s)..."
     if ! wait_for_stream "${topic}" "${pipe}"; then
-        return 3   # no frames after warm-up + one restart; caller reports the camera-specific cause
+        return 3
     fi
     ok "${label}: stream is live"
 
@@ -201,8 +194,9 @@ from sensor_msgs.msg import CompressedImage
 
 label = sys.argv[1]; topic = sys.argv[2]
 MAXW   = 960
-GIVEUP = 20.0         # seconds with no frame ever: pipeline not producing, stop trying
-GRACE  = 2.0          # ignore advance keys after first show so a stray key cannot skip the window
+GIVEUP = 20.0         # seconds without a single frame before the pipeline is called dead
+GRACE  = 2.0          # seconds of ignored keys after the first frame, so a key pressed during
+                      # the wait cannot skip the window the operator was waiting for
 
 latest = {"buf": None, "n": 0, "t": 0.0}
 def cb(msg):
@@ -214,7 +208,7 @@ node = rclpy.create_node("vercam_view")
 qos = QoSProfile(depth=1); qos.reliability = ReliabilityPolicy.BEST_EFFORT; qos.history = HistoryPolicy.KEEP_LAST
 node.create_subscription(CompressedImage, topic, cb, qos)
 
-# cbreak the terminal so a single keypress here (no Enter) advances; restored on exit.
+# cbreak mode: a single keypress advances, with no Enter needed.
 try: import termios, tty
 except Exception: termios = None
 is_tty = bool(termios) and sys.stdin.isatty(); old_term = None
@@ -280,7 +274,6 @@ PY
       exit $? ) 2>/dev/null
 }
 
-# -- Downward IMX219 (cam_down pipeline, sensor-id=1) --------------------------
 if [[ "${WHICH}" == both || "${WHICH}" == down ]]; then
     step "Downward IMX219 (cam_down) - live; press any key to continue, q to quit"
     run_feed "DOWNWARD IMX219 (cam_down)" cam_down /cam_down/image_raw/compressed; rc=$?
@@ -292,7 +285,6 @@ if [[ "${WHICH}" == both || "${WHICH}" == down ]]; then
     esac
 fi
 
-# -- Front IMX219 (cam_front pipeline, sensor-id=0) ----------------------------
 if [[ "${WHICH}" == both || "${WHICH}" == front ]]; then
     step "Front IMX219 (cam_front) - live; press any key to continue, q to quit"
     run_feed "FRONT IMX219 (cam_front)" cam_front /cam_front/image_raw/compressed; rc=$?

@@ -8,21 +8,15 @@ is_yes() { local a="${1//[^A-Za-z]/}"; case "${a,,}" in y|yes) return 0 ;; *) re
 
 WORKSPACES="${WORKSPACES:-/home/jetson/workspaces}"
 VSLAM_CONFIG="${WORKSPACES}/isaac_ros-dev/src/px4_vslam/config/vslam_config.yaml"
-# vslam_config.yaml is untracked and REGENERABLE: template (fleet structure/tunables)
-# + serials (this drone). Reseed from the template on every run so template updates
-# propagate; existing serials are captured first and re-spliced, so the interactive
-# identify flow is only needed when serials are absent.
+# vslam_config.yaml is untracked and is overwritten from the template on every run. The three
+# serials are the only content carried across; any other hand edit to it is lost. Tunables
+# belong in vslam_config.template.yaml.
 VSLAM_TEMPLATE="${VSLAM_CONFIG%.yaml}.template.yaml"
-# --reseed-only: template refresh + serial re-splice, no prompts/hardware, then exit.
-# Setup runs it unconditionally so new template keys reach provisioned drones;
-# missing/partial configs are left to the interactive flow.
 RESEED_ONLY=0
 [[ "${1:-}" == "--reseed-only" ]] && RESEED_ONLY=1
 _SERIALS=()
 [ -f "${VSLAM_CONFIG}" ] && mapfile -t _SERIALS < <(grep -oE 'serial_no: "[0-9]+"' "${VSLAM_CONFIG}" | grep -oE '[0-9]+')
 if (( RESEED_ONLY )) && [ "${#_SERIALS[@]}" -ne 3 ]; then
-    # Seed anyway so a fresh clone / wiped config still gets a usable file with the
-    # current template keys; warn loudly because the serials are NOT restorable here.
     cp "${VSLAM_TEMPLATE}" "${VSLAM_CONFIG}"
     echo "WARNING: vslam_config.yaml had ${#_SERIALS[@]}/3 serials - reseeded from template" >&2
     echo "         with BLANK serials; run 'config_realsense' to reassign." >&2
@@ -45,13 +39,12 @@ if (( RESEED_ONLY )); then
 fi
 MOUNTS=(left front right)
 
-# rs-enumerate-devices / pyrealsense2 live under /opt/ros/humble; source ROS if needed
-# (nounset disabled around it - ROS setup.bash expands unguarded variables).
+# rs-enumerate-devices and pyrealsense2 live under /opt/ros/humble. ROS setup.bash expands
+# unguarded variables, so nounset stays off across the source.
 set +u
 [[ -f /opt/ros/humble/setup.bash ]] && source /opt/ros/humble/setup.bash 2>/dev/null || true
 set -u
 
-# Output helpers
 if [[ -t 1 ]]; then
     RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[1;34m'; BOLD='\033[1m'; NC='\033[0m'
 else
@@ -63,26 +56,25 @@ warn() { echo -e "  ${YELLOW}[WARN]${NC} $*"; }
 skip() { echo -e "  [SKIP]  $*"; }
 err()  { echo -e "  ${RED}[ERROR]${NC} $*" >&2; }
 
-# setup.sh runs us under `exec > >(tee ...)`, where a `read -p` prompt block-buffers in the pipe and
-# never reaches the operator. Drive the prompt and reply through the controlling terminal instead.
+# setup.sh runs this under `exec > >(tee ...)`, where a `read -p` prompt block-buffers in the pipe
+# and never reaches the operator, so prompts and replies go through the controlling terminal.
 TTY="/dev/tty"; { : > "${TTY}"; } 2>/dev/null || TTY="/dev/stderr"
 ask() { printf '%s' "$1" > "${TTY}"; IFS= read -r REPLY < "${TTY}" || REPLY=""; }
 
-# Capability probes: pyrealsense2 + cv2 + an X display (NoMachine).
 HAVE_PYRS=0; HAVE_CV2=0; HAVE_DISP=0; FEED=0
-# Keep the import error: the usual failure is a native .so that can't load its deps, not a missing module.
+# The import text is kept: the usual failure is a native .so that cannot load its dependencies,
+# not a missing module, and only the error names the missing library.
 PYRS_ERR=$(python3 -c 'import pyrealsense2' 2>&1) && HAVE_PYRS=1 || true
 CV2_ERR=$(python3 -c 'import cv2' 2>&1)           && HAVE_CV2=1 || true
 
-# User's real X authority, captured before we start swapping XAUTHORITY on retries.
+# Captured before the retry loop below starts overwriting XAUTHORITY.
 REAL_XAUTH="${XAUTHORITY:-$HOME/.Xauthority}"
 
-# Attached viewer = ESTABLISHED on the NX port; nxagent keeps running after disconnect,
-# so a live display is NOT proof anyone is watching.
+# nxagent keeps running after the viewer disconnects, so an X display is not proof anyone is
+# watching. An ESTABLISHED connection on the NX port is.
 NX_PORT=4000
 nx_attached() { ss -tn state established 2>/dev/null | awk '{print $3}' | grep -q ":${NX_PORT}$"; }
 
-# Pick the live NoMachine X display: $DISPLAY first, then every X socket, first that accepts.
 ensure_display() {
     HAVE_DISP=0
     nx_attached || return 1
@@ -93,12 +85,14 @@ ensure_display() {
     for d in "${cands[@]}"; do
         d="${d%%.*}"
         ck=$(XAUTHORITY="${REAL_XAUTH}" xauth list 2>/dev/null | grep -m1 ":${d}[[:space:]]" | awk '{print $3}')
-        [[ -n "${ck}" ]] || continue   # no cookie yet for this display - skip / keep waiting
-        # Re-key into our own throwaway file - never touch ~/.Xauthority (a stale cookie breaks the desktop).
+        [[ -n "${ck}" ]] || continue
+        # The cookie is re-keyed into a throwaway file. Never write ~/.Xauthority: a stale cookie
+        # there breaks the whole NoMachine desktop.
         cam="$(mktemp /tmp/arid_camxauth.XXXXXX)"
         xauth -f "${cam}" add "$(hostname)/unix:${d}" MIT-MAGIC-COOKIE-1 "${ck}" 2>/dev/null || true
         xauth -f "${cam}" add ":${d}" MIT-MAGIC-COOKIE-1 "${ck}" 2>/dev/null || true
-        # xhost connects with this cookie; success = the display is live AND we now hold local access.
+        # xhost connects with the cookie, so success proves the display is live and local access
+        # is now held. Nothing cheaper distinguishes a live display from a stale socket.
         if DISPLAY=":${d}" XAUTHORITY="${cam}" xhost +local: >/dev/null 2>&1; then
             export DISPLAY=":${d}" XAUTHORITY="${cam}"; _CAM_XAUTH="${cam}"; HAVE_DISP=1; return 0
         fi
@@ -111,15 +105,15 @@ ensure_display || true
 FEED_PID=""
 close_feed() {
     [[ -z "${FEED_PID}" ]] && return 0
-    kill "${FEED_PID}" 2>/dev/null                 # SIGTERM: python exits at once (no blocking pipe.stop())
+    kill "${FEED_PID}" 2>/dev/null
     local i; for i in 1 2 3 4 5 6; do kill -0 "${FEED_PID}" 2>/dev/null || break; sleep 0.5; done
-    kill -9 "${FEED_PID}" 2>/dev/null              # force if somehow still alive
+    kill -9 "${FEED_PID}" 2>/dev/null
     wait "${FEED_PID}" 2>/dev/null
     FEED_PID=""
 }
 trap 'close_feed; rm -f "${_CAM_XAUTH:-}"' EXIT
 
-open_feed() {              # $1 = serial - live RealSense preview window in the background
+open_feed() {              # $1 = camera serial
     [[ "${FEED}" -eq 1 ]] || return 0
     DISPLAY="${DISPLAY}" python3 - "$1" >/dev/null 2>&1 <<'PY' &
 import sys, numpy as np, cv2, pyrealsense2 as rs
@@ -142,7 +136,7 @@ PY
     sleep 2
 }
 
-write_serial() {           # $1 = mount, $2 = serial - block-scoped serial_no edit
+write_serial() {           # $1 = mount (left|front|right), $2 = camera serial
     local mount="$1" serial="$2" tmp; tmp=$(mktemp)
     awk -v blk="^${mount}_realsense/" -v sn="${serial}" '
         $0 ~ blk { inblk=1 }
@@ -157,11 +151,9 @@ write_serial() {           # $1 = mount, $2 = serial - block-scoped serial_no ed
     ' "${VSLAM_CONFIG}" > "${tmp}" && mv "${tmp}" "${VSLAM_CONFIG}"
 }
 
-# RealSense serial assignment (opt-in). Skips (does not exit) on any precondition miss.
-# librealsense claims the device over libusb, not just /dev/video*, so without a udev rule the
-# node stays 0664 root:root and enumeration returns zero devices as a non-root user - which
-# surfaces as a blank serial_no rather than an error. setup_permissions writes the same file;
-# this re-installs it when config_realsense is run standalone on a host that never had it.
+# librealsense claims the device over libusb rather than /dev/video*, so without this udev rule the
+# node stays 0664 root:root and enumeration returns zero devices to a non-root user. That surfaces
+# as a blank serial_no rather than an error.
 ensure_libusb_rules() {
     local rs_rules="/etc/udev/rules.d/99-realsense-libusb.rules"
     if [[ -f "${rs_rules}" ]]; then
@@ -205,8 +197,6 @@ realsense_assign() {
     local GO
     if [[ -n "${ARID_RS_ASSIGN:-}" ]]; then GO="${ARID_RS_ASSIGN}"
     elif [[ "${#_SERIALS[@]}" -eq 3 ]]; then
-        # Serials from the previous config were re-spliced into the fresh template above;
-        # keeping them needs no identification.
         ok "existing serials carried through reseed: ${_SERIALS[*]}"
         ask "  Assign RealSense cameras? (y/n, Enter = keep existing): "; GO="${REPLY}"
         is_yes "${GO}" || { skip "keeping existing serials; template refreshed"; return 0; }
@@ -229,7 +219,8 @@ realsense_assign() {
             exit 2
         fi
         if (( ! HAVE_DISP )); then
-            # Exclude loopback, link-local, and the docker bridge so we show the address NoMachine uses.
+            # Loopback, link-local and the docker bridge are excluded so the address printed is
+            # the one a NoMachine client can reach.
             local _ip _w
             _ip=$(hostname -I 2>/dev/null | tr ' ' '\n' \
                 | grep -vE '^(127\.|169\.254\.|172\.(1[6-9]|2[0-9]|3[01])\.)' | head -1)
@@ -246,7 +237,6 @@ realsense_assign() {
         fi
     fi
 
-    # The awk anchors "Serial Number" so "Asic Serial Number" is not double-counted.
     local -a SERIALS=()
     if (( HAVE_PYRS )); then
         mapfile -t SERIALS < <(python3 - <<'PY'
@@ -255,6 +245,7 @@ print("\n".join(sorted(d.get_info(rs.camera_info.serial_number) for d in rs.cont
 PY
 )
     elif command -v rs-enumerate-devices >/dev/null 2>&1; then
+        # The awk anchors "Serial Number" at line start so "Asic Serial Number" is not counted too.
         mapfile -t SERIALS < <(rs-enumerate-devices 2>/dev/null \
             | awk -F: '/^[[:space:]]*Serial Number[[:space:]]*:/ {gsub(/[ \t]/,"",$2); print $2}' \
             | sort -u | grep -E '^[0-9]+$')

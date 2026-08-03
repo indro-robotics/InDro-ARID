@@ -1,6 +1,5 @@
 # network.sh: ZeroTier daemon + membership.
 
-# ACCESS_DENIED is not a failure: the node works the moment it is authorized in ZeroTier Central.
 setup_zerotier() {
     step "ZeroTier"
 
@@ -14,7 +13,6 @@ setup_zerotier() {
     fi
     sudo systemctl enable --now zerotier-one >/dev/null 2>&1 || true
 
-    # Already a member of a network: leave it unchanged (switching is zt_join's job).
     local joined
     joined=$(sudo zerotier-cli -j listnetworks 2>/dev/null \
         | python3 -c "import json,sys;print(' '.join(n['nwid'] for n in json.load(sys.stdin)))" 2>/dev/null || true)

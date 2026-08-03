@@ -5,10 +5,9 @@ import numpy as np
 from collections import deque
 
 RESEAT_BYPASS_MIN_FRAMES = 2      # post-commit frames that must rebase the baseline before the
-                                  # bypass window closes: a wall-clock-only close can expire with
-                                  # zero admitted frames on a degraded stream, re-arming the
-                                  # pre-re-seat baseline loop the bypass exists to break
-RESEAT_BYPASS_CEILING_S = 3.0     # hard cap so a dead stream cannot hold the jump gate open
+                                  # bypass window closes: closing on wall clock alone admits zero
+                                  # frames on a degraded stream and re-arms the re-seat loop
+RESEAT_BYPASS_CEILING_S = 3.0     # cap so a dead or stale stream cannot pin the bypass open
 import message_filters
 from rclpy.node import Node
 from std_msgs.msg import Bool, UInt8, UInt32
@@ -34,6 +33,7 @@ class vslam_reactor(Node):
     def __init__(self): 
         super().__init__('vslam_reactor_node')
 
+        # Must run before sync_cache_sz is read below.
         self._load_params()
 
         self.init_flag = True
@@ -42,16 +42,21 @@ class vslam_reactor(Node):
         self.vslam_status = 0
         self.vslam_busy = False
         self._vslam_busy_since = self.get_clock().now()
-        self._seat_seq = 0
-        self._seat_is_init = False
+        self._seat_seq = 0           # re-seat generation: a response carrying a superseded seq
+                                     # must not touch the successor's state
+        self._seat_is_init = False   # only ORIGIN seats bump the reset epoch
         self.new_set_pose_call = False
         self.ev_fusion_started = False
-        self._vio_reset_epoch = 0    # bumped on committed ORIGIN seats only -> EKF2 reset_counter
+        self._vio_reset_epoch = 0    # committed ORIGIN seats only; becomes EKF2 reset_counter
         self.last_set_pose_time = self.get_clock().now()
 
-        self._last_reseat_commit = None   # None = no post-re-seat bypass window open
-        self._reseat_bypass_frames = 0
+        # None = no bypass window open. Set from the SUCCESS response, never at dispatch:
+        # vslam_busy drops every frame in between, so a dispatch-anchored window can expire
+        # before the first post-re-seat frame is admitted.
+        self._last_reseat_commit = None
+        self._reseat_bypass_frames = 0   # frames stamped after the commit that rebased the baseline
 
+        # Only an 'origin' settle escalates to an origin re-injection on settle timeout.
         self._settle_owner = 'origin'
 
         # Committed JUMP re-seat timestamps only. Origin re-injects are settle-timeout bounded, so
@@ -183,7 +188,6 @@ class vslam_reactor(Node):
 
 
     def _load_params(self):
-        # Overridden by config/px4_vslam_reactor.yaml, which enters angular gates in degrees.
         defaults = [
             ('vslam_stabilization_time', 1.0),
             ('lin_vel_gate', 5.0),
@@ -208,6 +212,7 @@ class vslam_reactor(Node):
     def _apply_params(self):
         for name in self._param_names:
             setattr(self, name, self.get_parameter(name).value)
+        # ang_vel_gate and align_yaw are radians; the *_dps and *_deg parameters are the entry form.
         self.ang_vel_gate = np.radians(self.ang_vel_gate_dps)
         self.align_yaw = np.radians(self.align_yaw_deg)
 
@@ -215,8 +220,8 @@ class vslam_reactor(Node):
         if not self.pose_ingress_ok(
                 (float(msg.position[0]), float(msg.position[1]), float(msg.position[2])),
                 (float(msg.q[1]), float(msg.q[2]), float(msg.q[3]), float(msg.q[0]))):
-            # Dropped before the freshness stamp: a boot-transient frame must not count as fresh
-            # odom for set_slam_pose.
+            # Return before the freshness stamp: a non-finite frame must not count as fresh odom
+            # for set_slam_pose's age gate.
             self.get_logger().error("FMU ingress: non-finite/zero-norm pose dropped",
                                     throttle_duration_sec=1.0)
             return
@@ -224,8 +229,9 @@ class vslam_reactor(Node):
         self._last_px4_rx = now
 
         # uXRCE timesync excursions pass boot-relative or future stamps straight through and
-        # corrupt the tf2 buffer for the px4 frame. Skew-vs-now, not monotonicity: a future stamp
-        # is still monotonic. clock_type must match now's (ROS_TIME); the Time() default is
+        # corrupt the tf2 buffer for the px4 frame. Skew-vs-now, not a monotonicity guard: a
+        # future stamp is still monotonic. Duration.nanoseconds is signed, so a future stamp gives
+        # negative skew. clock_type must match now's (ROS_TIME); the Time() default is
         # SYSTEM_TIME and cross-clock subtraction raises TypeError.
         fmu_time = rclpy.time.Time(nanoseconds=msg.timestamp * 1000,   # PX4 stamps in us
                                    clock_type=now.clock_type)
@@ -377,7 +383,8 @@ class vslam_reactor(Node):
     @staticmethod
     def pose_ingress_ok(p, q) -> bool:
         # A NaN/Inf field or a zero-norm quaternion reaches R.from_quat in the displacement and
-        # yaw gates and in the frame conversions, raising ValueError out of the executor.
+        # yaw gates and in the frame conversions, raising ValueError out of the executor and
+        # killing the node.
         if not all(math.isfinite(v) for v in (p[0], p[1], p[2], q[0], q[1], q[2], q[3])):
             return False
         return (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]) > 1e-6
@@ -496,8 +503,8 @@ class vslam_reactor(Node):
             return False, True
         for field in Odometry.__slots__:
             setattr(self.last_vslam_odom_msg, field, getattr(vslam_odom_msg, field))
-        # clock_type must match the commit stamp's: cross-clock subtraction raises TypeError out
-        # of the executor.
+        # clock_type must match the commit stamp's (node clock): cross-clock subtraction raises
+        # TypeError out of the executor.
         stamp_t = rclpy.time.Time.from_msg(vslam_odom_msg.header.stamp,
                                            clock_type=self._last_reseat_commit.clock_type)
         fresh = (stamp_t - self._last_reseat_commit).nanoseconds > 0
@@ -543,8 +550,7 @@ class vslam_reactor(Node):
         if healthy == self._burst_unhealthy:
             self._burst_unhealthy = not healthy
             self._vo_health_update()
-            # Two call sites, one severity each: rclpy pins severity per call site and raises on
-            # a change.
+            # One severity per call site: rclpy pins it on first use and raises on a change.
             if not healthy:
                 self.get_logger().error(
                     f"RE-SEAT BURST: {len(self._reseat_burst)} jump re-seats in "
@@ -580,8 +586,8 @@ class vslam_reactor(Node):
             drone_odom_msg = self.sync_msg(current_odom_time, self._drone_odom_cache)
 
             if drone_odom_msg is None:
-                # Polled every frame during the settle window: neither miss path logs, the caller
-                # warns once per injection.
+                # Polled every frame during the settle window: the caller warns once per
+                # injection, so neither miss path logs here.
                 return True
 
             yaw_err = self.yaw_delta(drone_odom_msg.pose.pose.orientation,
@@ -604,7 +610,8 @@ class vslam_reactor(Node):
         if not last_drone_odom_msg:
             return False
 
-        # Skip stale (pre-reboot) PX4 samples; the caller retries each frame until one is fresh.
+        # Skip stale (pre-reboot) PX4 samples: a re-seat must never be anchored on FMU-down
+        # odometry. The caller retries each frame until a fresh sample arrives.
         age = (self.get_clock().now() - self._last_px4_rx).nanoseconds / 1e9
         if age > self.set_pose_max_odom_age:
             return False
@@ -612,6 +619,7 @@ class vslam_reactor(Node):
         self.last_set_pose_time = self.get_clock().now()
         req = SetSlamPose.Request()
 
+        # SetSlamPose takes FLU.
         if init:
             req.pose.position.x = 0.0
             req.pose.position.y = 0.0
@@ -650,8 +658,7 @@ class vslam_reactor(Node):
         _msg = (f"init={init} "
                 f"pos=({req.pose.position.x:.3f},{req.pose.position.y:.3f},{req.pose.position.z:.3f}) "
                 f"yaw={_yaw:.1f}deg src_odom_age={age:.4f}s")
-        # Two call sites, one severity each: rclpy pins severity per call site and raises on a
-        # change.
+        # One severity per call site: rclpy pins it on first use and raises on a change.
         if init:
             self.get_logger().warn(f">>> SET ORIGIN (settling) <<< {_msg}")
         else:
@@ -663,7 +670,6 @@ class vslam_reactor(Node):
         self.vslam_busy = True
         self._seat_is_init = init
         self.new_set_pose_call = True
-        # Only an 'origin' settle escalates to an origin re-injection on settle timeout.
         self._settle_owner = 'origin' if init else 'reseat'
 
         seq = self._seat_seq = (self._seat_seq + 1) & 0xFFFFFFFF
@@ -728,9 +734,9 @@ class vslam_reactor(Node):
                             self.publish_vslam_to_px4(vslam_odom_msg)
                         elif self._settle_owner != 'origin':
                             # A jump-re-seat settle that fails to align must NEVER escalate to
-                            # set_slam_pose(True): that zeroes position to (0,0,0) AND zeroes yaw,
-                            # discarding the heading datum in flight with no rebase anywhere
-                            # downstream. EKF2 re-anchors on its own.
+                            # set_slam_pose(True): that is an ORIGIN injection, position and yaw
+                            # both zeroed, and in flight it destroys the heading datum, since an
+                            # EKF2 reset rebases z and xy downstream but nothing rebases yaw.
                             self.get_logger().error(
                                 f"SETTLE ({self._settle_owner}): EKF2 not aligned within "
                                 f"{self.set_origin_settle_time:.1f}s - abandoning alignment "

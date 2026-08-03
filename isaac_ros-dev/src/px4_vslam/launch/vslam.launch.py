@@ -1,3 +1,6 @@
+# VSLAM bringup: the RealSense drivers and cuVSLAM in one multithreaded component container, plus
+# the reactor and the PX4 bridge. Started by arid_supervisor's vslam_enable service, not by hand:
+# a second stack claims the same cameras and node names.
 import os
 
 import launch
@@ -29,10 +32,10 @@ def generate_launch_description():
     ld = env.get('LD_LIBRARY_PATH', '')
     env['LD_LIBRARY_PATH'] = f"/opt/ros/humble/lib:{ld}" if ld else "/opt/ros/humble/lib"
 
-    # The host's arid_description.service latches /robot_description and /tf_static, and cuVSLAM
-    # resolves base_link to each camera optical frame at init, before its first image set. This
-    # echo exits as soon as a publisher with matching transient-local QoS exists, so it gates the
-    # rest of the launch on those frames being available.
+    # The host unit arid_description.service latches /robot_description and /tf_static, and
+    # cuVSLAM resolves base_link to each camera optical frame out of TF at init: nothing below may
+    # start before those frames exist. The echo's QoS flags have to match the latched publisher or
+    # it never returns and the bringup stalls here.
     wait_for_description = ExecuteProcess(
         cmd=['ros2', 'topic', 'echo',
              '/robot_description', 'std_msgs/msg/String',
@@ -64,8 +67,7 @@ def generate_launch_description():
 
     # Sibling RealSenseNodeFactory instances cross-probe every attached RealSense on each
     # enumeration event, and a collision loses the claim with RS2_USB_STATUS_BUSY. The forked
-    # factory releases the half-claimed handle and re-claims until it wins; arid_supervisor's
-    # vslam_enable gate holds bringup until every configured camera is up.
+    # factory releases the half-claimed handle and re-claims until it wins.
     vslam_container = ComposableNodeContainer(
         name='vslam_container',
         namespace='',
@@ -73,9 +75,8 @@ def generate_launch_description():
         executable='component_container_mt',
         output='screen',
         env=env,
-        # The D4xx sensors close serially, 15-20 s for three devices; a shorter grace SIGKILLs
-        # mid-close and leaves the device in a state the next bringup cannot claim. Tracks
-        # SIGINT_GRACE_S['vslam'] in arid_supervisor.
+        # The D4xx sensors close serially and a SIGKILL mid-close leaves the device in a state the
+        # next bringup cannot claim. Tracks SIGINT_GRACE_S['vslam'] in arid_supervisor.
         sigterm_timeout='25.0',
         sigkill_timeout='10.0',
         composable_node_descriptions=[

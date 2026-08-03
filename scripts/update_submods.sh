@@ -1,10 +1,5 @@
 #!/bin/bash
-# Submodule sync, verification, and pin-advancement tool.
-#
-# Usage:
-#   update_submods.sh           - sync to pinned SHAs + verify (used by setup.sh)
-#   update_submods.sh --update  - advance live submodules to branch tips / retag pinned ones
-#                                 then report what changed so you can commit + push
+# update_submods.sh - submodule sync, verification, and pin advancement.
 set -euo pipefail
 
 REPO_ROOT="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
@@ -16,12 +11,8 @@ err()  { echo -e "  ${RED}[ERROR]${NC} $*" >&2; }
 warn() { echo -e "  ${YELLOW}[WARN]${NC}  $*"; }
 info() { echo -e "  ${YELLOW}>>>${NC} $*"; }
 
-###############################################################################
-# Submodule definitions
-#
-# LIVE    - InDro-controlled, branch-tracked; verify SHA is on expected branch
-# PINNED  - external, exact tag required; verify tag matches
-###############################################################################
+# LIVE submodules are InDro-controlled and track a branch tip. PINNED submodules are external
+# and must sit on an exact tag. A new submodule goes in the array that matches its owner.
 
 # Format: "path:branch"
 LIVE_SUBMODULES=(
@@ -39,9 +30,6 @@ PINNED_SUBMODULES=(
     "isaac_ros-dev/src/px4-ros2-interface-lib:1.4.0"
 )
 
-###############################################################################
-# MODE: --update  (developer tool - advance pins)
-###############################################################################
 if [[ "${1:-}" == "--update" ]]; then
     echo "=== Updating live (branch-tracked) submodules ==="
     for entry in "${LIVE_SUBMODULES[@]}"; do
@@ -80,16 +68,13 @@ if [[ "${1:-}" == "--update" ]]; then
     exit 0
 fi
 
-###############################################################################
-# MODE: default  (sync + verify - called by setup.sh)
-###############################################################################
 echo "Syncing all submodules to pinned commits..."
 git submodule sync --recursive
 git submodule update --init --recursive
 echo ""
 
-# 'git submodule update' is a no-op when HEAD already matches the pin, even if the working
-# tree was emptied: restore any submodule whose tree has no real files.
+# git submodule update is a no-op when HEAD already matches the pin, even when the working tree
+# has been emptied.
 echo "Ensuring submodule working trees are populated..."
 while IFS= read -r path; do
     [[ -d "$path" ]] || continue

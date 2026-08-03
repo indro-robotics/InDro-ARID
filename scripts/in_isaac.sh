@@ -1,17 +1,11 @@
 #!/bin/bash
 # in_isaac.sh - run a container alias/command from the host inside the Isaac container.
-# Used by the host mirrors of the container aliases (colcon_isaac, clean_isaac, ...).
-#
-# Usage:
-#   in_isaac.sh <alias-or-command...>     # interactive when on a TTY, else plain
-#   in_isaac.sh -t <alias-or-command...>  # force a TTY
 
 set -uo pipefail
 
 CONTAINER=isaac_ros_dev-aarch64-container
 
-# Allocate a TTY when we have one; plain -i otherwise. -t is honored only with a
-# real TTY (docker exec -it from a pipe hard-fails) - else fall back to the shim.
+# docker exec -it fails outright without a real TTY on both stdin and stdout.
 FLAGS=(-i)
 { [ -t 0 ] && [ -t 1 ]; } && FLAGS=(-it)
 [[ "${1:-}" == "-t" ]] && shift
@@ -22,20 +16,17 @@ if ! docker inspect -f '{{.State.Running}}' "${CONTAINER}" 2>/dev/null | grep -q
 fi
 
 # bash -i: the container's aliases load only in an interactive shell, not a plain docker exec.
-# -u admin: same uid as the supervisor and host so control service calls share Fast-DDS SHM.
-#
-# Signal forwarding: killing the docker-exec CLIENT does NOT kill the in-container
-# process, so a host Ctrl+C/SSH drop would orphan a long-running alias (initialize)
-# inside the container. The run is tagged with a unique token and started as a
-# session leader; on INT/TERM/HUP the trap reaps the whole in-container process
-# group by token. SIGKILL of the client remains uncoverable.
+# -u admin: same uid as the supervisor and the host, so service calls share Fast-DDS shared memory.
+# Killing the docker-exec client does not kill the in-container process: without the token and
+# trap below, a host Ctrl+C or SSH drop orphans a long-running alias inside the container, where
+# it keeps issuing service calls at the supervisor. SIGKILL of the client is not covered.
 cmd="$(printf '%q ' "$@")"
 TOKEN="aridshim_$$_${RANDOM}"
 reap_container_run() {
-    # Sweep the tagged run (in-container bash -ic + host docker client, both visible
-    # via --pid=host); the reap_by_token marker excludes the reaper itself. Group-kill
-    # only verified leaders (/proc/stat pgid == pid) - a non-leader's PID may equal an
-    # innocent group's PGID.
+    # The container runs with --pid=host, so the host docker client is visible from inside it
+    # and carries the token too. The reap_by_token marker keeps the sweep from killing itself.
+    # Group-kill only verified leaders (/proc/stat pgid == pid): a non-leader's PID may equal
+    # an unrelated group's PGID.
     local sweep
     sweep='
         tok="$1"; sig="$2"
@@ -57,15 +48,14 @@ reap_container_run() {
     docker exec "${CONTAINER}" bash -c "${sweep}" _ "${TOKEN}" TERM 2>/dev/null
 }
 if [[ "${FLAGS[*]}" == *t* ]]; then
-    # TTY path: the pty delivers Ctrl+C inward natively, and a client death closes the
-    # pty -> SIGHUP to the foreground group. No shim needed.
+    # The pty delivers Ctrl+C inward, and a client death closes it, which SIGHUPs the
+    # foreground group: no reaper needed on this path.
     exec docker exec -u admin "${FLAGS[@]}" "${CONTAINER}" bash -ic "${cmd}"
 fi
-# Non-TTY path: start the run as its OWN SESSION so the token identifies a real process
-# group the reaper can kill wholesale (a bare bash -ic ignores a direct INT and is not
-# reliably a group leader).
-# Disarm traps first (the sweep signals the shim's own group - a nested trap would double
-# the reap); a captured rc wins over the signal code.
+# setsid gives the run its own session, so the token identifies a real process group the reaper
+# can kill wholesale; a bare bash -ic ignores a direct INT and is not reliably a group leader.
+# The trap disarms itself first: the sweep signals this shim's own group, and a live trap would
+# reap twice.
 rc=""
 trap 'trap "" INT TERM HUP; reap_container_run; exit "${rc:-130}"' INT
 trap 'trap "" INT TERM HUP; reap_container_run; exit "${rc:-143}"' TERM HUP

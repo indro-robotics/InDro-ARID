@@ -10,12 +10,12 @@ warn() { echo -e "  ${YELLOW}[WARN]${NC} $*"; }
 skip() { echo -e "  [SKIP]  $*"; }
 err()  { echo -e "  ${RED}[ERROR]${NC} $*" >&2; }
 
-# Case-insensitive y/yes n/no; strip non-letters first (a stray CR breaks the match).
+# Non-letters are stripped first: a stray CR breaks the match.
 is_yes() { local a="${1//[^A-Za-z]/}"; case "${a,,}" in y|yes) return 0 ;; *) return 1 ;; esac; }
 is_no()  { local a="${1//[^A-Za-z]/}"; case "${a,,}" in n|no)  return 0 ;; *) return 1 ;; esac; }
 
-# Validated yes/no prompt. $1 = prompt text, $2 = default on Enter (y or n).
-# Re-prompts on anything else, so a stray key is never silently read as "no".
+# $1 = prompt text, $2 = default on Enter (y or n; anything else re-prompts).
+# Unrecognised input re-prompts: a stray key must never count as "no".
 ask_yn() {
     local a
     while true; do
@@ -30,16 +30,14 @@ ask_yn() {
     done
 }
 
-# True when this shell runs inside a NoMachine session (NX_* session vars are inherited by
-# setup; SSH/console shells have none). Process ancestry is unreliable - the terminal is
-# re-parented under the desktop. Setup uses this to leave NoMachine untouched: a reinstall
-# would drop the very session running setup.
+# NX_* session variables are inherited by setup; SSH and console shells carry none. Process
+# ancestry cannot answer this: the terminal is re-parented under the desktop.
 is_inside_nomachine() {
     [[ -n "${NX_SESSION_ID:-}${NXSESSIONID:-}${NX_RUNNER:-}${NX_CONNECTION:-}${NX_CLIENT:-}" ]]
 }
 
-# Clear resume hooks on a user-initiated exit. Not called from the failure() ERR trap:
-# a hard failure keeps its checkpoints so './setup.sh --continue' can pick up.
+# Never call this from the failure() ERR trap: a hard failure must keep its checkpoints so
+# './setup.sh --continue' can pick up.
 cleanup_user_exit() {
     local home="${HOME_DIR:-$HOME}"
     rm -f "${home}/.arid_resume_setup" \
@@ -47,8 +45,8 @@ cleanup_user_exit() {
           "${home}/.arid_run_smoke" \
           "${home}/.arid_setup_log" \
           "${home}/.arid_pending_build_isaac" 2>/dev/null || true
-    # camera_focus leftovers: a quit at the focus prompt exits without unwinding the
-    # function, so its detached Foxglove bridge + camera pipelines are reaped here.
+    # A quit at the camera_focus prompt exits without unwinding that function, so its
+    # detached Foxglove bridge and camera pipelines are reaped here instead.
     if [ -f /tmp/arid_focus_fox.pgid ]; then
         kill -KILL -- -"$(cat /tmp/arid_focus_fox.pgid)" 2>/dev/null || true
         rm -f /tmp/arid_focus_fox.pgid
@@ -57,7 +55,6 @@ cleanup_user_exit() {
     fi
 }
 
-# user_exit [CODE] - clear hooks, then exit with CODE (default 1).
 user_exit() { cleanup_user_exit; exit "${1:-1}"; }
 
 failure() {
@@ -70,7 +67,7 @@ failure() {
     exit 1
 }
 
-# Ctrl+C at any time. Default = quit setup; n = continue where we left off.
+# SIGINT trap (setup.sh). Returning from it resumes the interrupted step in place.
 quit_handler() {
     echo
     (( ${PRE:-0} )) && user_exit 130
@@ -81,8 +78,8 @@ quit_handler() {
     esac
 }
 
-# prompt_failure_action ERR_MSG [REASON]
-# Returns 0 = continue setup (skip this section). On the exit choice: clears hooks and exits 1.
+# $1 = error message, $2 = optional detail. Returns 0 to continue with this section skipped;
+# the exit answer does not return.
 prompt_failure_action() {
     err "$1"; [[ -n "${2:-}" ]] && echo "  ${2}"
     (( ${PRE:-0} )) && { warn "non-interactive - exiting on section failure (resumable via --continue)"; exit 1; }
@@ -91,7 +88,7 @@ prompt_failure_action() {
     case "${ans,,}" in c|continue) return 0 ;; *) user_exit 1 ;; esac
 }
 
-# prompt_section_or_skip PROMPT - returns 0 = run this section, 1 = skip. Not an exit path.
+# Returns 0 to run the section, 1 to skip it. Never exits.
 prompt_section_or_skip() {
     (( ${PRE:-0} )) && return 0
     local ans
@@ -99,8 +96,8 @@ prompt_section_or_skip() {
     case "${ans,,}" in q|skip) return 1 ;; *) return 0 ;; esac
 }
 
-# prompt_core_failure LABEL [DETAIL] -> echoes retry|skip|exit. Prompts on /dev/tty so it
-# works under --full; no tty -> exit. Callers handle "exit" and should call user_exit.
+# The answer is echoed on stdout for capture, so the messages go to stderr. Reads /dev/tty
+# so the prompt still reaches the operator under --full; no tty echoes exit.
 prompt_core_failure() {
     err "$1 failed" >&2; [[ -n "${2:-}" ]] && echo "  $2" >&2
     local ans

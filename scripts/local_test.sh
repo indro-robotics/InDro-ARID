@@ -1,12 +1,10 @@
 #!/bin/bash
-# Smoke test for host-side local_ws stack: systemd services, aliases,
-# foxglove_bridge socket, cam_down + cam_front lifecycle, supervisor graph.
-# Re-runnable. Leaves both camera pipelines STOPPED. Destructive aliases
-# (reset_usb, clean_local) are existence-checked only, never invoked.
+# local_test.sh - smoke test for the host-side local_ws stack.
+# Re-runnable, and it leaves both camera pipelines stopped. reset_usb and clean_local are
+# checked for existence only: invoking them would reboot the FMU or wipe build/install/log.
 
 set -u
 
-# Output helpers
 if [[ -t 1 ]]; then
     BLUE='\033[1;34m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 else
@@ -18,14 +16,14 @@ FAIL=0
 SKIP=0
 RESULTS=()
 
-# Resources started by this test; anything still set when the EXIT trap fires is a leak
-# from an aborted run.
+# Anything still set when the EXIT trap fires is a leak from an aborted run, so each flag is
+# cleared as soon as its own teardown is confirmed.
 BRIDGE_LAUNCHED_BY_US=""
 CAM_DOWN_STARTED_BY_US=""
 CAM_FRONT_STARTED_BY_US=""
 
-# No PID tracking: setsid forks and exits, so $! goes stale within milliseconds.
-# Locate the listener by port at teardown instead.
+# setsid forks and exits, so $! is stale within milliseconds and the bridge has to be found by
+# whoever holds the port.
 _kill_bridge_on_8765() {
     local holder parent
     for _ in 1 2 3 4 5; do
@@ -46,7 +44,6 @@ _kill_bridge_on_8765() {
     ! ss -tlnp 2>/dev/null | grep -q ':8765 '
 }
 
-# Last-resort cleanup on any exit (Ctrl-C, set -e abort, normal end). Silent by design.
 _cleanup_on_exit() {
     if [[ -n "${BRIDGE_LAUNCHED_BY_US}" ]]; then
         _kill_bridge_on_8765 >/dev/null 2>&1 || true
@@ -73,7 +70,6 @@ skip() { echo -e "${YELLOW}RESULT:  [SKIP]  $*${NC}"; SKIP=$((SKIP+1)); RESULTS+
 fix()  { echo -e "${CYAN}FIX:${NC}     $*"; }
 note() { echo -e "         $*"; }
 
-# Source ROS for non-interactive invocations.
 if [[ -z "${ROS_DISTRO:-}" ]]; then
     [[ -f /opt/ros/humble/setup.bash ]] && source /opt/ros/humble/setup.bash
     [[ -f /home/jetson/workspaces/local_ws/install/setup.bash ]] && \
@@ -81,12 +77,11 @@ if [[ -z "${ROS_DISTRO:-}" ]]; then
 fi
 export ROS_DOMAIN_ID=23
 
-# bash -ic is reserved for the alias check (needs .bashrc): interactive bash claims the
-# terminal foreground via tcsetpgrp and never restores it, so the parent's next TTY write
-# raises SIGTTOU and stops the script. Everything else calls ros2 directly.
+# Only the alias check may use bash -ic, because it needs .bashrc. Interactive bash claims the
+# terminal foreground via tcsetpgrp and never gives it back, so the parent's next write to the
+# TTY raises SIGTTOU and stops the script.
 ialias() { bash -ic "$*" </dev/null 2>&1 | grep -v 'job control'; }
 
-# Direct ros2 wrappers (no interactive bash).
 _setbool()      { ros2 service call "$1" std_srvs/srv/SetBool "{data: $2}" 2>&1; }
 _trigger()      { ros2 service call "$1" std_srvs/srv/Trigger '{}' 2>&1; }
 _latched_bool() {
@@ -95,7 +90,6 @@ _latched_bool() {
         "$1" 2>&1
 }
 
-# Count BEST_EFFORT messages over a wall-time window.
 count_msgs() {
     local topic="$1" win="$2"
     timeout "$win" ros2 topic echo --no-arr --qos-reliability best_effort "$topic" 2>/dev/null \
@@ -185,8 +179,6 @@ if [[ -n "${PORT_OUT}" ]]; then
     pass "port 8765 already listening (bridge was running)"
 else
     note "no bridge running; launching via the foxglove_bridge alias (will be cleaned up in Section 7)"
-    # setsid: own process group for teardown; $! would point at the wrapper, so
-    # cleanup finds the bridge by port instead.
     setsid bash -ic 'foxglove_bridge' >/tmp/foxglove_bridge.log 2>&1 < /dev/null &
     BRIDGE_LAUNCHED_BY_US=1
     LAUNCHED=""
@@ -207,7 +199,6 @@ fi
 
 hdr "Section 4: cam_down lifecycle (CSI IMX219, sensor-id=1)"
 
-# 4a. clean stopped state
 step "4a. Force initial STOPPED state"
 what     "Call cam_down_stop unconditionally so the test starts from a known state."
 why      "Lifecycle test is meaningless without a known starting state."
@@ -222,13 +213,12 @@ else
     fail "could not establish baseline STOPPED state"
 fi
 
-# 4b. start
 step "4b. cam_down_start should spawn the gst_cam_node subprocess"
 what     "SetBool(true) on /gst_camera_manager/cam_down. The manager forks gst_cam_node as a subprocess."
 why      "The whole pipeline depends on this subprocess. If it does not spawn, no subsequent check can pass."
 START_OUT=$(_setbool /gst_camera_manager/cam_down true)
 raw "${START_OUT}"
-CAM_DOWN_STARTED_BY_US=1   # cleared at 4i once explicit stop confirms STOPPED
+CAM_DOWN_STARTED_BY_US=1
 PID=$(echo "${START_OUT}" | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)
 if echo "${START_OUT}" | grep -q "success=True" && [[ -n "${PID}" ]]; then
     pass "subprocess spawned (pid=${PID})"
@@ -236,14 +226,12 @@ else
     fail "cam_down_start did not produce a running subprocess"
 fi
 
-# 4c. argus + pipeline negotiation
 step "4c. Wait for Argus + GStreamer pipeline to negotiate"
 what     "nvarguscamerasrc takes ~3 s to negotiate sensor mode and start streaming."
 why      "Tests on the topics will fail prematurely without this grace period."
 note     "sleeping 4 s..."
 sleep 4
 
-# 4d. status running
 step "4d. cam_down_status should report RUNNING"
 STATUS=$(_trigger /gst_camera_manager/cam_down/status)
 raw "${STATUS}"
@@ -253,7 +241,6 @@ else
     fail "status not RUNNING after start"
 fi
 
-# 4e. topics exist
 step "4e. Three topics should exist: image_raw, image_raw/compressed, camera_info"
 what     "Listing topics on the ROS graph; checking the three gst_cam_node publishers."
 why      "If publishers aren't created, the gst_cam_node binary crashed (most common: empty encoding string, bad calibration path)."
@@ -268,7 +255,6 @@ for t in /cam_down/image_raw /cam_down/image_raw/compressed /cam_down/camera_inf
     fi
 done
 
-# 4f. frame_id
 step "4f. /cam_down/image_raw header.frame_id must equal 'bottom_visual_link'"
 what     "Subscribe with matching BEST_EFFORT QoS and echo a single header."
 why      "This is the TF frame that downstream consumers transform from. Wrong frame_id silently breaks every camera→base_link TF lookup."
@@ -280,7 +266,6 @@ else
     fail "frame_id is wrong or echo did not return"
 fi
 
-# 4g. rate
 step "4g. /cam_down/image_raw rate over 5 s"
 what     "Count message separators ('---') from 'topic echo --no-arr' over a 5-second window."
 why      "Pipeline is configured for ~15 fps (delivered ~16 Hz). Accept >= 6 Hz (~40% of delivered) as pass. Below that indicates an upstream fault (Argus dropping or ISP backpressure)."
@@ -296,7 +281,6 @@ else
     fail "no image_raw messages received in 5 s"
 fi
 
-# 4h. /alive
 step "4h. /gst_camera_manager/cam_down/alive should be latched 'true'"
 what     "Read the latched Bool with QoS RELIABLE / TRANSIENT_LOCAL / depth 1. Up to 10 s for first-time discovery."
 why      "This is the manager's published verdict on whether frames are actually flowing. If status reports RUNNING but alive reports false, the watchdog is detecting a stall."
@@ -309,7 +293,6 @@ case "${ALIVE_VAL}" in
     *)             fail "alive topic unreadable in 10 s (DDS discovery problem?)" ;;
 esac
 
-# 4i. stop
 step "4i. cam_down_stop should terminate cleanly"
 STOP_OUT=$(_setbool /gst_camera_manager/cam_down false)
 raw "${STOP_OUT}"
@@ -318,14 +301,13 @@ STATUS=$(_trigger /gst_camera_manager/cam_down/status)
 raw "${STATUS}"
 if echo "${STATUS}" | grep -q 'STOPPED'; then
     pass "cam_down stopped cleanly"
-    CAM_DOWN_STARTED_BY_US=""   # explicit stop succeeded; EXIT trap no longer needed
+    CAM_DOWN_STARTED_BY_US=""
 else
     fail "cam_down did not stop"
 fi
 
 hdr "Section 5: cam_front lifecycle (CSI IMX219, sensor-id=0)"
 
-# 5a. clean stopped state
 step "5a. Force initial STOPPED state"
 what     "Call cam_front_stop unconditionally so the test starts from a known state."
 why      "Lifecycle test is meaningless without a known starting state."
@@ -340,13 +322,12 @@ else
     fail "could not establish baseline STOPPED state"
 fi
 
-# 5b. start
 step "5b. cam_front_start should spawn the gst_cam_node subprocess"
 what     "SetBool(true) on /gst_camera_manager/cam_front. The manager forks gst_cam_node as a subprocess."
 why      "The whole pipeline depends on this subprocess. If it does not spawn, no subsequent check can pass."
 START_OUT=$(_setbool /gst_camera_manager/cam_front true)
 raw "${START_OUT}"
-CAM_FRONT_STARTED_BY_US=1   # cleared at 5i once explicit stop confirms STOPPED
+CAM_FRONT_STARTED_BY_US=1
 PID=$(echo "${START_OUT}" | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)
 if echo "${START_OUT}" | grep -q "success=True" && [[ -n "${PID}" ]]; then
     pass "subprocess spawned (pid=${PID})"
@@ -354,14 +335,12 @@ else
     fail "cam_front_start did not produce a running subprocess"
 fi
 
-# 5c. argus + pipeline negotiation
 step "5c. Wait for Argus + GStreamer pipeline to negotiate"
 what     "nvarguscamerasrc takes ~3 s to negotiate sensor mode and start streaming."
 why      "Tests on the topics will fail prematurely without this grace period."
 note     "sleeping 4 s..."
 sleep 4
 
-# 5d. status running
 step "5d. cam_front_status should report RUNNING"
 STATUS=$(_trigger /gst_camera_manager/cam_front/status)
 raw "${STATUS}"
@@ -371,7 +350,6 @@ else
     fail "status not RUNNING after start"
 fi
 
-# 5e. topics exist
 step "5e. Three topics should exist: image_raw, image_raw/compressed, camera_info"
 what     "Listing topics on the ROS graph; checking the three gst_cam_node publishers."
 why      "If publishers aren't created, the gst_cam_node binary crashed (most common: empty encoding string, bad calibration path)."
@@ -386,7 +364,6 @@ for t in /cam_front/image_raw /cam_front/image_raw/compressed /cam_front/camera_
     fi
 done
 
-# 5f. frame_id
 step "5f. /cam_front/image_raw header.frame_id must equal 'top_visual_link'"
 what     "Subscribe with matching BEST_EFFORT QoS and echo a single header."
 why      "This is the TF frame that downstream consumers transform from. Wrong frame_id silently breaks every camera→base_link TF lookup."
@@ -398,7 +375,6 @@ else
     fail "frame_id is wrong or echo did not return"
 fi
 
-# 5g. rate
 step "5g. /cam_front/image_raw rate over 5 s"
 what     "Count message separators ('---') from 'topic echo --no-arr' over a 5-second window."
 why      "Pipeline is configured for ~15 fps (delivered ~16 Hz). Accept >= 6 Hz (~40% of delivered) as pass. Below that indicates an upstream fault (Argus dropping or ISP backpressure)."
@@ -414,7 +390,6 @@ else
     fail "no image_raw messages received in 5 s"
 fi
 
-# 5h. /alive
 step "5h. /gst_camera_manager/cam_front/alive should be latched 'true'"
 what     "Read the latched Bool with QoS RELIABLE / TRANSIENT_LOCAL / depth 1. Up to 10 s for first-time discovery."
 why      "This is the manager's published verdict on whether frames are actually flowing. If status reports RUNNING but alive reports false, the watchdog is detecting a stall."
@@ -427,7 +402,6 @@ case "${ALIVE_VAL}" in
     *)             fail "alive topic unreadable in 10 s (DDS discovery problem?)" ;;
 esac
 
-# 5i. stop
 step "5i. cam_front_stop should terminate cleanly"
 STOP_OUT=$(_setbool /gst_camera_manager/cam_front false)
 raw "${STOP_OUT}"
@@ -436,7 +410,7 @@ STATUS=$(_trigger /gst_camera_manager/cam_front/status)
 raw "${STATUS}"
 if echo "${STATUS}" | grep -q 'STOPPED'; then
     pass "cam_front stopped cleanly"
-    CAM_FRONT_STARTED_BY_US=""   # explicit stop succeeded; EXIT trap no longer needed
+    CAM_FRONT_STARTED_BY_US=""
 else
     fail "cam_front did not stop"
 fi
@@ -445,7 +419,6 @@ hdr "Section 6: Supervisor (optional, requires Isaac container)"
 step "Supervisor SetBool service on the ROS graph"
 what     "If the Isaac container is running, /arid_supervisor/vslam_enable must be on the graph."
 why      "This is the host-callable service that drives the VSLAM stack lifecycle. Container running but the service missing = arid_supervisor.service failed inside the container."
-# Distinguish container-not-running from missing docker group membership.
 if ! docker ps >/dev/null 2>&1; then
     skip "docker ps failed (permission denied?) - supervisor check skipped"
     note "if jetson was just added to the docker group, log out and back in (or 'newgrp docker') and re-run"
@@ -453,7 +426,7 @@ elif ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q 'isaac_ros_dev-aarc
     skip "Isaac ROS container not running - supervisor check skipped"
     note "start the container with 'start_isaac' (or wait for boot autostart) and re-run this section"
 else
-    # A cold container can need 30+ s to advertise the service; retry.
+    # A cold container can take over 30 s to advertise the service.
     SUP_SVCS=""
     for _ in 1 2 3 4 5 6; do
         SUP_SVCS=$(timeout 8 ros2 service list 2>/dev/null || true)
@@ -478,7 +451,7 @@ if [[ -n "${BRIDGE_LAUNCHED_BY_US}" ]]; then
     why      "Section 3 launched the bridge in the background. A test that leaves a bridge bound to 8765 prevents the next 'foxglove_bridge' invocation from binding the port. PID tracking through setsid is unreliable, so cleanup queries the kernel directly."
     if _kill_bridge_on_8765; then
         pass "bridge stopped, port 8765 free"
-        BRIDGE_LAUNCHED_BY_US=""   # tell the EXIT trap there's nothing left to do
+        BRIDGE_LAUNCHED_BY_US=""
     else
         fail "could not free port 8765 (foxglove_bridge still holding it)"
     fi
