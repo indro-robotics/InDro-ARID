@@ -1,6 +1,6 @@
 # camera_calibration
 
-The `cam_down` calibration wraps the ROS 2 `camera_calibration` GUI, which renders over NoMachine. Each run starts the pipeline, calibrates it, and writes the intrinsics to the store and to the manager's calibration file.
+`camera_calibration` produces intrinsics for the CSI pipeline. `cam_calibrate` starts a pipeline, runs the ROS 2 `cameracalibrator` GUI against it, and writes the result to the calibration store and to the manager's calibration file.
 
 ## Running a calibration
 
@@ -10,13 +10,15 @@ A run needs a NoMachine session for the GUI and an interactive terminal for the 
 cam_calibrate
 ```
 
+`<cam>` is `cam_down`: the IMX477 on `sensor-id=0`, stamped `bottom_visual_link`.
+
 The first prompt offers a custom board, taking columns and rows in squares and the square size in millimetres. Enter or `n` uses `calibration_pattern/calib_pattern.pdf`, 10x7 squares at 50 mm.
 
 ## The calibrator window
 
-Move the board through the frame until CALIBRATE activates, click it, then click SAVE.
+Move the board through the frame until CALIBRATE activates, click it, then click COMMIT or SAVE.
 
-> COMMIT uploads to `/camera/set_camera_info`, which no node hosts. SAVE writes `/tmp/calibrationdata.tar.gz`, which the script unpacks.
+> COMMIT writes `/tmp/ost.yaml`; SAVE writes `/tmp/calibrationdata.tar.gz`, which the script unpacks. Either produces a calibration.
 
 ## Applying the result
 
@@ -24,11 +26,11 @@ The manager loads calibrations from the installed share, so a new file reaches t
 
 | Path | Content |
 | --- | --- |
-| `camera_calibrations/cam_down/cam_down.yaml` | Latest result, tracked. |
-| `camera_calibrations/cam_down/cam_down_<timestamp>.yaml` | Per-run copy, gitignored. |
-| `local_ws/src/ros_gst_cameras/gst_camera_manager/config/calibrations/cam_down.yaml` | Copy the build installs. |
+| `camera_calibrations/<cam>/<cam>.yaml` | Latest result, tracked. |
+| `camera_calibrations/<cam>/<cam>_<timestamp>.yaml` | Per-run copy, gitignored. |
+| `local_ws/src/ros_gst_cameras/gst_camera_manager/config/calibrations/<cam>.yaml` | Copy the build installs. |
 
-`pipelines.yaml` ships `cam_down` with `calibration: "IMX477_1080sq"`. Set it to `"cam_down"`, run `colcon_local`, then `cam_down_start`.
+`pipelines.yaml` ships `<cam>` with `calibration: "IMX477_1080sq"`. Set it to `"<cam>"`, run `colcon_local`, then `<cam>_stop` and `<cam>_start`.
 
 ## Services called
 
@@ -36,20 +38,20 @@ The script starts `gst_camera_manager.service` when no `/gst_camera_manager/` se
 
 | Service | Type | When |
 | --- | --- | --- |
-| `/gst_camera_manager/cam_down` | `std_srvs/srv/SetBool` | `data: true` starts the pipeline; `data: false` stops it before the run and at exit. |
+| `/gst_camera_manager/<cam>` | `std_srvs/srv/SetBool` | `data: true` starts the pipeline; `data: false` stops it before the run and at exit. |
 | `/camera/set_camera_info` | `sensor_msgs/srv/SetCameraInfo` | GUI COMMIT. No server exists. |
 
 ## Topics
 
 | Subscribed | Type | Use |
 | --- | --- | --- |
-| `/cam_down/image_raw` | `sensor_msgs/msg/Image` | Frames the calibrator detects the board in. |
+| `/<cam>/image_raw` | `sensor_msgs/msg/Image` | Frames the calibrator detects the board in; QoS matched to the publisher. |
 
 | Published by the pipeline | Type | Content |
 | --- | --- | --- |
-| `/cam_down/image_raw` | `sensor_msgs/msg/Image` | 1080x1080 GRAY8 at 15 fps, frame `bottom_visual_link`, BEST_EFFORT depth 5. |
-| `/cam_down/image_raw/compressed` | `sensor_msgs/msg/CompressedImage` | Same frames through `image_transport`. |
-| `/cam_down/camera_info` | `sensor_msgs/msg/CameraInfo` | Intrinsics, stamped with the image time and the same frame. |
+| `/<cam>/image_raw` | `sensor_msgs/msg/Image` | 1080x1080 `mono8` at 15 fps, BEST_EFFORT depth 5. |
+| `/<cam>/image_raw/compressed` | `sensor_msgs/msg/CompressedImage` | Same frames through `image_transport`, encoded only while subscribed. |
+| `/<cam>/camera_info` | `sensor_msgs/msg/CameraInfo` | Intrinsics, stamped with the image time and the same frame. |
 
 ## Environment
 
@@ -61,6 +63,8 @@ Setting `SIZE` and `SQUARE` skips the board prompt. Bash does not expand the `ca
 | `SQUARE` | `0.050` | Square side in metres. |
 | `NM_WAIT_S` | `180` | Seconds to wait for a NoMachine display before exiting. |
 | `ROS_DOMAIN_ID` | `23` | Domain carrying the pipeline services and topics. |
+| `DISPLAY` | session value | Probed first; otherwise `/tmp/.X11-unix` is scanned, highest number first. |
+| `XAUTHORITY` | `~/.Xauthority` | Source of the display cookie, copied to a temporary authority file. |
 | `WORKSPACES` | repo root | Root the store and the manager calibration are written under. |
 
 ```bash
@@ -73,7 +77,7 @@ SIZE=<corners> SQUARE=<metres> bash "$WORKSPACES"/local_ws/auxiliary/camera_cali
 | --- | --- |
 | 0 | Calibration written, or the display wait cancelled or timed out. |
 | 1 | OpenCV, ROS 2 Humble, or `gst_camera_manager` unavailable. |
-| 3 | No frames on `/cam_down/image_raw`. |
+| 3 | No frames on `/<cam>/image_raw`. |
 | 4 | GUI closed without a calibration. |
 | 5 | No display and no terminal to prompt on. |
 | 6 | Not an interactive terminal. |

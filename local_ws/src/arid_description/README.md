@@ -27,9 +27,9 @@ ros2 launch arid_description display.launch.py rviz:=true
 
 | Topic | Type | QoS | Published | Carries |
 | --- | --- | --- | --- | --- |
-| `/robot_description` | `std_msgs/String` | Reliable, transient local | Once at start | Expanded URDF, held for late subscribers |
-| `/tf_static` | `tf2_msgs/TFMessage` | Reliable, transient local | Once at start | The 11 fixed-joint transforms |
-| `/tf` | `tf2_msgs/TFMessage` | Default | Never | Advertised by `robot_state_publisher`; no joint in the description moves |
+| `/robot_description` | `std_msgs/String` | Reliable, transient local, depth 1 | Once at start | Expanded URDF, held for late subscribers |
+| `/tf_static` | `tf2_msgs/TFMessage` | Reliable, transient local, depth 1 | Once at start | The 11 fixed-joint transforms |
+| `/tf` | `tf2_msgs/TFMessage` | Reliable, depth 100 | Never | Advertised by `robot_state_publisher`; no joint in the description moves |
 
 `/robot_description` gates the in-container VSLAM launch, which blocks on the latched message before starting the stack.
 
@@ -37,7 +37,7 @@ ros2 launch arid_description display.launch.py rviz:=true
 
 | Topic | Type | Used for |
 | --- | --- | --- |
-| `/joint_states` | `sensor_msgs/JointState` | Movable-joint positions; the description has none |
+| `/joint_states` | `sensor_msgs/JointState` | Movable-joint positions; every joint in the description is fixed |
 
 ## Services
 

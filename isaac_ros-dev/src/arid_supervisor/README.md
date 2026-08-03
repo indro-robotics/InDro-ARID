@@ -1,14 +1,16 @@
 # arid_supervisor
 
-The supervisor starts and stops the `px4_vslam` launch tree as a managed subprocess, behind a camera-proven bringup gate and a landed-state interlock. It is one long-lived node named `arid_supervisor`, started at boot by `arid_supervisor.service`.
+`arid_supervisor` starts and stops the `px4_vslam` launch tree as a managed subprocess, behind a camera-proven bringup gate and a landed-state interlock. `arid_supervisor.service` runs it at boot.
 
 ## Operator commands
+
+The aliases are defined in `container_scripts/arid_env.sh` and run inside the Isaac container.
 
 | Command | Invokes | Result |
 | --- | --- | --- |
 | `initialize` | `/arid_supervisor/vslam_enable` with `data: true`, 300 s per call, 3 attempts | VSLAM launch tree on the graph |
 | `deinitialize` | `/arid_supervisor/status`, then `vslam_enable` with `data: false` | launch tree stopped, its `/dev/shm` segments reclaimed |
-| `status` | `/arid_supervisor/status` | response message carries vslam state and land state |
+| `status` | `/arid_supervisor/status` | `vslam: <running\|stopped> \| land: <landed\|airborne\|unknown>` |
 | `vslam` | `ros2 launch px4_vslam vslam.launch.py` directly | unowned tree; the supervisor reaps it when landed, refuses otherwise |
 
 ## VSLAM launch tree
@@ -18,17 +20,19 @@ The supervisor starts and stops the `px4_vslam` launch tree as a managed subproc
 | `/vslam_container` | `rclcpp_components` |
 | `/front_realsense/front_realsense_link` | `realsense2_camera` |
 | `/visual_slam_node` | `isaac_ros_visual_slam` |
-| `/vio_transform/vio_transform` | `px4_vslam` |
 | `/vslam_reactor` | `px4_vslam_reactor` |
+| `/vio_transform/vio_transform` | `px4_vslam` |
 
 The topics these nodes carry are documented in [`px4_vslam`](../px4_vslam/README.md).
 
 ## Services hosted
 
+The executor is single-threaded, so a second call queues behind an in-flight bringup instead of spawning a second stack.
+
 | Service | Type | Effect |
 | --- | --- | --- |
 | `/arid_supervisor/vslam_enable` | `std_srvs/srv/SetBool` | `data: true` runs the camera-proven bringup, `data: false` the landed-gated teardown |
-| `/arid_supervisor/status` | `std_srvs/srv/Trigger` | `success` is true while the launch tree runs; message adds `land: landed`, `airborne` or `unknown` |
+| `/arid_supervisor/status` | `std_srvs/srv/Trigger` | `success` is true while the launch tree runs; the message adds `land: landed`, `airborne` or `unknown` |
 
 ## Bringup
 
@@ -58,6 +62,7 @@ Failure responses carry verbatim driver evidence clipped to 500 characters. The 
 `vslam_enable` with `data: false` requires a `landed: true` sample under 3.5 s old. Teardown SIGINTs the process group and waits 25 s, escalates to SIGTERM for 5 s, then SIGKILLs.
 
 - A `ros2 launch` leader that exited while its children persist is reaped through its remembered process group.
+- Straggler `setsid` groups take the same ladder.
 - Shared-memory segments mapped only by the torn-down tree are removed from `/dev/shm`.
 - A supervisor stop with flight proven leaves the tree running.
 
@@ -90,13 +95,15 @@ Pin the exact id with `cat /sys/bus/usb/devices/*/idProduct`.
 
 | Message | Cause | Action |
 | --- | --- | --- |
+| `vslam up: <N>/<N> camera in <N>s` | the gate cleared | none |
 | `vslam already running` | the stack is already up | none |
-| `vslam already stopped` | no tree to stop | none |
+| `vslam stopped`, `vslam already stopped` | the teardown ran, or there was no tree to stop | none |
 | `unowned vslam trees reaped` | an orphan tree cleared under a fresh landed proof | none |
 | `drone not landed; land before disabling vslam` | a fresh `landed: false` sample | land |
 | `land state unknown (no recent PX4 telemetry)` | no sample within 3.5 s | restore the PX4 link |
 | `unowned vslam trees present ... land state not proven` | orphan tree and no landed proof | land, then repeat the call |
 | `refusing vslam bringup: vslam nodes already on the ROS graph` | land state unproven, or nodes outlive the reap | land, then repeat once discovery drops them |
+| `usb pre-check: ... /reset_usb failed` | the reset service and the systemd fallback both failed | check `usb_ros_reset.service` on the host |
 | `camera(s) absent from the bus (dead VBUS/cable/port)` | still unenumerated after `/reset_usb` | check the cable, the port and VBUS |
 | `vslam camera bringup failed twice (single-recovery policy)` | the gate failed on both attempts | read the two failure reports in the response |
 | `vslam bringup aborted by unexpected exception` | the bringup raised; the unproven stack is stopped | read the exception in the response |
