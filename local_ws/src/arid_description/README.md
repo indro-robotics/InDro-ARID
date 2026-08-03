@@ -1,11 +1,11 @@
 # arid_description
 
-This package holds the xacro description, mesh and RViz configuration for the ARID quadrotor by InDro Robotics.
+This package holds the xacro description, mesh, display launch and RViz configuration for the ARID quadrotor by InDro Robotics.
 
 ![ARID drone](doc/arid_description.png)
 
 - `xacro/arid.xacro`: the full robot description.
-- `meshes/arid_model.stl`: the visual mesh; collision is an inline box of 0.393 x 0.393 x 0.2047 m.
+- `meshes/arid_model.stl`: the visual mesh.
 - `launch/display.launch.py`: `robot_state_publisher`, with optional GUI and RViz.
 - `rviz/arid.rviz`: the default RViz config, fixed frame `base_link`.
 
@@ -20,7 +20,7 @@ The display launch takes two arguments.
 | `rviz` | `false` | Starts RViz with `arid.rviz` preloaded. |
 | `gui` | `false` | Starts `joint_state_publisher_gui`. All joints are fixed, so it has no effect. |
 
-The boot service already runs `robot_state_publisher`. To view the model on the NoMachine desktop, start a second instance with RViz.
+The launch always starts `robot_state_publisher`, so running it while the boot service is active leaves two publishers of the same description on the graph.
 
 ```bash
 ros2 launch arid_description display.launch.py rviz:=true
@@ -38,39 +38,28 @@ Three properties drive the geometry.
 
 Two macros generate the repeated links. `propeller(name, x, y)` builds a link and fixed joint for each of the four rotors, and `realsense(name, x, y, yaw)` places a camera link at `realsense_z` for `front`, `left` and `right`. The autopilot, the two CSI camera links, the flow module and the rangefinder are declared inline.
 
+`base_link` carries the only geometry: the mesh as its visual, a 0.393 x 0.393 x 0.2047 m box as its collision. Every other link is an empty frame.
+
 ## Frames
 
 `base_footprint` is the root, `base_link` is coincident with it, and every remaining link is a fixed-joint child of `base_link`.
 
-```
-base_footprint
-└── base_link
-    ├── autopilot
-    ├── front_left_propeller_link
-    ├── front_right_propeller_link
-    ├── rear_left_propeller_link
-    ├── rear_right_propeller_link
-    ├── front_realsense_link
-    ├── left_realsense_link
-    ├── right_realsense_link
-    ├── top_visual_link
-    ├── bottom_visual_link
-    ├── flow_link
-    └── rangefinder_link
-```
-
 | Frame | Mounting |
 |---|---|
 | `autopilot` | ARK FMU v6X. |
-| `front_realsense_link` | Front D435, facing forward. |
-| `left_realsense_link` | Left D435, yawed +90 degrees. |
-| `right_realsense_link` | Right D435, yawed -90 degrees. |
-| `top_visual_link` | Forward CSI camera, z axis along body +x. |
+| `front_left_propeller_link` | Front left rotor hub. |
+| `front_right_propeller_link` | Front right rotor hub. |
+| `rear_left_propeller_link` | Rear left rotor hub. |
+| `rear_right_propeller_link` | Rear right rotor hub. |
+| `front_realsense_link` | Front RealSense, facing forward. |
+| `left_realsense_link` | Left RealSense, yawed +90 degrees. |
+| `right_realsense_link` | Right RealSense, yawed -90 degrees. |
+| `top_visual_link` | Front CSI camera, z axis along body +x. |
 | `bottom_visual_link` | Down CSI camera, z axis along body -z. |
-| `flow_link` | ARK optical flow, bottom pod. |
-| `rangefinder_link` | ARK rangefinder, bottom pod. |
+| `flow_link` | Optical flow module, below `base_link`. |
+| `rangefinder_link` | Rangefinder, below `base_link`. |
 
-Each RealSense link name matches the `<camera_name>_link` frame that `realsense2_camera` publishes, so the driver's stream frames attach beneath it. The link itself sits at the left IR imager.
+Each RealSense link name matches the `<camera_name>_link` frame that `realsense2_camera` publishes, so the driver's stream frames attach beneath it.
 
 > Frame names are referenced outside this package, by `px4_vslam` and `gst_camera_manager` configuration. Renaming a link breaks the consumer that stamps or looks it up.
 

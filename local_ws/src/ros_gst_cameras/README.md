@@ -7,9 +7,18 @@ This directory holds the ROS 2 GStreamer camera stack in two packages.
 
 `gst_camera_manager.service` runs the manager at boot. It reads `gst_camera_manager/config/pipelines.yaml` at startup, and no frames flow until a pipeline is started.
 
+## Defined pipelines
+
+Two pipelines ship in `pipelines.yaml`, both IMX219 CSI sensors at 1920x1080, 15 fps, GRAY8, unrotated.
+
+| Pipeline | Sensor | Frame ID | Topic root |
+|---|---|---|---|
+| `cam_front` | `sensor-id=0` | `top_visual_link` | `/cam_front` |
+| `cam_down` | `sensor-id=1` | `bottom_visual_link` | `/cam_down` |
+
 ## Services
 
-The manager exposes two services per pipeline and three manager-level services.
+The manager exposes two services per pipeline and three manager-level services. `<name>` is a pipeline key in `pipelines.yaml`.
 
 | Service | Type | Function |
 |---|---|---|
@@ -17,9 +26,7 @@ The manager exposes two services per pipeline and three manager-level services.
 | `/gst_camera_manager/<name>/status` | `std_srvs/Trigger` | `RUNNING (pid=N)` or `STOPPED`. |
 | `/gst_camera_manager/status_all` | `std_srvs/Trigger` | One state line per pipeline. |
 | `/gst_camera_manager/stop_all` | `std_srvs/Trigger` | Stops every running pipeline. |
-| `/gst_camera_manager/refresh` | `std_srvs/Trigger` | Stops running pipelines, re-reads `pipelines.yaml`, rebuilds the per-pipeline services. |
-
-`<name>` matches the keys in `pipelines.yaml`: `cam_front` and `cam_down`.
+| `/gst_camera_manager/refresh` | `std_srvs/Trigger` | Stops running pipelines, re-reads `pipelines.yaml`, rebuilds the per-pipeline services and `alive` topics. |
 
 ```bash
 ros2 service call /gst_camera_manager/cam_down std_srvs/srv/SetBool "{data: true}"
@@ -51,22 +58,13 @@ ros2 topic echo /cam_down/camera_info --once
 
 ## Liveness
 
-The watchdog checks every running pipeline at 2 Hz and reports on `/gst_camera_manager/<name>/alive`. It publishes false and logs `Pipeline crashed` with the exit code when the subprocess exits, false and logs `stalled` when no `camera_info` has arrived for `alive_threshold` seconds, and true again when frames resume. The timer is seeded when the pipeline starts, so the first `alive_threshold` seconds act as a startup grace period.
+The watchdog checks every running pipeline at 2 Hz and reports on `/gst_camera_manager/<name>/alive`. Starting a pipeline publishes true at once and seeds the stall timer, so the first `alive_threshold` seconds act as a startup grace period. The watchdog then publishes false and logs `Pipeline crashed` with the exit code when the subprocess exits, false and logs `stalled` when no `camera_info` has arrived for `alive_threshold` seconds, and true again when frames resume.
 
-> The topic is latched. An echo whose QoS does not match returns nothing until the next state change.
+> The topic is latched. An echo without `transient_local` durability returns nothing until the next state change.
 
 ```bash
 ros2 topic echo --once --qos-durability transient_local --qos-reliability reliable /gst_camera_manager/cam_down/alive
 ```
-
-## Defined pipelines
-
-Two pipelines ship in `pipelines.yaml`, both IMX219 CSI sensors at 1920x1080, 15 fps, GRAY8, unrotated.
-
-| Pipeline | Sensor | Frame ID | Topic root |
-|---|---|---|---|
-| `cam_front` | `sensor-id=0` | `top_visual_link` | `/cam_front` |
-| `cam_down` | `sensor-id=1` | `bottom_visual_link` | `/cam_down` |
 
 ## Configuration
 
@@ -99,9 +97,9 @@ The encoding is resolved on the first frame and logged as `Image encoding: <enc>
 
 ### Calibration
 
-Calibration YAMLs live in `config/calibrations/` in `camera_calibration_parsers` format. `cam_calibrate front|down` writes `config/calibrations/<cam>.yaml`. Both entries ship with an empty `calibration` field, so the node logs `Invalid calibration path` and publishes a default `CameraInfo` built from the first frame (zero distortion, `fx = fy = width`, principal point at the image centre); set `calibration: "cam_front"` or `"cam_down"` and restart that pipeline to load real intrinsics.
+Calibration YAMLs live in `config/calibrations/` in `camera_calibration_parsers` format. Both shipped entries leave `calibration` empty, so the node logs `Invalid calibration path` and publishes a default `CameraInfo` built from the first frame: zero distortion, `fx = fy = width`, principal point at the image centre.
 
-> A calibration file created since the last `local_ws` build is not installed. Run `colcon_local` before naming it in `pipelines.yaml`.
+`cam_calibrate front|down` writes `config/calibrations/<cam>.yaml`. A file created since the last `local_ws` build is not installed, so run `colcon_local`, then set `calibration: "cam_front"` or `"cam_down"` and restart that pipeline to load the intrinsics.
 
 ## Adding a pipeline
 
@@ -110,7 +108,7 @@ Append an entry to `pipelines.yaml`:
 ```yaml
   my_cam:
     gst_pipeline: >-
-      <any gstreamer pipeline ending in appsink>
+      <pipeline-string>
     calibration: "my_cam"
     topic: "my_cam"
     frame_id: "my_cam_frame"
@@ -125,13 +123,13 @@ Call `refresh`, or the `cam_refresh` alias, and the `/gst_camera_manager/my_cam`
 
 The manager log is at `~/workspaces/isaac_ros-dev/run_logs/gst_camera_manager/gst_camera_manager.log`, with the previous run kept beside it as `gst_camera_manager.prev.log`.
 
-Each pipeline writes its own GStreamer log under `~/workspaces/local_ws/install/gst_camera_manager/share/gst_camera_manager/logs/<name>/`, where the 20 most recent runs are kept per pipeline.
+Each pipeline writes its subprocess output under `~/workspaces/local_ws/install/gst_camera_manager/share/gst_camera_manager/logs/<name>/`, where the 20 most recent runs are kept per pipeline.
 
 ## Troubleshooting
 
 ### `stalled` in the manager log
 
-No `camera_info` arrived for `alive_threshold` seconds. The subprocess stays up, so a pipeline that failed to open also reports `RUNNING` while delivering nothing. Read the per-pipeline log: `Failed to open GStreamer pipeline` is a bad pipeline string or a sensor already in use, repeated `Frame read failed` is a camera that stopped delivering, and a missing `Image encoding:` line means no frame ever reached the node. Restart the pipeline with `SetBool false` then `true`. Raise `alive_threshold` only for a legitimately slow pipeline such as a long exposure.
+No `camera_info` arrived for `alive_threshold` seconds. The subprocess stays up, so a pipeline that failed to open also reports `RUNNING` while delivering nothing. Read the per-pipeline log: `Failed to open GStreamer pipeline` is a bad pipeline string or a sensor already in use, repeated `Frame read failed` is a camera that stopped delivering, and neither an `Image encoding:` line nor an encoding warning means no frame ever reached the node. Restart the pipeline with `SetBool false` then `true`. Raise `alive_threshold` only for a pipeline whose frame interval legitimately exceeds it.
 
 Test the pipeline string outside ROS with `appsink` replaced by `fakesink`. A failure at this point is the camera or driver, not the ROS node.
 
@@ -145,4 +143,4 @@ The subprocess exited. The message carries the exit code and the per-pipeline lo
 
 ### A subscriber receives nothing while `/alive` is true
 
-The subscriber QoS does not match the publisher, which also logs `Incompatible QoS`. Match the subscriber to the pipeline, or set `reliable: true` on the pipeline.
+The subscriber QoS does not match the publisher. Match the subscriber to the pipeline, or set `reliable: true` on the pipeline.
