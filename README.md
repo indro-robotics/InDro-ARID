@@ -1,171 +1,229 @@
 # ARID
 
-ARID is a quadrotor on an NVIDIA Jetson Orin with an ARK PAB carrier, running ROS 2 Humble, Isaac ROS and PX4. This repository provisions the drone and runs its camera and visual-odometry stacks. ROS 2 traffic stays on the drone at `ROS_DOMAIN_ID=23`.
+ARID is a quadrotor on an NVIDIA Jetson Orin with an ARK PAB carrier and an ARK FMU running PX4.
+The Jetson carries two ROS 2 Humble workspaces, `local_ws` on the host and `isaac_ros-dev` inside
+the Isaac ROS container. This repository holds both, and the provisioning that turns a stock Jetson
+into a flight unit.
 
-- [`setup.sh`](setup.sh): provisioning, from a fresh flash to both workspaces built.
-- [`arid_description`](local_ws/src/arid_description/): robot description on `/robot_description` and `/tf_static`.
-- [`ros_gst_cameras`](local_ws/src/ros_gst_cameras/): the two IMX219 CSI pipelines.
-- [`reset_ark_usb`](local_ws/src/reset_ark_usb/): the `/reset_usb` service.
-- [`px4_vslam`](isaac_ros-dev/src/px4_vslam/), [`px4_vslam_reactor`](isaac_ros-dev/src/px4_vslam_reactor/), [`arid_supervisor`](isaac_ros-dev/src/arid_supervisor/): RealSense visual odometry into PX4.
-- [`camera_calibration`](local_ws/auxiliary/camera_calibration/): the CSI calibrator and its pattern.
-- [`PX4-Autopilot`](local_ws/auxiliary/PX4-Autopilot/): the InDro PX4 fork carrying the ARID airframe.
+## Packages
+
+Every other directory under each `src/` is a submodule.
+
+| `local_ws` | Function |
+|---|---|
+| [`arid_description`](local_ws/src/arid_description/) | Airframe xacro, published as `/robot_description` and `/tf_static` |
+| [`ros_gst_cameras`](local_ws/src/ros_gst_cameras/) | The two CSI camera pipelines, started and stopped over ROS services |
+| [`reset_ark_usb`](local_ws/src/reset_ark_usb/) | Hosts `/reset_usb`, the carrier USB power cycle |
+
+| `isaac_ros-dev` | Function |
+|---|---|
+| [`arid_supervisor`](isaac_ros-dev/src/arid_supervisor/) | Lifecycle gate: camera-proven VSLAM bringup, landed interlock |
+| [`px4_vslam`](isaac_ros-dev/src/px4_vslam/) | Multi-camera cuVSLAM bringup; bridges the solution into PX4 as external vision |
+| [`px4_vslam_reactor`](isaac_ros-dev/src/px4_vslam_reactor/) | Withholds discontinuous cuVSLAM frames before they reach EKF2 |
+
+`px4_msgs` defines message types only. `PX4-Autopilot`, `isaac_ros_visual_slam` and
+`realsense-ros` are InDro forks carrying local patches.
 
 ## Sensors
 
 | Sensor | Fit |
 |---|---|
-| 3x RealSense | Front, left, right; IR stereo into cuVSLAM. |
-| 2x IMX219 CSI | `cam_front` forward, `cam_down` downward. |
-| Optical flow, rangefinder | Underside. |
+| 3x RealSense | Front, left, right; one IR stereo pair each at 640x360x60 into cuVSLAM |
+| 2x IMX219 CSI | `cam_front` forward, `cam_down` downward |
+| Optical flow, rangefinder | Underside, into PX4 over UAVCAN |
 
-## After boot
+## Boot
 
-A login shell carries the alias set with `local_ws` sourced. The units below run at boot, with both CSI pipelines idle and VSLAM idle until `initialize`.
+Setup installs and enables every unit in `local_ws/services/` and `isaac_ros-dev/services/` except
+`reset_usb`, which runs on demand.
 
-| Unit | Function |
+| Unit | Provides |
 |---|---|
-| `usbfs-memory` | usbfs buffer at 1000 MB. |
-| `jetson-clocks` | Clocks and fan at maximum. |
-| `start_isaac_docker` | The Isaac container. |
-| `arid_description` | `robot_state_publisher`. |
-| `gst_camera_manager` | The CSI camera manager. |
-| `usb_ros_reset` | Hosts `/reset_usb`. |
-| `arid_supervisor` | VSLAM lifecycle, inside the container. |
+| `start_isaac_docker` | The Isaac ROS container |
+| `arid_supervisor` | The supervisor node inside that container |
+| `gst_camera_manager` | The two CSI camera pipelines |
+| `arid_description` | `robot_state_publisher`: `/robot_description`, `/tf_static` |
+| `usb_ros_reset` | The `/reset_usb` service |
+| `jetson-clocks` | Maximum clocks and fan |
+| `usbfs-memory` | 1000 MB usbfs buffer for the RealSense cameras |
 
-## Aliases
+Both CSI pipelines and the VSLAM stack start cold.
 
-`help` prints this set in a host shell.
+## Daily use
 
-| Alias | Action |
-|---|---|
-| `setup` | Run `setup.sh`. |
-| `run_isaac` / `start_isaac` / `stop_isaac` / `isaac_bash` | Container: run, start, stop, shell. |
-| `build_isaac` | Rebuild the container image. |
-| `colcon_isaac` | Deinitialize, build the container workspace, restart the supervisor. |
-| `clean_isaac` / `rosdep_isaac` | Clean or rosdep the container workspace. |
-| `colcon_local` | Build `local_ws`, stopping and restarting its host services. |
-| `clean_local` / `rosdep_local` | Clean or rosdep `local_ws`. |
-| `reset_usb` | USB hub reset. |
-| `cam_front_*` / `cam_down_*` | Per pipeline: `start`, `stop`, `status`, `alive`. |
-| `cam_stop` | Stop both pipelines. |
-| `cam_refresh` | Re-read `pipelines.yaml`, stopping running pipelines first. |
-| `cam_calibrate front\|down` | Calibrate a CSI camera. |
-| `config_realsense` | Assign the three RealSense serials. |
-| `local_test` | Host-stack smoke test. |
-| `ver_cv_cams` | Live CSI camera feeds. |
-| `wifi` / `zt_join` / `update_submods` | Wi-Fi picker, ZeroTier, submodule sync. |
-| `foxglove_bridge` | Bridge on port 8765. |
-| `initialize` / `deinitialize` / `status` | VSLAM through the supervisor. |
+A login shell sources `local_ws/install/setup.bash` and defines the ARID aliases. `help` lists
+them; run it inside the container for the container set.
 
-Inside the container `help` prints its own smaller set, in which `colcon_isaac` runs the colcon build alone, without the deinitialize and the supervisor restart the host alias adds.
+### Visual odometry
 
-## CSI video
+`initialize` blocks until the supervisor has proven three RealSense up.
 
-Both pipelines run at 1920x1080, 15 fps, GRAY8, uncalibrated. No node in either workspace subscribes to their image topics.
+```
+initialize
+status
+deinitialize
+```
 
-| Pipeline | Sensor | Frame | Topic root |
-|---|---|---|---|
-| `cam_front` | `sensor-id=0` | `top_visual_link` | `/cam_front` |
-| `cam_down` | `sensor-id=1` | `bottom_visual_link` | `/cam_down` |
+| Command | Invokes | Result |
+|---|---|---|
+| `initialize` | `/arid_supervisor/vslam_enable` `SetBool{true}` | Launches `vslam.launch.py` behind the camera gate; three attempts, 300 s each |
+| `status` | `/arid_supervisor/status` `Trigger` | `vslam: running\|stopped \| land: landed\|airborne\|unknown` |
+| `deinitialize` | `/arid_supervisor/vslam_enable` `SetBool{false}` | Stops the launch tree; refused without a landed sample under 3.5 s old |
 
-A running pipeline publishes `image_raw`, `image_raw/compressed` and `camera_info` under its topic root, and reports frame flow on the latched `/gst_camera_manager/<name>/alive`. The manager tees its log to `isaac_ros-dev/run_logs/gst_camera_manager/`. Pipeline fields and troubleshooting are in [`ros_gst_cameras/README.md`](local_ws/src/ros_gst_cameras/README.md).
+Bringup waits for `/robot_description`, and each launch writes `run_logs/vslam/vslam.log`.
 
-## Visual odometry
-
-Isaac cuVSLAM runs six-stream stereo over the three RealSense, one IR pair per camera at 640x360x60. The reactor gates jumps and re-seats that solution against the PX4 pose. `vio_transform` publishes it on `/fmu/in/vehicle_visual_odometry`.
+| Interface | Type | Carries |
+|---|---|---|
+| `/visual_slam/status` | `isaac_ros_visual_slam_interfaces/VisualSlamStatus` | Tracker state; becomes the `quality` field |
+| `/visual_slam/vis/slam_odometry` | `nav_msgs/Odometry` | cuVSLAM SLAM pose in `map`, the reactor's input |
+| `/visual_slam/filt_slam_odometry` | `nav_msgs/Odometry` | The pose the reactor admits |
+| `/reactor/drone_odom`, `/reactor/drone_pose` | `nav_msgs/Odometry`, `geometry_msgs/PoseStamped` | FMU pose in `map`, child frame `px4` |
+| `/reactor/vio_reset_epoch` | `std_msgs/UInt8` | Re-seat count, stamped into `reset_counter`; transient local |
+| `/reactor/vo_healthy` | `std_msgs/Bool` | False once re-seats exhaust the burst limit; transient local |
+| `/fmu/in/vehicle_visual_odometry` | `px4_msgs/VehicleOdometry` | The admitted pose in FRD, into EKF2 |
+| `/visual_slam/set_reactor_pose` | `std_srvs/Trigger` | Seats cuVSLAM on the current FMU pose |
+| `/visual_slam/set_slam_pose` | `isaac_ros_visual_slam_interfaces/SetSlamPose` | The seat the reactor commands, on a jump or that trigger |
 
 > Never select a 90 fps RealSense profile. That USB service interval stalls the bus.
 
-`initialize` blocks while the supervisor proves all three cameras up: about 15 s on a healthy bringup, up to about 3 minutes when its one recovery cycle runs, over at most three attempts. `deinitialize` is refused unless a landed sample no older than 3.5 s proves the drone is down. Each launch writes `run_logs/vslam/vslam.log`.
+Detail is in [`arid_supervisor`](isaac_ros-dev/src/arid_supervisor/README.md),
+[`px4_vslam`](isaac_ros-dev/src/px4_vslam/README.md) and
+[`px4_vslam_reactor`](isaac_ros-dev/src/px4_vslam_reactor/README.md).
 
-Bringup and interlock detail is in [`arid_supervisor/README.md`](isaac_ros-dev/src/arid_supervisor/README.md), filter tunables in [`px4_vslam_reactor/README.md`](isaac_ros-dev/src/px4_vslam_reactor/README.md).
+`config_realsense` writes each camera's serial into `vslam_config.yaml`. Run it after a camera
+swap.
 
-### RealSense serials
+### Cameras
 
-`config_realsense` identifies each camera from a live feed and pins its serial to the front, left or right mount in `vslam_config.yaml`. Run it after a camera swap.
+Both pipelines stream 1920x1080 `mono8` at 15 fps, uncalibrated until `cam_calibrate` runs.
 
-## USB reset
+| Command | Invokes | Result |
+|---|---|---|
+| `cam_front_start` | `/gst_camera_manager/cam_front` `SetBool{true}` | Forks `gst_cam_node`; `/cam_front/image_raw`, `/cam_front/image_raw/compressed` and `/cam_front/camera_info` appear, stamped `top_visual_link` |
+| `cam_down_start` | `/gst_camera_manager/cam_down` `SetBool{true}` | The same three topics under `/cam_down`, stamped `bottom_visual_link` |
+| `cam_front_stop`, `cam_down_stop` | The same service, `SetBool{false}` | Subprocess terminated, topics stop, `alive` false |
+| `cam_stop` | Both pipeline services, `SetBool{false}` | Both pipelines stopped |
+| `cam_front_status`, `cam_down_status` | `/gst_camera_manager/<name>/status` `Trigger` | `<name> RUNNING (pid=N)` or `<name> STOPPED` |
+| `cam_front_alive`, `cam_down_alive` | Echoes `/gst_camera_manager/<name>/alive` | Latched `std_msgs/Bool`, false after 5 s without a frame |
+| `cam_refresh` | `/gst_camera_manager/refresh` `Trigger` | Stops both pipelines, re-reads `pipelines.yaml`, rebuilds the per-pipeline services |
+| `ver_cv_cams [front\|down\|both]` | `SetBool{true}`, then the compressed topic | Live window on the NoMachine desktop, `q` quits; pipelines it started are stopped on exit |
+| no alias | `/gst_camera_manager/status_all` `Trigger` | One `[RUNNING]` or `[STOPPED]` line per pipeline |
+| no alias | `/gst_camera_manager/stop_all` `Trigger` | Every running pipeline terminated |
 
-`reset_usb` power-cycles the ARK PAB USB hub and the standalone USB3 port. The `/reset_usb` service runs the same script and answers callers on the host and inside the container.
+The manager logs to `isaac_ros-dev/run_logs/gst_camera_manager/`; pipeline fields are in
+[`ros_gst_cameras`](local_ws/src/ros_gst_cameras/README.md).
 
-> Never reset USB in flight. The power cycle reboots the flight controller and drops all three RealSense off the bus.
+### USB reset
 
-Failure causes are in [`reset_ark_usb/README.md`](local_ws/src/reset_ark_usb/README.md).
+[`reset_usb`](local_ws/src/reset_ark_usb/README.md) powers the ARK PAB hub at USB location 1-2 off
+and on, then pulses `gpiochip0` line 85, the standalone USB3 port. In the container it calls
+`/reset_usb` (`std_srvs/Trigger`), which starts the same unit. Allow 20 s for re-enumeration.
 
-## Foxglove
+> The power cycle reboots the FMU and drops all three RealSense off the bus. Call it only with the
+> aircraft disarmed on the ground.
 
-`foxglove_bridge` starts the bridge on port 8765 from a host or container shell. Connect Foxglove Studio to `ws://<device-ip>:8765`. The URDF is on `/robot_description` with panel frame `base_link`.
+### Health
 
-## Health checks
+`local_test` checks the host units, aliases, Foxglove bridge, both CSI pipelines and the supervisor
+services, and leaves the pipelines stopped.
 
-`local_test` runs the host-stack smoke test over the units, the aliases and both CSI pipelines. It leaves the pipelines stopped.
+### Visualization
 
-`ver_cv_cams` opens the live CSI feeds in a window on the NoMachine desktop, where any key advances and `q` quits. Pass `front` or `down` for a single feed.
+Every shell and service runs `ROS_DOMAIN_ID=23` with `ROS_LOCALHOST_ONLY=1`, so a remote machine
+reaches the graph only through `foxglove_bridge` on `ws://<device-ip>:8765`. The URDF is on
+`/robot_description` with panel frame `base_link`.
 
-## setup.sh
+## Development
 
-Running `./setup.sh` with no arguments opens the menu below. Every step detects what is in place and does only what is missing.
+Work happens on the drone over SSH; both workspaces build in place. `isaac_ros-dev/` bind-mounts
+into the container at `/workspaces/isaac_ros-dev`.
 
-| Option | Action |
+| Command | Effect |
 |---|---|
-| **1** | Full setup |
-| **2** | Smoke test |
-| **3** | RealSense serial assignment |
-| **4** | Camera feed check |
-| **5** | Wi-Fi connect |
-| **6** | Camera calibration |
-| **7** | Camera focus |
-| **8** | Build the Isaac container image |
-| **9** | Build the Isaac workspace and restart `arid_supervisor.service` |
-| **10** | Build `local_ws` |
-| **11** | Install or reinstall ARK-OS |
-| **12** | Install or reinstall ROS 2 |
-| **13** | ZeroTier join or switch |
-| **14** | Uninstall, keeping the repo, the OS and the Docker engine |
+| `colcon_local` | Builds `local_ws` on the host; stops its services first, restarts them after |
+| `colcon_isaac` | Builds `isaac_ros-dev` in the container; calls `deinitialize` first, restarts the supervisor |
+| `build_isaac` | Builds the container image and enters it |
+| `start_isaac`, `stop_isaac` | Starts or stops the container |
+| `run_isaac`, `isaac_bash` | Starts and enters the container, or opens a shell in the running one |
+| `clean_local`, `clean_isaac` | Removes `build`, `install` and `log` from that workspace |
+| `rosdep_local`, `rosdep_isaac` | Installs the workspace dependencies |
+| `colcon_isaac`, in the container | Builds the workspace alone, without the teardown and restart |
+| `vslam`, in the container | Launches the stack without the supervisor |
 
-Option **9** needs the container running, and option **12** needs the ARK-OS clone that option **11** or a full setup creates. The host `colcon_isaac` alias calls `deinitialize` first and needs the supervisor on the graph, so a container workspace that has never been built is built through option **9**. A ZeroTier join reporting `ACCESS_DENIED` completes once the node is authorized in ZeroTier Central. Each run logs to `log/setup_log_*.log`.
+### Submodules
 
-### Camera calibration
+`update_submods` checks the LIVE set against its tracked branch and the PINNED set against its tag.
+`--update` moves the LIVE set to the branch tips.
 
-Menu **6** and `cam_calibrate front|down` run the ROS 2 calibrator against the live pipeline, on the NoMachine desktop. Writing and loading a result is covered in [`camera_calibration/README.md`](local_ws/auxiliary/camera_calibration/README.md).
+| Submodule | Class |
+|---|---|
+| `local_ws/auxiliary/PX4-Autopilot` | LIVE, branch `PX4-InDro` |
+| `isaac_ros-dev/src/realsense-ros` | LIVE, branch `v4.51.1` |
+| `isaac_ros-dev/src/isaac_ros_visual_slam` | LIVE, branch `v3.2-14` |
+| `isaac_ros-dev/src/px4_msgs` | LIVE, branch `release/1.15` |
+| `isaac_ros-dev/src/isaac_ros_common` | PINNED, tag `v3.2-14` |
+| `isaac_ros-dev/src/isaac_ros_nitros` | PINNED, tag `v3.2-14` |
+| `isaac_ros-dev/src/isaac_ros_image_pipeline` | PINNED, tag `v3.2-14` |
+| `isaac_ros-dev/src/px4-ros2-interface-lib` | PINNED, tag `1.4.0` |
 
-### Camera focus
+## Setup menu
 
-Menu **7** starts the selected CSI pipelines with the Foxglove bridge and confirms each stream is sustained. Adjust the lens while watching the image panel in Foxglove Studio. Any key stops the pipelines and the bridge.
+`setup` opens a menu of individual tasks. These are the ones with no alias.
 
-## Full setup
+| Option | Task |
+|---|---|
+| Full setup | Provisioning, below |
+| Camera focus | Streams the CSI pipelines and the Foxglove bridge for a live focus pass |
+| Install ARK-OS | Clones and runs the ARK-OS installer |
+| Install ROS2 | ROS 2 Humble, from the ARK-OS tree; install ARK-OS first |
+| Uninstall | Removes the units, rules, bashrc block and container, keeping the repo |
 
-`./setup.sh --full` walks the questionnaire once, then provisions unattended. Every build prompt defaults to skip, so holding Enter through the questionnaire starts no build.
+Building the Isaac workspace from the menu needs the container running, and is the route for a
+workspace never built before: `colcon_isaac` calls `deinitialize`, which needs the supervisor on
+the graph.
 
-```bash
-./setup.sh --full
+## Camera calibration
+
+[`cam_calibrate front|down`](local_ws/auxiliary/camera_calibration/README.md) runs the ROS
+calibrator against the live pipeline, applies the result on the pipeline's next start, and needs a
+connected NoMachine session.
+
+## Provisioning
+
+Setup runs from `~/workspaces` and refuses to start with uninitialised submodules.
+
+```
+git clone --recurse-submodules <repo-url> ~/workspaces
+cd ~/workspaces && ./setup.sh --full
 ```
 
-| Stage | Covers |
+`--full` and menu option 1 run the same provisioning: a questionnaire up front, then every step
+unattended. Each step detects its own state, so a re-run configures only what is missing, and build
+prompts default to skip. Setup reboots after an ARK-OS, ROS 2, JetPack or CSI-overlay install, and
+again before the smoke test when a build ran; the next terminal prompts to resume.
+
+| Flag | Runs |
 |---|---|
-| Questionnaire | Every prompt, answered once and persisted. |
-| Host | Hostname, password, power mode, Wi-Fi, NoMachine. |
-| ARK-OS | ARK-OS, ROS 2, JetPack. |
-| Phase A | Repos, apt, permissions, units, `local_ws`. Checkpointed to `~/.arid_progress`. |
-| Phase B | Isaac image, container workspace, opted-in camera steps. |
-| Finish | Summary, then the smoke test. |
+| `--full` | The questionnaire, then the whole provisioning |
+| `--resume` | The continuation a reboot armed |
+| `--continue` | The tail after an abort, skipping checkpointed sections |
+| `--help` | The flag list |
 
-The run reboots at most twice: at the end of Phase A when ARK-OS, ROS 2, JetPack or the CSI overlay was applied, and before the smoke test when a build ran. Open a bash terminal after each reboot and answer the prompt to resume.
+The questionnaire takes the Wi-Fi credentials and a ZeroTier network id; `wifi` and `zt_join`
+change them later, and the drone is a member of exactly one ZeroTier network. Provisioning does not
+calibrate the CSI cameras.
 
-`--resume` invokes that continuation by hand. `--continue` re-enters the tail after an abort, skipping the sections already checkpointed.
+## Firmware
 
-The run does not calibrate the CSI cameras. Calibrate both once it finishes.
+`local_ws/auxiliary/PX4-Autopilot` carries airframe `4026_arid_quad_v1_2`. A prebuilt image ships
+at `local_ws/auxiliary/px4_compiled/arid.px4`.
 
-## PX4 firmware
-
-The PX4 fork is at [`local_ws/auxiliary/PX4-Autopilot/`](local_ws/auxiliary/PX4-Autopilot/) on branch `PX4-InDro` and carries airframe `4026_arid_quad_v1_2`. A built image ships in [`px4_compiled/`](local_ws/auxiliary/px4_compiled/) as `arid.px4`.
-
-```bash
-cd local_ws/auxiliary/PX4-Autopilot
-make ark_fmu-v6x_default
+```
+cd local_ws/auxiliary/PX4-Autopilot && make ark_fmu-v6x_default
 ```
 
-The build lands at `build/ark_fmu-v6x_default/ark_fmu-v6x_default.px4`. Flash a `.px4` file from the ARK-OS web interface, then select the airframe from a MAVLink shell.
+The build lands at `build/ark_fmu-v6x_default/ark_fmu-v6x_default.px4`. Flash a `.px4` from the
+ARK-OS web interface, then select the airframe from a MAVLink shell.
 
 ```
 param set SYS_AUTOSTART 4026
@@ -173,21 +231,13 @@ param save
 reboot
 ```
 
-## Submodules
+## Layout
 
-[`update_submods.sh`](scripts/update_submods.sh) enforces two classes: LIVE entries sit on their tracked branch at or behind its tip, PINNED entries on an exact tag. `update_submods.sh --update` advances both.
-
-| Submodule | Class |
+| Path | Contents |
 |---|---|
-| [`PX4-Autopilot`](https://github.com/indro-robotics/PX4-Autopilot/tree/PX4-InDro) | LIVE `PX4-InDro` |
-| [`realsense-ros`](https://github.com/indro-robotics/realsense-ros/tree/v4.51.1) | LIVE `v4.51.1` |
-| [`isaac_ros_visual_slam`](https://github.com/indro-robotics/isaac_ros_visual_slam/tree/v3.2-14) | LIVE `v3.2-14` |
-| [`px4_msgs`](https://github.com/PX4/px4_msgs/tree/release/1.15) | LIVE `release/1.15` |
-| [`isaac_ros_common`](https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_common/tree/v3.2-14) | PINNED `v3.2-14` |
-| [`isaac_ros_nitros`](https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_nitros/tree/v3.2-14) | PINNED `v3.2-14` |
-| [`isaac_ros_image_pipeline`](https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_image_pipeline/tree/v3.2-14) | PINNED `v3.2-14` |
-| [`px4-ros2-interface-lib`](https://github.com/Auterion/px4-ros2-interface-lib/tree/1.4.0) | PINNED `1.4.0` |
-
-## Development
-
-All code, builds and the live runtime stay on the drone, edited over VSCode Remote-SSH to `jetson@<device-ip>`. The host workspace bind-mounts into the container at `/workspaces/isaac_ros-dev`, so `colcon_isaac` builds the same tree from either side.
+| `setup.sh` | Menu, questionnaire and orchestration |
+| `setup/` | Steps: `io.sh` helpers, `system.sh` host, `network.sh` ZeroTier, `ark.sh`, `container.sh` |
+| `scripts/` | Host scripts behind the aliases |
+| `local_ws/` | Host workspace, its units, firmware and calibration |
+| `isaac_ros-dev/` | Container workspace, its units and container scripts |
+| `log/`, `run_logs/` | Setup logs, node logs |
