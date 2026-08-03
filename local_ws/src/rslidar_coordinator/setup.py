@@ -19,7 +19,7 @@ setup(
     zip_safe=True,
     maintainer='Calvin-InDro',
     maintainer_email='calvin.rubens@indrorobotics.com',
-    description='Supervisor for the RoboSense RSAIRY LiDAR.',
+    description='Supervisor for the RoboSense AIRY LiDAR.',
     license='Apache-2.0',
     entry_points={
         'console_scripts': [

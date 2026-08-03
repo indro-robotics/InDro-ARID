@@ -10,7 +10,7 @@ into a flight unit.
 | Sensor | Fit |
 |---|---|
 | RealSense D43x | Front; IR stereo into cuVSLAM |
-| RoboSense RSAIRY LiDAR | Ethernet on `enP8p1s0` |
+| RoboSense AIRY LiDAR | Ethernet on `enP8p1s0` |
 | IMX477 CSI | Down camera |
 | ARK optical flow and rangefinder | Bottom pod |
 

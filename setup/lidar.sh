@@ -1,4 +1,4 @@
-# lidar.sh: RoboSense RSAIRY provisioning - UDP receive buffers + the dedicated Ethernet
+# lidar.sh: RoboSense AIRY provisioning - UDP receive buffers + the dedicated Ethernet
 # link (NetworkManager profiles, hot-plug dispatcher, live IP auto-detect).
 
 # Fallbacks only. scripts/config_lidar.sh overwrites the profiles built from these with the
