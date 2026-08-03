@@ -1,4 +1,11 @@
 <?xml version="1.0"?>
+<!-- ARID airframe frame tree. arid_description.service runs display.launch.py, which feeds this
+     to robot_state_publisher on the host as latched /robot_description and /tf_static.
+
+     Link names are an unchecked contract with consumers outside this package. cuVSLAM in the
+     container resolves base_frame 'base_link', and each realsense2_camera instance roots its
+     optical-frame subtree at camera_name + "_link", which the *_realsense_link names here match.
+     A rename breaks the TF chain at cuVSLAM init. -->
 <robot name="arid_drone_v1-0" xmlns:xacro="http://ros.org/wiki/xacro">
 
   <xacro:property name="mesh_scale"     value="0.0001"/>
@@ -60,11 +67,16 @@
   <xacro:propeller name="rear_left"   x="${-propeller_span}" y="${propeller_span}"/>
   <xacro:propeller name="rear_right"  x="${-propeller_span}" y="${-propeller_span}"/>
 
-  <!-- Left/right mounts are rotation-symmetric: x sign flips with yaw, not mirrored. -->
+  <!-- base_link -> *_realsense_link -> optical frame is the rig extrinsic chain cuVSLAM resolves;
+       an error in these origins is a systematic extrinsic error cuVSLAM cannot detect.
+       Left and right are one mount rotated +/-90 deg, not a mirrored pair, so the yaw sign carries
+       the sign of the x offset. -->
   <xacro:realsense name="front" x="0.09875"  y="0.0175"   yaw="0"/>
   <xacro:realsense name="left"  x="-0.0175"  y="0.08875"  yaw="${pi/2}"/>
   <xacro:realsense name="right" x="0.0175"   y="-0.08875" yaw="${-pi/2}"/>
 
+  <!-- cam_front and cam_down image headers carry these two frame ids, set in gst_camera_manager's
+       pipelines.yaml. -->
   <link name="top_visual_link"/>
   <joint name="base_link_to_top_visual_joint" type="fixed">
     <parent link="base_link"/>

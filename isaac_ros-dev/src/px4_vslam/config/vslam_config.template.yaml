@@ -1,3 +1,37 @@
+# RealSense driver and cuVSLAM parameters for the whole vslam_container. vslam.launch.py passes
+# this file to every node in the container as camera_config_file.
+#
+# vslam_config.yaml is generated, not edited: scripts/config_realsense.sh copies the template over
+# it on every setup run and re-splices the three serials, so a change made to the generated copy is
+# lost at the next run. Camera-block order is load-bearing - the splice fills the first three empty
+# serial_no entries in file order, left then front then right - so reordering the blocks binds a
+# serial to the wrong mount, and the URDF extrinsics for that mount are then applied to a camera
+# pointing elsewhere.
+#
+# The three driver blocks carry the same keys; only serial_no and camera_name differ.
+#
+# enable_infra1, enable_infra2: the rectified IR pair, published as infraN/image_rect_raw. These
+#   six streams are cuVSLAM's only input; a mount with either stream off contributes nothing.
+# enable_color, enable_depth: nothing subscribes either stream, and both consume bandwidth on the
+#   USB bus the IR pair shares.
+# enable_sync: with sync on, librealsense holds each frame until the other enabled streams produce
+#   a partner, so sets reach cuVSLAM at the slowest stream's cadence and consecutive stamps spread
+#   past image_jitter_threshold_ms. cuVSLAM does its own matching (sync_matching_threshold_ms).
+# depth_module.emitter_enabled: 0 turns the IR projector off. The projector is fixed to the camera,
+#   so its dot pattern does not move with the scene, and features tracked on it report no motion.
+# depth_module.profile: <width>x<height>x<fps>, applied to both IR streams. Never 90: the 90 fps
+#   USB service interval stalls the shared bus, and the stall hits all three cameras together.
+# rgb_camera.power_line_frequency: anti-flicker option on the RGB sensor, whose stream is off here.
+# initial_reset: true hardware-resets the device before the driver claims it, re-enumerating it
+#   while the sibling drivers are probing the same bus.
+# serial_no: written per mount by scripts/config_realsense.sh. Empty means the driver claims the
+#   first RealSense it finds, so the three namespaces bind to arbitrary mounts. The value stays a
+#   quoted digit string: the reseed captures and re-splices that literal form, and YAML reads an
+#   unquoted serial as an integer.
+# use_intra_process_comms: the driver takes intra-process from NodeOptions
+#   (get_node_options().use_intra_process_comms()), which rclcpp_components sets from a
+#   ComposableNode extra_arguments entry, not from a parameter file.
+
 left_realsense/left_realsense_link:
   ros__parameters:
     enable_infra1: true
@@ -8,13 +42,13 @@ left_realsense/left_realsense_link:
     depth_module:
       emitter_enabled: 0
       enable_auto_exposure: true
-      profile: '640x360x60'   # not 90: the 90fps USB service interval stalls the bus
+      profile: '640x360x60'
     rgb_camera:
       power_line_frequency: 1
     enable_gyro: false
     enable_accel: false
     initial_reset: false
-    serial_no: ""               # left RS serial number (no leading underscore)
+    serial_no: ""
     camera_name: "left_realsense"
     use_intra_process_comms: true
 
@@ -22,7 +56,7 @@ front_realsense/front_realsense_link:
   ros__parameters:
     enable_infra1: true
     enable_infra2: true
-    enable_color: false         # nothing on ARID subscribes RealSense colour
+    enable_color: false
     enable_sync: false
     enable_depth: false
     depth_module:
@@ -30,11 +64,11 @@ front_realsense/front_realsense_link:
       enable_auto_exposure: true
       profile: '640x360x60'
     rgb_camera:
-      power_line_frequency: 1  # 60 Hz
+      power_line_frequency: 1
     enable_gyro: false
     enable_accel: false
     initial_reset: false
-    serial_no: ""               # front RS serial number (no leading underscore)
+    serial_no: ""
     camera_name: "front_realsense"
     use_intra_process_comms: true
 
@@ -54,16 +88,26 @@ right_realsense/right_realsense_link:
     enable_gyro: false
     enable_accel: false
     initial_reset: false
-    serial_no: ""               # right RS serial number (no leading underscore)
+    serial_no: ""
     camera_name: "right_realsense"
     use_intra_process_comms: true
 
 visual_slam_node:
   ros__parameters:
+    # Window in ms for treating frames from different cameras as one set. Upstream guidance is
+    # below 0.5/fps, 8.3 ms at 60 fps. Too small and sets never form across the free-running
+    # cameras; too large and frames from different instants fuse into one set as apparent motion.
     sync_matching_threshold_ms: 15.0
     enable_image_denoising: false
+    # Asserts the inputs are rectified with principal points on a common horizontal line, which
+    # image_rect_raw satisfies, and cuVSLAM then tracks left-to-right directly.
     rectified_images: true
+    # cuVSLAM's own IMU fusion. EKF2 fuses inertial data downstream, and imu_frame below is read
+    # only while this is true.
     enable_imu_fusion: false
+    # Warns when the stamp gap between consecutive tracked sets exceeds this, and is passed to
+    # cuVSLAM as max_frame_delta_ms. One frame period at 60 fps is 16.7 ms, so 34 ms tolerates a
+    # single dropped set; below the real inter-set period every frame logs a jitter warning.
     image_jitter_threshold_ms: 34.0
     map_frame: 'map'
     odom_frame: 'odom'
@@ -72,12 +116,25 @@ visual_slam_node:
     enable_slam_visualization: false
     enable_landmarks_view: false
     enable_observations_view: false
+    # SLAM on top of visual odometry: a bounded pose graph with loop closure. False leaves pure
+    # odometry and refuses the map save and load services.
     enable_localization_n_mapping: true
+    # Six streams, three stereo pairs, and cuVSLAM's source of truth for the rig:
+    # camera_optical_frames entries and image_N/camera_info_N remaps beyond this count are ignored.
     num_cameras: 6
-    # Applies only AFTER cuVSLAM init: init still needs one camera_info from all 6 streams.
-    min_num_images: 4   # survives a FULL single-camera loss (2 stereo pairs keep VO alive, degraded); 5 only survives one dead stream
-    stale_stream_timeout_ms: 100.0   # stamp-domain: a stream silent this long stops blocking set emission; 0 = stock stall-on-empty
+    # Images cuVSLAM needs per tracked set, applied only after init: init still needs one
+    # camera_info from all six streams. 4 survives the loss of a whole camera, the two remaining
+    # stereo pairs keeping VO alive and degraded; 5 survives only one dead stream.
+    min_num_images: 4
+    # Stamp-domain staleness in ms: a stream silent this long stops blocking set emission and
+    # rejoins when its frames return. 0 = stock behaviour, where any empty stream stalls emission.
+    stale_stream_timeout_ms: 100.0
+    # Subscription QoS for the six image streams. The drivers publish SYSTEM_DEFAULT (reliable),
+    # which a best-effort subscription matches; the reverse pairing matches nothing at all.
     image_qos: "SENSOR_DATA"
+    # Order is the invariant: entry N is the optical frame for image_N as remapped in
+    # vslam.launch.py, and cuVSLAM reads each camera's extrinsic as base_link to that frame. A
+    # wrong order gives every camera another camera's mounting.
     camera_optical_frames:
       - 'front_realsense_infra1_optical_frame'
       - 'front_realsense_infra2_optical_frame'

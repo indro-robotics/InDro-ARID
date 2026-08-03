@@ -13,13 +13,13 @@ class VioTransform : public rclcpp::Node
 public:
 explicit VioTransform() : Node("vio_transform")
 {
-	// PX4 topics need sensor-data QoS
+	// px4_vslam_reactor publishes filt_slam_odometry BEST_EFFORT; a reliable subscription does
+	// not match it, and EKF2 then receives no vision at all.
 	rmw_qos_profile_t qos_profile = rmw_qos_profile_sensor_data;
 	auto qos = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, 30), qos_profile);
 
 	_vio_pub = this->create_publisher<px4_msgs::msg::VehicleOdometry>("/fmu/in/vehicle_visual_odometry", 10);
 
-	// IMU republisher disabled pending re-test (see sensorCombinedCallback below)
 	// _imu_pub = this->create_publisher<sensor_msgs::msg::Imu>("/vio_transform/imu", 10);
 
 	_vslam_odom_sub = this->create_subscription<nav_msgs::msg::Odometry>("/visual_slam/filt_slam_odometry", qos,
@@ -28,8 +28,9 @@ explicit VioTransform() : Node("vio_transform")
 	_vslam_status_sub = this->create_subscription<isaac_ros_visual_slam_interfaces::msg::VisualSlamStatus>("/visual_slam/status", qos,
 						std::bind(&VioTransform::statusCallback, this, std::placeholders::_1));
 
-	// Reactor reset epoch -> VehicleOdometry.reset_counter so EKF2 re-anchors on a re-seat
-	// instead of gating the jump; transient-local latches a late-published value.
+	// The reactor's epoch becomes VehicleOdometry.reset_counter, so EKF2 re-anchors on a re-seat
+	// instead of gating the jump as an outlier. Transient-local because the reactor publishes the
+	// epoch once at startup: a volatile subscription misses it and stamps 0 until the next seat.
 	_reset_epoch_sub = this->create_subscription<std_msgs::msg::UInt8>("/reactor/vio_reset_epoch",
 						rclcpp::QoS(1).reliable().transient_local(),
 						std::bind(&VioTransform::resetEpochCallback, this, std::placeholders::_1));
@@ -39,17 +40,14 @@ explicit VioTransform() : Node("vio_transform")
 }
 
 private:
-	// Subscription callbacks
 	void odometryCallback(const nav_msgs::msg::Odometry::UniquePtr msg);
 	void statusCallback(const isaac_ros_visual_slam_interfaces::msg::VisualSlamStatus::UniquePtr msg);
 	void resetEpochCallback(const std_msgs::msg::UInt8::UniquePtr msg);
 	void sensorCombinedCallback(const px4_msgs::msg::SensorCombined::UniquePtr msg);
 
-	// Publishers
 	rclcpp::Publisher<px4_msgs::msg::VehicleOdometry>::SharedPtr _vio_pub;
 	// rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr _imu_pub;
 
-	// Subscribers
 	rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr _vslam_odom_sub;
 	rclcpp::Subscription<isaac_ros_visual_slam_interfaces::msg::VisualSlamStatus>::SharedPtr _vslam_status_sub;
 	rclcpp::Subscription<std_msgs::msg::UInt8>::SharedPtr _reset_epoch_sub;
@@ -58,7 +56,6 @@ private:
 	uint8_t _reset_epoch = 0;
 };
 
-// FC-IMU republisher disabled pending re-test with the current Isaac VSLAM; re-enable its pubs/subs together.
 // void VioTransform::sensorCombinedCallback(const px4_msgs::msg::SensorCombined::UniquePtr msg)
 // {
 // 	auto fc_imu_acc = tf2::Vector3();
@@ -124,10 +121,8 @@ void VioTransform::odometryCallback(const nav_msgs::msg::Odometry::UniquePtr msg
 	quaternion = rotation * quaternion * rotation.inverse();
 	velocity = tf2::quatRotate(rotation, velocity);
 	angular_velocity = tf2::quatRotate(rotation, angular_velocity);
-	// Variances are covariance diagonals, not vectors: rotating by roll-pi negates the
-	// y/z components (diag(1,-1,-1)), which fed NEGATIVE variances downstream. The axis
-	// mapping of the rotation is correct; only the sign must be repaired. Pose/velocity
-	// data above is untouched.
+	// Covariance diagonals, not vectors: the roll-pi rotation negates their y and z terms, and a
+	// negative variance is not a valid measurement covariance for EKF2.
 	position_variance = tf2::quatRotate(rotation, position_variance).absolute();
 	orientation_variance = tf2::quatRotate(rotation, orientation_variance).absolute();
 	velocity_variance = tf2::quatRotate(rotation, velocity_variance).absolute();
@@ -149,7 +144,6 @@ void VioTransform::odometryCallback(const nav_msgs::msg::Odometry::UniquePtr msg
 	vio.position[1] = position.getY();
 	vio.position[2] = position.getZ();
 
-	// Velocities are body-frame, not world-frame
 	vio.velocity_frame = vio.VELOCITY_FRAME_BODY_FRD;
 	vio.velocity[0] = velocity.getX();
 	vio.velocity[1] = velocity.getY();

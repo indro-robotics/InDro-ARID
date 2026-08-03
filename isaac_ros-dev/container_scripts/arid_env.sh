@@ -7,7 +7,6 @@ export ROS_PACKAGE_PATH=${ISAAC_ROS_WS}/src:$ROS_PACKAGE_PATH
 
 source /opt/ros/humble/setup.bash && source "${ISAAC_ROS_WS}/install/setup.bash"
 
-# Service-availability guards. Print one short message and return non-zero if absent.
 _reset_usb_up() {
     ros2 service list 2>/dev/null | grep -q '^/reset_usb$' && return 0
     echo "ERROR: /reset_usb service not found (host-side reset_usb.service may be down)." >&2
@@ -19,10 +18,13 @@ _supervisor_up() {
     return 1
 }
 
-# Do not apt-install ros-humble-librealsense2; the image provides the camera driver.
-# The skip-keys and realsense2_DIR pin below keep rosdep and builds on it.
 alias reset_usb='_reset_usb_up && ros2 service call /reset_usb std_srvs/srv/Trigger "{}"'
+# skip-keys librealsense2: the source realsense2_camera declares it, and rosdep resolving it
+# apt-installs ros-humble-librealsense2 (v4l2, no HW metadata), which then links into overlay
+# builds. The workspace uses the RSUSB build at /usr/local instead.
 alias rosdep_isaac='{ sudo apt update || true; } && rosdep install --from-paths ${ISAAC_ROS_WS}/src/ --ignore-src -y --skip-keys librealsense2'
+# -Drealsense2_DIR pin: forces find_package(realsense2) to the RSUSB 2.55.1 build at
+# /usr/local even when apt ros-humble-librealsense2 (v4l2, no metadata) is installed.
 alias colcon_isaac='cd ${ISAAC_ROS_WS} && colcon build --symlink-install --base-paths src --cmake-args -DBUILD_TESTING=OFF -Drealsense2_DIR=/usr/local/lib/cmake/realsense2 && source ./install/setup.bash'
 alias clean_isaac='cd ${ISAAC_ROS_WS} && colcon clean workspace --base-select build install log'
 alias vslam='ros2 launch px4_vslam vslam.launch.py'

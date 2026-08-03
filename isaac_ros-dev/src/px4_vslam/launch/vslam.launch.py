@@ -13,7 +13,6 @@ from launch_ros.parameter_descriptions import ParameterFile
 
 def generate_launch_description():
 
-    # Config file (vslam tuning + realsense params) ------------------------------
     launch_dir = os.path.dirname(os.path.realpath(__file__))
     config = DeclareLaunchArgument(
         'camera_config_file',
@@ -30,23 +29,20 @@ def generate_launch_description():
     ld = env.get('LD_LIBRARY_PATH', '')
     env['LD_LIBRARY_PATH'] = f"/opt/ros/humble/lib:{ld}" if ld else "/opt/ros/humble/lib"
 
-    # Wait for the host-side drone-description package (arid_description) ---------
-    # The host runs arid_description.service (robot_state_publisher) which latches
-    # /robot_description and /tf_static. VSLAM needs those TF frames. We block the
-    # rest of this launch until the latched /robot_description message is visible
-    # on the DDS graph — `ros2 topic echo --once` with matching TRANSIENT_LOCAL QoS
-    # exits immediately once the publisher is up.
+    # The host's arid_description.service latches /robot_description and /tf_static, and cuVSLAM
+    # resolves base_link to each camera optical frame at init, before its first image set. This
+    # echo exits as soon as a publisher with matching transient-local QoS exists, so it gates the
+    # rest of the launch on those frames being available.
     wait_for_description = ExecuteProcess(
         cmd=['ros2', 'topic', 'echo',
              '/robot_description', 'std_msgs/msg/String',
              '--once',
              '--qos-durability', 'transient_local',
              '--qos-reliability', 'reliable'],
-        output='log',   # URDF content is huge; don't spam the console
+        output='log',
         name='wait_for_robot_description',
     )
 
-    # Converts VIO solution to PX4 topic -----------------------------------------
     vio_transform_node = Node(
         name='vio_transform',
         namespace='vio_transform',
@@ -66,11 +62,10 @@ def generate_launch_description():
         parameters=[vslam_reactor_config]
     )
 
-    # RealSense claim race: sibling RealSenseNodeFactory instances cross-probe every
-    # attached RealSense during enumeration, and a collision yields RS2_USB_STATUS_BUSY
-    # ("failed to set power state"). The driver fork retries the claim until it wins.
-    # A launch-time stagger does not help: the cross-probe recurs on every enumeration
-    # event, not only at startup. The arid_supervisor vslam_enable gate is the backstop.
+    # Sibling RealSenseNodeFactory instances cross-probe every attached RealSense on each
+    # enumeration event, and a collision loses the claim with RS2_USB_STATUS_BUSY. The forked
+    # factory releases the half-claimed handle and re-claims until it wins; arid_supervisor's
+    # vslam_enable gate holds bringup until every configured camera is up.
     vslam_container = ComposableNodeContainer(
         name='vslam_container',
         namespace='',
@@ -78,9 +73,9 @@ def generate_launch_description():
         executable='component_container_mt',
         output='screen',
         env=env,
-        # The D4xx sensors close serially (~15-20 s for 3 stereo + RGB); the launch
-        # default grace SIGKILLs mid-close, leaving the device dirty for the next init.
-        # Match the supervisor's 25 s SIGINT grace so the close completes cleanly.
+        # The D4xx sensors close serially, 15-20 s for three devices; a shorter grace SIGKILLs
+        # mid-close and leaves the device in a state the next bringup cannot claim. Tracks
+        # SIGINT_GRACE_S['vslam'] in arid_supervisor.
         sigterm_timeout='25.0',
         sigkill_timeout='10.0',
         composable_node_descriptions=[

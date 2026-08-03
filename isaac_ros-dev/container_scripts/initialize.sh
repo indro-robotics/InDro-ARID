@@ -1,17 +1,14 @@
 #!/bin/bash
-# initialize.sh - start the VSLAM stack via the supervisor:
-#   /arid_supervisor/vslam_enable -> true   (BLOCKING + CAMERA-PROVEN: the supervisor runs
-#                                            the USB pre-check, the RealSense up-gate bounded
-#                                            by a 40 s backstop, and ONE reset_usb recovery.
-#                                            Allow up to ~3 min.)
-# Idempotent: on top of an already-running vslam the supervisor answers "vslam already
-# running (...)" and this exits ok. The supervisor is started at boot by
-# arid_supervisor.service on the host.
+# initialize.sh - brings up the VSLAM stack through arid_supervisor.
+# vslam_enable blocks until the supervisor has proven every configured RealSense up: allow
+# ~3 min. Every camera protection (USB pre-check, node-up gate with a 40 s backstop, one
+# reset_usb recovery) lives in the supervisor handler; this script has none of its own and
+# only relays the response message.
+# An already-running vslam answers "vslam already running" - that response is the whole of
+# this script's idempotency.
 set -u
 
 call() {
-    # call <service> <true|false> [timeout_s] - default 30 s; the camera-gated
-    # vslam_enable is the one legitimately long call and passes its own bound.
     local svc="$1" data="$2" tmo="${3:-30}" out msg rc
     # -k: teardown children inherit SIG_IGN, a plain timeout then blocks forever.
     out=$(timeout -k 10 "${tmo}" ros2 service call "${svc}" std_srvs/srv/SetBool "{data: ${data}}" 2>&1)
@@ -24,8 +21,8 @@ call() {
         return 1
     fi
     msg=$(echo "${out}" | sed -n "s/.*message=['\"]\(.*\)['\"].*/\1/p" | head -1)
-    # Anchored on the CLI response-object line so free text inside message='...' cannot
-    # spoof success.
+    # Anchored on the CLI response-object line ('...Response(success=True, ...') so free
+    # text inside message='...' can never spoof success.
     if echo "${out}" | grep -q 'Response(success=True'; then
         echo "  ${svc}: ok${msg:+ - ${msg}}"
         return 0
@@ -34,8 +31,8 @@ call() {
     return 1
 }
 
-# `ros2 service list` is a one-shot discovery snapshot, so poll it: a cold CLI can miss a
-# service that is genuinely on the graph.
+# ros2 service list is a one-shot discovery snapshot: a cold CLI misses a service that is
+# genuinely on the graph, so poll.
 SERVICE_WAIT_S="${SERVICE_WAIT_S:-15}"
 service_up() {
     local svc="$1" end=$(( SECONDS + ${2:-${SERVICE_WAIT_S}} ))
@@ -54,9 +51,9 @@ fi
 
 echo "Starting VSLAM stack:"
 
-# A failed enable can leave vslam half-started with USB mid-re-enumeration; retry from
-# clean rather than in place. The dominant bringup failure is a transient USB claim race
-# (RS2_USB_STATUS_BUSY) that clears on a fresh attempt.
+# Partial state (vslam half-started, USB mid-re-enumeration) is what makes a retry-in-place
+# fail, so every retry tears the stack down first. The dominant bringup failure is a
+# transient USB claim race (RS2_USB_STATUS_BUSY) that clears on a fresh attempt.
 teardown() {
     echo "  tearing down before retry..."
     # 310 s: the disable queues behind an in-flight ~300 s enable; a shorter bound times
@@ -66,12 +63,12 @@ teardown() {
 }
 BRINGUP_MAX_ATTEMPTS="${BRINGUP_MAX_ATTEMPTS:-3}"
 
-# Ctrl+C / SSH death during the ~300 s camera-gated enable would otherwise strand vslam
-# mid-USB-re-enumeration - exactly the partial state that makes a retry-in-place fail.
+# Ctrl+C or SSH death during the ~300 s vslam_enable strands the same partial stack, so
+# signals tear down too.
 on_signal() {
     local code="${1:-130}"
     # Ignore INT/TERM/PIPE BEFORE any write: escalating killers must not cut the teardown
-    # short, and a reaped docker client makes writes raise SIGPIPE.
+    # short, and the reaped docker client makes writes raise SIGPIPE.
     trap "" INT TERM PIPE
     echo "  interrupted - tearing the partial stack down" >&2 || true
     teardown
@@ -81,10 +78,6 @@ trap 'on_signal 130' INT
 trap 'on_signal 143' TERM
 
 for BRINGUP_ATTEMPT in $(seq 1 "${BRINGUP_MAX_ATTEMPTS}"); do
-    # vslam_enable BLOCKS until the supervisor has PROVEN the cameras up (or failed after
-    # its single reset_usb recovery). call() prints the response message - the success
-    # timing or the verbatim failure evidence. Full detail: supervisor journal +
-    # ${ISAAC_ROS_WS}/run_logs/vslam/vslam.log.
     if call /arid_supervisor/vslam_enable true 300; then
         [ "${BRINGUP_ATTEMPT}" -gt 1 ] && echo "Bringup succeeded on attempt ${BRINGUP_ATTEMPT}/${BRINGUP_MAX_ATTEMPTS}."
         echo "Services come up in a few seconds."

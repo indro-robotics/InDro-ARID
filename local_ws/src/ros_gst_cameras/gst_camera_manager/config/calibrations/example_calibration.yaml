@@ -1,7 +1,7 @@
-# Placeholder calibration for the downward IMX219 (cam_down) at 1920x1080.
-# Replace with real values from `camera_calibrate.sh` (see local_ws/auxiliary/camera_calibration/).
-# fx / fy and the principal point below are first-order placeholders (sensor width in pixels);
-# distortion is zeroed. The real calibration overwrites all of this.
+# Placeholder calibration for the downward IMX219 (cam_down) at 1920x1080: the intrinsics below
+# are guessed from the image size, not measured, and pose derived from them carries that error.
+# `cam_calibrate down` writes the measured file; the pipeline loads it only once
+# pipelines.yaml sets `calibration:` to that file's basename.
 image_width: 1920
 image_height: 1080
 camera_name: cam_down

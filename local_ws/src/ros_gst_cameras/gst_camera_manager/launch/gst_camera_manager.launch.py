@@ -1,4 +1,4 @@
-# ros2 launch gst_camera_manager gst_camera_manager.launch.py
+# Run at boot by gst_camera_manager.service, which supplies ROS_DOMAIN_ID and the log redirect.
 
 from launch import LaunchDescription
 from launch_ros.actions import Node

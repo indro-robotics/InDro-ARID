@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Hosts /reset_usb; usb_ros_reset.service runs it on the host at boot.
+# The unit it starts power-cycles the ARK PAB hub: the FMU reboots and the RealSense cameras
+# drop off the bus. A call in flight reboots the flight controller.
 
 import subprocess
 import rclpy
@@ -15,21 +18,22 @@ class ResetUsbService(Node):
         
     def reset_callback(self, request, response):
         try:
-            # Absolute /bin/systemctl path: the sudoers NOPASSWD rule matches on it.
+            # sudo matches the NOPASSWD rule in /etc/sudoers.d/<user>_systemctl by literal path;
+            # a path not listed there prompts for a password and fails with no tty.
             result = subprocess.run(
                 ['sudo', '/bin/systemctl', 'start', 'reset_usb.service'],
                 check=True,
                 capture_output=True,
                 text=True
             )
+            # The unit is oneshot, so this returns when the power cycle ends, not when the FMU
+            # has booted and the cameras have re-enumerated.
             response.success = True
             response.message = f"USB reset triggered: {result.stdout}"
         except subprocess.CalledProcessError as e:
             response.success = False
             response.message = f"Failed: {e.stderr}"
         except OSError as e:
-            # A missing sudo or script raises OSError, which would otherwise leave the
-            # service callback and terminate the node instead of failing the one call.
             response.success = False
             response.message = f"Failed to run the reset script: {e}"
         return response

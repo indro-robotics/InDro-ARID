@@ -49,11 +49,8 @@ class vslam_reactor(Node):
         self._vio_reset_epoch = 0    # bumped on committed ORIGIN seats only -> EKF2 reset_counter
         self.last_set_pose_time = self.get_clock().now()
 
-        # Post-re-seat jump-gate bypass. odom_velocity_gate only refreshes last_vslam_odom_msg on
-        # the NOT-jump path, so the first frame after a re-seat is measured against the pre-re-seat
-        # baseline, reads as a jump, re-seats again, and self-sustains. None = no window open.
-        self._last_reseat_commit = None
-        self._reseat_bypass_frames = 0   # frames stamped AFTER the commit that rebased the baseline
+        self._last_reseat_commit = None   # None = no post-re-seat bypass window open
+        self._reseat_bypass_frames = 0
 
         self._settle_owner = 'origin'
 
@@ -111,17 +108,15 @@ class vslam_reactor(Node):
                                                      qos_profile=self.qos_vslam,
                                                      callback_group=self.vslam_cbg)
 
-        # Forwarded by vio_transform into VehicleOdometry.reset_counter. Transient-local so a
-        # restarted vio_transform latches the current value instead of starting from zero.
+        # Transient-local: a restarted vio_transform latches the current epoch instead of stamping
+        # reset_counter from zero.
         self.pub_vio_reset_epoch_ = self.create_publisher(UInt8,
                                                           '/reactor/vio_reset_epoch',
                                                           qos_profile=self.qos_transient,
                                                           callback_group=self.vslam_cbg)
         self.pub_vio_reset_epoch_.publish(UInt8(data=self._vio_reset_epoch))
 
-        # False while the jump-re-seat budget is exhausted or EV output has gone silent. Telemetry
-        # only: nothing on this platform subscribes, and the reactor never commands a flight action
-        # off it.
+        # False while the jump-re-seat budget is exhausted or EV output has gone silent.
         self.pub_vo_healthy_ = self.create_publisher(Bool,
                                                      '/reactor/vo_healthy',
                                                      qos_profile=self.qos_transient,
@@ -188,8 +183,7 @@ class vslam_reactor(Node):
 
 
     def _load_params(self):
-        # config/px4_vslam_reactor.yaml overrides these defaults (loaded by
-        # px4_vslam/launch/vslam.launch.py). Angular gates are entered in degrees there.
+        # Overridden by config/px4_vslam_reactor.yaml, which enters angular gates in degrees.
         defaults = [
             ('vslam_stabilization_time', 1.0),
             ('lin_vel_gate', 5.0),
@@ -409,7 +403,7 @@ class vslam_reactor(Node):
         # flag or bumping an epoch for a pose whose commit was never observed. It also opens the
         # bypass window: if cuVSLAM applied the pose and only the response was lost, the next frame
         # against the frozen baseline reads as a jump; if the pose was not applied, the rebase is a
-        # no-op. The epoch is confirmation-only and is never bumped here.
+        # no-op.
         if self.vslam_busy:
             busy_s = (self.get_clock().now() - self._vslam_busy_since).nanoseconds * 1e-9
             if busy_s > self.set_pose_busy_timeout_s:
@@ -472,10 +466,10 @@ class vslam_reactor(Node):
     def reseat_bypass_gate(self, vslam_odom_msg: Odometry):
         """Returns (bypass_active, publishable).
 
-        Inside the post-re-seat window the jump gate is bypassed and last_vslam_odom_msg is rebased
-        onto every incoming frame, so the baseline tracks through the pose discontinuity the
-        re-seat created. Without the rebase the first post-re-seat frame reads as a jump, re-seats,
-        and leaves the baseline stale again: a self-sustaining loop.
+        Inside the window last_vslam_odom_msg is rebased onto every incoming frame, so the baseline
+        tracks through the pose discontinuity the re-seat created. odom_velocity_gate rebases only
+        on its NOT-jump path, so without this the first post-re-seat frame is measured against the
+        pre-re-seat baseline, reads as a jump, re-seats, and self-sustains.
 
         publishable is False for a frame stamped BEFORE the commit. Such a frame is not known to
         carry the post-re-seat pose, and publishing it under the already-bumped reset_counter makes
@@ -483,8 +477,7 @@ class vslam_reactor(Node):
         unflagged step. It still rebases the baseline; only the EV publish is withheld.
 
         A real cuVSLAM jump inside the window is rebased into the baseline and stays invisible to
-        the gate afterwards. The window opens only at a committed re-seat and is capped by
-        RESEAT_BYPASS_CEILING_S.
+        the gate afterwards.
         """
         if self._last_reseat_commit is None:
             return False, True
@@ -541,13 +534,11 @@ class vslam_reactor(Node):
             self._vo_health_update()
 
     def _reseat_burst_eval(self) -> bool:
-        # Returns True while the budget is exhausted. Blocking a re-seat is not a re-seat: neither
-        # vslam_busy nor the reset epoch is touched on this path.
+        # Returns True while the budget is exhausted.
         now_s = self.get_clock().now().nanoseconds * 1e-9
         while self._reseat_burst and (now_s - self._reseat_burst[0]) > self.reseat_burst_window_s:
             self._reseat_burst.popleft()
-        # < not <=: reseat_burst_max committed re-seats are allowed inside the window and the next
-        # attempt is blocked.
+        # reseat_burst_max committed re-seats are admitted inside the window; the next is blocked.
         healthy = len(self._reseat_burst) < self.reseat_burst_max
         if healthy == self._burst_unhealthy:
             self._burst_unhealthy = not healthy
@@ -568,8 +559,7 @@ class vslam_reactor(Node):
 
     def _reseat_on_jump(self):
         # Sole entry point for jump re-seats. Re-seating at multi-Hz cannot recover cuVSLAM and
-        # only feeds EKF2 a reset storm, so the burst window rate-limits it; past the budget the
-        # reactor raises the health flag and stops, and never commands a flight action.
+        # only feeds EKF2 a reset storm, so the burst window rate-limits it.
         if self._reseat_burst_eval():
             return
         if self.set_slam_pose():
@@ -638,11 +628,10 @@ class vslam_reactor(Node):
         # re-anchor against EKF2's current estimate at ~zero.
         _q_flu = last_drone_odom_msg.pose.pose.orientation
         if init:
-            # Uppercase 'ZYX' (intrinsic): element 0 is WORLD yaw, so zeroing it composes
-            # Rz(-yaw) on the world side and the map frame stays gravity-aligned. Lowercase
-            # 'zyx' (extrinsic) puts the change on the BODY side, tilting cuVSLAM's map off
-            # gravity by 2*tilt*sin(yaw/2) on a sloped pad, which cross-couples horizontal
-            # travel into EV height.
+            # Uppercase 'ZYX' is scipy's INTRINSIC sequence: element 0 is WORLD yaw, so zeroing it
+            # composes Rz(-yaw) on the world side. Lowercase 'zyx' (extrinsic) puts the change on
+            # the BODY side, tilting cuVSLAM's map off gravity by 2*tilt*sin(yaw/2) on a sloped
+            # pad, which cross-couples horizontal travel into EV height.
             _rpy = R.from_quat([_q_flu.x, _q_flu.y, _q_flu.z, _q_flu.w]).as_euler('ZYX')
             _rpy[0] = 0.0
             _q_zeroed = R.from_euler('ZYX', _rpy).as_quat()
@@ -661,9 +650,8 @@ class vslam_reactor(Node):
         _msg = (f"init={init} "
                 f"pos=({req.pose.position.x:.3f},{req.pose.position.y:.3f},{req.pose.position.z:.3f}) "
                 f"yaw={_yaw:.1f}deg src_odom_age={age:.4f}s")
-        # Two call sites, one severity each: rclpy pins a call site's severity on first use and
-        # raises on a change, so a single line with a switched severity terminates the node on the
-        # first jump re-seat after an origin seat.
+        # Two call sites, one severity each: rclpy pins severity per call site and raises on a
+        # change.
         if init:
             self.get_logger().warn(f">>> SET ORIGIN (settling) <<< {_msg}")
         else:
@@ -675,8 +663,7 @@ class vslam_reactor(Node):
         self.vslam_busy = True
         self._seat_is_init = init
         self.new_set_pose_call = True
-        # Only an 'origin' settle escalates to an origin re-injection on settle timeout
-        # (slam_odom_callback).
+        # Only an 'origin' settle escalates to an origin re-injection on settle timeout.
         self._settle_owner = 'origin' if init else 'reseat'
 
         seq = self._seat_seq = (self._seat_seq + 1) & 0xFFFFFFFF
@@ -735,9 +722,7 @@ class vslam_reactor(Node):
                         self.publish_vslam_to_px4(vslam_odom_msg)
                     elif not self.init_flag:
                         # EKF2 has not converged onto the injected origin. Do NOT re-seat every
-                        # frame: rapid reset_counter bumps stop EKF2 converging at all. Keep
-                        # streaming for the settle window and re-inject the origin only if the
-                        # window elapses unaligned.
+                        # frame: rapid reset_counter bumps stop EKF2 converging at all.
                         settle_dt = (self.get_clock().now() - self.last_set_pose_time).nanoseconds * 1e-9
                         if settle_dt < self.set_origin_settle_time:
                             self.publish_vslam_to_px4(vslam_odom_msg)
@@ -745,8 +730,7 @@ class vslam_reactor(Node):
                             # A jump-re-seat settle that fails to align must NEVER escalate to
                             # set_slam_pose(True): that zeroes position to (0,0,0) AND zeroes yaw,
                             # discarding the heading datum in flight with no rebase anywhere
-                            # downstream. Abandon alignment instead and keep streaming; EKF2
-                            # re-anchors on its own.
+                            # downstream. EKF2 re-anchors on its own.
                             self.get_logger().error(
                                 f"SETTLE ({self._settle_owner}): EKF2 not aligned within "
                                 f"{self.set_origin_settle_time:.1f}s - abandoning alignment "

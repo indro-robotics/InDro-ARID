@@ -1,100 +1,119 @@
 # px4_vslam_reactor
 
-The reactor gates the cuVSLAM odometry stream into the PX4 bridge. It withholds frames carrying tracking jumps, re-seats cuVSLAM onto the FMU pose, and republishes the FMU pose in ROS frame conventions.
+`px4_vslam_reactor` filters the Isaac VSLAM odometry stream before PX4 fuses it. The node withholds jumped frames, re-seats the SLAM pose onto the FMU pose, and publishes the reset epoch EKF2 receives as `VehicleOdometry.reset_counter`.
 
-## Startup
+## Node
 
-The [`px4_vslam`](../px4_vslam/) stack launch starts the executable `vslam_reactor_node` as node `vslam_reactor` and applies [`config/px4_vslam_reactor.yaml`](config/px4_vslam_reactor.yaml).
+[`px4_vslam/launch/vslam.launch.py`](../px4_vslam/launch/vslam.launch.py) starts the `vslam_reactor_node` executable as node `vslam_reactor` in the root namespace, with [`config/px4_vslam_reactor.yaml`](config/px4_vslam_reactor.yaml).
 
 > Construction blocks until `visual_slam/set_slam_pose` is advertised, logging `waiting for visual_slam/set_slam_pose service...` every 2 s.
 
-## Frame admission
-
-Each frame from `/visual_slam/vis/slam_odometry` passes the stages below in order.
-
-| Stage | Condition | Effect |
-| --- | --- | --- |
-| Ingress | Non-finite field or zero-norm quaternion | Frame dropped |
-| Tracking check | `vo_state` is not 1, or a re-seat is in flight | Frame dropped |
-| Origin seat | First tracked frame while `cs_ev_pos` is false | `SetSlamPose` at zero position, zero yaw, FMU roll and pitch |
-| Pre-fusion stream | `cs_ev_pos` false | Frame published, jump gate not applied |
-| Jump gate | Linear velocity >= `lin_vel_gate`, angular >= `ang_vel_gate_dps`, or step > `VO_pos_delta_lim` across > `VO_rate_lim` | Frame withheld, `SetSlamPose` at the current FMU pose |
-| Bypass window | Within `vslam_stabilization_time` and 2 rebased frames of a committed re-seat, capped at 3 s | Jump gate skipped, baseline rebased; frames stamped before the commit withheld |
-| Settle gate | Yaw error >= `align_yaw_deg` or position error >= `align_pos_m` against `/reactor/drone_odom` | Frame published for `set_origin_settle_time` |
-| Settle timeout, origin seat | Window elapses without alignment | Origin re-injected |
-| Settle timeout, jump re-seat | Window elapses without alignment | Alignment abandoned, streaming continues |
-| Re-seat freshness | Cached FMU sample older than `set_pose_max_odom_age` | Re-seat skipped, retried on the next frame |
-| Burst limit | `reseat_burst_max` jump re-seats inside `reseat_burst_window_s` | Jump re-seats blocked, `/reactor/vo_healthy` false |
-| Busy watchdog | No `SetSlamPose` response within `set_pose_busy_timeout_s` | Call cleared, publishing resumes, bypass window opened |
-
 ## Subscribed topics
-
-The reactor takes its odometry and tracking state from cuVSLAM, and its pose and fusion state from PX4.
 
 | Topic | Type | QoS | Carries |
 | --- | --- | --- | --- |
-| `/visual_slam/vis/slam_odometry` | `nav_msgs/Odometry` | Best effort, volatile, depth 1 | cuVSLAM pose stream, the frame the gates judge |
-| `/visual_slam/status` | `isaac_ros_visual_slam_interfaces/VisualSlamStatus` | Best effort, volatile, depth 1 | `vo_state`, 1 while tracking |
-| `/fmu/out/vehicle_odometry` | `px4_msgs/VehicleOdometry` | Best effort, transient local, depth 1 | FMU pose in FRD, source of the ROS-frame outputs and the re-seat seed |
-| `/fmu/out/estimator_status_flags` | `px4_msgs/EstimatorStatusFlags` | Best effort, transient local, depth 1 | `cs_ev_pos`, latched true on EV fusion start |
-| `/reactor/drone_odom` | `nav_msgs/Odometry` | Best effort, volatile, depth 1 | Own output, cached `sync_cache_sz` deep for re-seat seeding and settle comparison |
-| `/tf`, `/tf_static` | `tf2_msgs/TFMessage` | TransformListener defaults | Buffered only; the node runs no transform lookup |
+| `/visual_slam/vis/slam_odometry` | `nav_msgs/Odometry` | best-effort, volatile, depth 1 | cuVSLAM pose; the frame the filter admits or withholds. |
+| `/visual_slam/status` | `isaac_ros_visual_slam_interfaces/VisualSlamStatus` | best-effort, volatile, depth 1 | `vo_state`; 1 is tracking. |
+| `/fmu/out/vehicle_odometry` | `px4_msgs/VehicleOdometry` | best-effort, transient-local, depth 1 | FMU pose in FRD; source of the TF, both `/reactor` poses and every re-seat. |
+| `/fmu/out/estimator_status_flags` | `px4_msgs/EstimatorStatusFlags` | best-effort, transient-local, depth 1 | `cs_ev_pos`; marks the start of EKF2 EV fusion. |
+| `/reactor/drone_odom` | `nav_msgs/Odometry` | best-effort, volatile, depth 1 | Own output, cached `sync_cache_sz` deep for re-seats and alignment. |
+| `/tf`, `/tf_static` | `tf2_msgs/TFMessage` | default | TF listener buffer; no lookup is performed. |
 
 ## Published topics
 
-Both `/reactor` pose outputs and the `map` to `px4` transform carry the FMU timestamp, replaced by the node clock whenever the skew exceeds `fmu_stamp_max_skew_s`.
+| Topic | Type | QoS | When |
+| --- | --- | --- | --- |
+| `/visual_slam/filt_slam_odometry` | `nav_msgs/Odometry` | best-effort, volatile, depth 1 | Every admitted SLAM frame, unmodified; read by `vio_transform`. |
+| `/reactor/drone_odom` | `nav_msgs/Odometry` | best-effort, volatile, depth 1 | Every FMU odometry message; FLU pose, frame `map`, child `px4`, twist unset. |
+| `/reactor/drone_pose` | `geometry_msgs/PoseStamped` | best-effort, volatile, depth 1 | Same header and pose as `/reactor/drone_odom`. |
+| `/reactor/vio_reset_epoch` | `std_msgs/UInt8` | reliable, transient-local, depth 1 | 0 at startup, then +1 on each committed origin seat, wrapping at 255. |
+| `/reactor/vo_healthy` | `std_msgs/Bool` | reliable, transient-local, depth 1 | True at startup, then on each latch change. |
+| `/tf` | `tf2_msgs/TFMessage` | default | `map` to `px4`, every FMU odometry message. |
 
-| Topic | Type | QoS | Published | Carries |
-| --- | --- | --- | --- | --- |
-| `/visual_slam/filt_slam_odometry` | `nav_msgs/Odometry` | Best effort, volatile, depth 1 | Each admitted frame | Unmodified cuVSLAM pose, read by `vio_transform` |
-| `/reactor/drone_odom` | `nav_msgs/Odometry` | Best effort, volatile, depth 1 | Each `/fmu/out/vehicle_odometry` message | FMU pose in FLU, frame `map`, child `px4` |
-| `/reactor/drone_pose` | `geometry_msgs/PoseStamped` | Best effort, volatile, depth 1 | Each `/fmu/out/vehicle_odometry` message | Same pose without the twist |
-| `/tf` | `tf2_msgs/TFMessage` | Broadcaster default | Each `/fmu/out/vehicle_odometry` message | `map` to `px4` transform |
-| `/reactor/vio_reset_epoch` | `std_msgs/UInt8` | Reliable, transient local, depth 1 | Startup, then each committed origin seat | Counter wrapping at 255, written by `vio_transform` into `VehicleOdometry.reset_counter` |
-| `/reactor/vo_healthy` | `std_msgs/Bool` | Reliable, transient local, depth 1 | Startup, then on change | False on a spent re-seat budget or EV silence past `ev_silence_max_s`; no subscriber in this repository |
+The TF and both `/reactor` poses carry the FMU timestamp, or node time when the two differ by more than `fmu_stamp_max_skew_s`.
 
 ## Services hosted
 
-The reactor hosts one service, an operator-driven origin injection.
-
-| Service | Type | Effect | Refused when |
-| --- | --- | --- | --- |
-| `/visual_slam/set_reactor_pose` | `std_srvs/Trigger` | Calls `SetSlamPose` at zero position and zero yaw, keeping FMU roll and pitch | `vo_state` is not 1, or a re-seat is in flight |
-
-```bash
-ros2 service call /visual_slam/set_reactor_pose std_srvs/srv/Trigger
-```
-
-Success reports acceptance, not completion: the injection is skipped when no FMU sample is fresher than `set_pose_max_odom_age`. A committed injection logs `>>> SET ORIGIN (settling) <<<` and increments `/reactor/vio_reset_epoch`.
+| Service | Type | Effect |
+| --- | --- | --- |
+| `/visual_slam/set_reactor_pose` | `std_srvs/Trigger` | Seats the SLAM origin; refused while not tracking or re-seating. |
 
 ## Services called
 
-The reactor calls one service, on the cuVSLAM node.
-
-| Service | Type | Called on |
+| Service | Type | When |
 | --- | --- | --- |
-| `/visual_slam/set_slam_pose` | `isaac_ros_visual_slam_interfaces/SetSlamPose` | Origin seat, jump-gate rejection, origin settle timeout, `/visual_slam/set_reactor_pose` |
+| `/visual_slam/set_slam_pose` | `isaac_ros_visual_slam_interfaces/SetSlamPose` | Origin seat: first tracked frame before EV fusion, on `/visual_slam/set_reactor_pose`, on an origin settle timeout. |
+| `/visual_slam/set_slam_pose` | `isaac_ros_visual_slam_interfaces/SetSlamPose` | Jump re-seat: a frame fails the jump gate and the burst budget holds. |
 
 ## Parameters
 
-Every parameter below is declared with the listed default and overridden by [`config/px4_vslam_reactor.yaml`](config/px4_vslam_reactor.yaml).
-
 | Parameter | Default | Controls |
 | --- | --- | --- |
-| `vslam_stabilization_time` | 1.0 s | Floor of the post-re-seat bypass window |
-| `lin_vel_gate` | 5.0 m/s | Jump-gate linear-velocity threshold |
-| `ang_vel_gate_dps` | 200.0 deg/s | Jump-gate angular-velocity threshold |
-| `VO_rate_lim` | 0.5 s | Stamp interval above which a position step counts as a slow teleport |
-| `VO_pos_delta_lim` | 0.4 m | Position step counted as a slow teleport |
-| `sync_cache_sz` | 300 | Depth of the `/reactor/drone_odom` cache |
-| `align_yaw_deg` | 2.0 deg | Settle-exit yaw tolerance |
-| `align_pos_m` | 0.10 m | Settle-exit 3D position tolerance |
-| `set_origin_settle_time` | 10.0 s | Injection window before the origin is re-injected |
-| `set_pose_max_odom_age` | 0.030 s | Maximum age of the FMU sample seeding a re-seat |
-| `fmu_stamp_max_skew_s` | 0.5 s | Stamp skew before outputs are re-stamped with the node clock |
-| `set_pose_busy_timeout_s` | 3.0 s | Wait before a stalled `SetSlamPose` call is cleared |
-| `reseat_burst_max` | 5 | Jump re-seats allowed inside the burst window |
-| `reseat_burst_window_s` | 10.0 s | Rolling window for the re-seat budget |
-| `ev_silence_max_s` | 2.0 s | EV output silence, with frames still arriving, before `/reactor/vo_healthy` latches false |
+| `vslam_stabilization_time` | 1.0 s | Floor of the post-re-seat bypass window. |
+| `lin_vel_gate` | 5.0 m/s | Jump-gate linear-velocity limit. |
+| `ang_vel_gate_dps` | 200.0 deg/s | Jump-gate angular-velocity limit. |
+| `VO_pos_delta_lim` | 0.4 m | Position step counted as a slow teleport. |
+| `VO_rate_lim` | 0.5 s | Stamp interval above which that position step counts. |
+| `sync_cache_sz` | 300 | Depth of the `/reactor/drone_odom` cache. |
+| `align_yaw_deg` | 2.0 deg | Settle-exit yaw tolerance. |
+| `align_pos_m` | 0.10 m | Settle-exit 3D position tolerance. |
+| `set_origin_settle_time` | 10.0 s | Settle window before re-injection or abandonment. |
+| `set_pose_max_odom_age` | 0.030 s | Max age of the FMU odometry receipt seeding a re-seat. |
+| `fmu_stamp_max_skew_s` | 0.5 s | Skew before outputs carry node time. |
+| `set_pose_busy_timeout_s` | 3.0 s | Wait before a stalled `SetSlamPose` call is cleared. |
+| `reseat_burst_max` | 5 | Committed jump re-seats allowed inside the window. |
+| `reseat_burst_window_s` | 10.0 s | Rolling window for the jump re-seat budget. |
+| `ev_silence_max_s` | 2.0 s | EV output silence before `/reactor/vo_healthy` latches false. |
 
-Edit the YAML and restart the stack. The workspace is symlink-installed, so a value change needs no rebuild.
+The node declares every default, so it runs without the file. The workspace is symlink-installed, so an edited value applies at the next stack start.
+
+## Origin injection
+
+`/visual_slam/set_reactor_pose` is the one reactor interface an operator calls.
+
+```bash
+ros2 service call /visual_slam/set_reactor_pose std_srvs/srv/Trigger "{}"
+```
+
+| Stage | Result |
+| --- | --- |
+| Invokes | `SetSlamPose` on `visual_slam_node`, position (0,0,0), yaw zeroed, FMU roll and pitch kept. |
+| On success | `/reactor/vio_reset_epoch` increments; `vio_transform` stamps it into `reset_counter` on `/fmu/in/vehicle_visual_odometry`. |
+| Then | Frames stream until SLAM and FMU agree within `align_yaw_deg` and `align_pos_m`. |
+| Refused | `success` false while `vo_state` is not 1 or a re-seat is in flight. |
+| No dispatch | `success` true, no call made, when the FMU sample is older than `set_pose_max_odom_age`. |
+
+## Frame filtering
+
+A frame reaches `/visual_slam/filt_slam_odometry` after these stages, in order.
+
+| Stage | Condition | Outcome |
+| --- | --- | --- |
+| Ingress | Pose finite, quaternion non-zero | Dropped otherwise, logged at a 1 s throttle. |
+| Tracking | `vo_state` 1 and no re-seat in flight | Dropped otherwise. |
+| Before EV fusion | `cs_ev_pos` false | First frame seats the origin, later frames publish ungated. |
+| Bypass window | Open after a committed re-seat | Jump gate skipped; frames stamped before the commit are withheld. |
+| Jump gate | Over `lin_vel_gate`, over `ang_vel_gate_dps`, or a step over `VO_pos_delta_lim` across more than `VO_rate_lim` | Withheld, and a jump re-seat is dispatched. |
+| Settle | Re-seat committed, poses not yet aligned | Published for `set_origin_settle_time`. |
+
+Both velocities come from the pose step against the last admitted frame, not the message twist. The bypass window closes at `vslam_stabilization_time` plus two post-commit frames, and at 3 s regardless.
+
+## Re-seat and settle
+
+The pose written into SLAM sets the reset epoch and the settle-timeout outcome.
+
+| Kind | Pose written | Reset epoch | On settle timeout |
+| --- | --- | --- | --- |
+| Origin | (0,0,0), yaw zeroed, FMU roll and pitch | Bumped on success | Origin re-injected. |
+| Jump | FMU position and full orientation | Unchanged | Alignment abandoned, streaming continues. |
+
+Alignment compares the SLAM pose against the time-matched `/reactor/drone_odom` sample. Jump re-seats are budgeted at `reseat_burst_max` inside a rolling `reseat_burst_window_s`, and origin injections are not counted.
+
+## VO health
+
+`/reactor/vo_healthy` latches false on either condition and returns true when both clear.
+
+- Jump re-seat budget exhausted.
+- No EV output for `ev_silence_max_s` while SLAM frames arrive and EKF2 fuses EV, checked at 1 Hz.
+
+Nothing in this repo subscribes to the topic, and the reactor commands no flight action.

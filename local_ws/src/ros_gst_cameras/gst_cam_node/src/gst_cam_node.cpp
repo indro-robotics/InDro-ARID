@@ -11,8 +11,8 @@
 #include <string>
 
 /**
- * Wraps the GStreamer pipeline given in gst_pipeline; publishes /<camera_topic>/image_raw
- * (+ compressed when compress:=true) and camera_info synced to each frame.
+ * One process per camera, forked by gst_camera_manager with every parameter on the command line.
+ * Frames are read on a dedicated capture thread, not on the executor.
  */
 class GstCamNode : public rclcpp::Node
 {
@@ -35,7 +35,8 @@ public:
     bool compress = this->get_parameter("compress").as_bool();
     bool reliable = this->get_parameter("reliable").as_bool();
 
-    // Default sensor_data QoS; reliable:=true for streams that cannot drop frames.
+    // Both publishers must carry the same QoS: gst_camera_manager subscribes to camera_info as
+    // its liveness proof and picks its profile from the same `reliable` flag.
     rclcpp::QoS image_qos = rclcpp::QoS(rclcpp::KeepLast(5)).durability_volatile();
     if (reliable) {
       image_qos.reliable();
@@ -113,7 +114,8 @@ private:
 
       auto now = this->now();
 
-      // Resolved once on the first frame: override if set, else auto-detect.
+      // Latched on the first frame: a pipeline that changes cv::Mat type mid-stream keeps
+      // publishing under the first frame's encoding, and subscribers decode it wrong.
       if (!encoding_resolved_) {
         active_encoding_ = encoding_.empty() ? detect_encoding(frame) : encoding_;
         if (active_encoding_.empty()) {
@@ -163,7 +165,8 @@ private:
     cap.release();
   }
 
-  // Placeholder: zero distortion, fx = fy = width, principal point at image centre.
+  // Guessed intrinsics (fx = fy = width, zero distortion), not a calibration: anything that
+  // solves geometry from this camera_info gets a wrong answer without any error.
   static sensor_msgs::msg::CameraInfo make_default_camera_info(int width, int height)
   {
     sensor_msgs::msg::CameraInfo info;
@@ -189,7 +192,6 @@ private:
     return info;
   }
 
-  // "" when the cv::Mat type has no clean ROS mapping: warn, never silently mislabel.
   static std::string detect_encoding(const cv::Mat & frame)
   {
     switch (frame.type()) {
@@ -209,11 +211,12 @@ private:
   bool encoding_resolved_{false};
   bool default_info_ready_{false};
   std::string frame_id_;
-  std::string encoding_;         // override (empty = auto-detect)
-  std::string active_encoding_;  // resolved at first frame
+  std::string encoding_;
+  std::string active_encoding_;
   sensor_msgs::msg::CameraInfo default_info_;
-  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_pub_;  // compress=false
-  image_transport::Publisher it_pub_;  // compress=true: raw + compressed (lazy encoder)
+  // Exactly one of the two is constructed; the publish path uses a null image_pub_ to tell which.
+  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_pub_;
+  image_transport::Publisher it_pub_;
   rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_pub_;
   std::shared_ptr<camera_info_manager::CameraInfoManager> camera_info_manager_;
 };

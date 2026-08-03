@@ -1,22 +1,18 @@
 #!/bin/bash
-# reap_stack.sh - group-SIGINT -> 25 s drain -> group-SIGKILL the vslam launch tree. Run by
-# ExecStopPost after airborne_check.sh clears it. Script, not inline: systemd expands $VAR
-# itself (unset -> pkill -f "" = match everything).
-# The pattern is 'ros2 launch <pkg> <file>'-qualified + [.]-escaped so it can never hit the
-# host-side gst_camera_manager / arid_description units (shared PID namespace). Kills whole
-# process GROUPS (the launch parent is a setsid leader): a wedged child outliving its parent
-# must not survive holding a camera; the drain checks group members, not just parents.
+# reap_stack.sh - group-SIGINT, 25 s drain, group-SIGKILL of the vslam launch tree.
+# Run by arid_supervisor.service ExecStopPost once airborne_check.sh reports not airborne.
+# A file and not an inline ExecStopPost: systemd expands $VAR itself, and one unset variable
+# leaves `pkill -f ""`, which matches every process on the host.
+# The pattern stays 'ros2 launch <pkg> <file>'-qualified and [.]-escaped so it cannot reach
+# the host-side gst_camera_manager or arid_description units through the shared PID namespace.
 P='ros2 launch px4_vslam vslam[.]launch[.]py'
-# Group-kill by the matched pid's REAL pgid, never by the pid itself: a launch started
-# from a shell (dev alias) is not its own group leader, so -pid would ESRCH and the
-# fallback single kill leaves the container children holding the cameras - and a pid
-# that happens to equal an unrelated group's pgid would signal that innocent group.
-# Orphan-safe discovery: an orphaned component container carries no 'ros2 launch' token,
-# so matching parents alone reports "nothing to reap" while the container is still up
-# holding the cameras and the ROS graph (proven live: a killed launch parent left
-# component_container_mt running and this script reported nothing to do). Match the
-# containers by their own node name too; both sets reduce to pgids below. The node
-# names belong to the launches in P above, so this cannot widen the blast radius.
+# Group-kill by the matched pid's REAL pgid, never by the pid itself: a launch started from
+# a shell is not its own group leader, so -pid raises ESRCH and a single kill leaves the
+# container children holding the cameras; and a pid that equals an unrelated group's pgid
+# signals that innocent group. The drain below checks group members, not only parents.
+# An orphaned component container carries no 'ros2 launch' token, so matching the launch
+# parents alone reports "nothing to reap" while the container still holds the cameras and
+# the ROS graph.
 C='component_container.*__node:=vslam_container'
 pgids=""
 for p in $(pgrep -f "${P}"; pgrep -f "${C}"); do

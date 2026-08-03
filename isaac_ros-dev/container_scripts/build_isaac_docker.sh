@@ -1,6 +1,7 @@
 #!/bin/bash
-# Builds (and enters) the Isaac container via run_dev.sh.
-# Fail fast on empty ISAAC_ROS_WS: it would silently resolve run_dev.sh from /.
+# build_isaac_docker.sh - builds and enters the Isaac container via run_dev.sh.
+# Without the guard an unset ISAAC_ROS_WS collapses the path to
+# /src/isaac_ros_common/scripts/run_dev.sh, which exits 127 having built nothing.
 set -eu
 
 : "${ISAAC_ROS_WS:?ISAAC_ROS_WS must be exported - re-login or source ~/.bashrc first}"

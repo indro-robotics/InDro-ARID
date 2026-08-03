@@ -1,42 +1,49 @@
-# GstCameraManager pipeline definitions.
-# Each entry spawns a gst_cam_node subprocess on demand and exposes a service at
-# /gst_camera_manager/<name> (std_srvs/SetBool; true=start, false=stop).
+# GstCameraManager pipeline definitions. The manager reads the installed copy at startup and on
+# /gst_camera_manager/refresh, so an edit here reaches the drone only after colcon_local.
+# Each entry gets a service at /gst_camera_manager/<name> (std_srvs/SetBool; true=start,
+# false=stop) and a subprocess of its own.
 #
 # Fields (per pipeline):
-#   gst_pipeline : Full GStreamer pipeline string, ending in `appsink`.
-#   calibration  : Basename (no extension) of a YAML in config/calibrations/. If the
-#                  file is missing or the field is omitted, camera_info is still
-#                  published using defaults built from the first frame (zero
-#                  distortion, fx=fy=width, principal point at image centre).
+#   gst_pipeline : GStreamer pipeline string ending in `appsink`. Opened through
+#                  cv::VideoCapture(CAP_GSTREAMER), which reads frames from appsink and from
+#                  no other sink. Newlines are flattened to spaces before launch. The caps
+#                  width/height must select a sensor mode; the rate listed with each mode is
+#                  its maximum and a lower framerate is accepted. IMX219 modes: 3280x2464 at
+#                  21 fps, 3280x1848 at 28, 1920x1080 at 30, 1640x1232 at 30, 1280x720 at 60.
+#   calibration  : Basename, no extension, of a YAML in config/calibrations/. Omitted, "" or
+#                  naming a file that is not installed: camera_info is still published, built
+#                  from the first frame with zero distortion, fx=fy=width and the principal
+#                  point at the image centre. Those intrinsics are a guess, so any consumer
+#                  solving geometry from them is wrong while reporting nothing.
 #   topic        : ROS topic root. Publishes /<topic>/image_raw, /<topic>/image_raw/compressed
-#                  (when compress: true), and /<topic>/camera_info.
-#   frame_id     : TF frame stamped into every image + camera_info header.
-#   encoding     : Override for sensor_msgs/Image.encoding. Leave empty "" to let the
-#                  node auto-detect from cv::Mat::type() (maps CV_8UC1→mono8, CV_8UC3→bgr8,
-#                  CV_8UC4→bgra8, CV_16UC1→mono16, CV_16UC3→bgr16, CV_16UC4→bgra16).
-#                  Set explicitly (e.g. "rgb8", "bayer_rggb8") to override auto-detect.
-#   compress     : true → publishes both raw + compressed via image_transport (lazy, no
-#                  cost if nothing subscribes to compressed). false → raw only.
-#   alive_threshold : Seconds (float) without a camera_info message before the pipeline
-#                     is marked not-alive on /gst_camera_manager/<name>/alive. Process
-#                     death always forces alive=false regardless of this value. Timer
-#                     starts when the subprocess is launched (acts as a startup grace
-#                     period). Omitted → defaults to 5.0s.
-#   reliable     : QoS for image_raw + camera_info. Default (omitted / "" / false) is
-#                  sensor_data QoS (BEST_EFFORT, VOLATILE, depth 5): standard for image
-#                  streams, drops frames over lossy links rather than stalling the
-#                  publisher. Set `reliable: true` for streams that cannot tolerate frame
-#                  drops (low-rate scanners, metadata-critical pipelines).
+#                  (when compress: true) and /<topic>/camera_info. Omitted: the pipeline name.
+#   frame_id     : TF frame stamped into every image and camera_info header. Omitted:
+#                  <name>_frame.
+#   encoding     : Override for sensor_msgs/Image.encoding, resolved once on the first frame
+#                  and never re-checked. "" auto-detects from cv::Mat::type(): CV_8UC1 mono8,
+#                  CV_8UC3 bgr8, CV_8UC4 bgra8, CV_16UC1 mono16, CV_16UC3 bgr16, CV_16UC4
+#                  bgra16; an unmapped type publishes an empty encoding and logs a warning.
+#                  Any sensor_msgs/image_encodings name is accepted and is never checked
+#                  against the frame, so a wrong value mislabels every image.
+#   compress     : true publishes raw and compressed through image_transport; the encoder runs
+#                  only while something subscribes to the compressed topic. false
+#                  publishes raw only and /<topic>/image_raw/compressed never appears.
+#   alive_threshold : Seconds (float) without a camera_info message before the pipeline is
+#                     marked not-alive on /gst_camera_manager/<name>/alive. Omitted: 5.0.
+#                     The timer is seeded when the subprocess launches, so this value is also
+#                     the startup grace period: a cold Argus open needs about 2 s to deliver
+#                     its first frame, and anything under ~3 s reports a stall on every start.
+#                     Subprocess exit forces alive=false whatever this is set to.
+#   reliable     : QoS for image_raw and camera_info. Omitted, "" or false is sensor_data QoS
+#                  (BEST_EFFORT, VOLATILE, depth 5): a subscriber that falls behind loses
+#                  frames. true is RELIABLE at the same depth and retransmits instead. Only a
+#                  YAML boolean true or the string "true" reads as true; every other value is
+#                  false. A subscriber whose reliability does not match receives nothing at
+#                  all, and the manager matches its own camera_info subscription to this field.
 
 pipelines:
 
   cam_front:
-    # Supported IMX219 Modes
-    # 3280x2464	21fps
-    # 3280x1848	28fps
-    # 1920x1080	30fps
-    # 1640x1232	30fps
-    # 1280x720	60fps
     gst_pipeline:
       nvarguscamerasrc sensor-id=0 wbmode=1 aelock=false ee-mode=2 tnr-mode=2
       ! video/x-raw(memory:NVMM),width=1920,height=1080,framerate=15/1,format=NV12
@@ -48,20 +55,9 @@ pipelines:
     frame_id: "top_visual_link"
     encoding: ""
     compress: true
-    # 5.0, not 2.0: this value doubles as the startup grace period, and a cold Argus open does
-    # not deliver its first frame inside 2 s - on the IMX477 that was measured at 2.04 s, which
-    # tripped the old threshold on every launch ("stalled ... frames resumed" one line later) and
-    # made verify_cv_cams give up on a working camera. Not re-measured on the IMX219; set to 5.0
-    # to match the fleet. A real stall is still caught inside 5 s.
     alive_threshold: 5.0
 
   cam_down:
-    # Supported IMX219 Modes
-    # 3280x2464	21fps
-    # 3280x1848	28fps
-    # 1920x1080	30fps
-    # 1640x1232	30fps
-    # 1280x720	60fps
     gst_pipeline:
       nvarguscamerasrc sensor-id=1 wbmode=1 aelock=false ee-mode=2 tnr-mode=2
       ! video/x-raw(memory:NVMM),width=1920,height=1080,framerate=15/1,format=NV12
@@ -73,9 +69,4 @@ pipelines:
     frame_id: "bottom_visual_link"
     encoding: ""
     compress: true
-    # 5.0, not 2.0: this value doubles as the startup grace period, and a cold Argus open does
-    # not deliver its first frame inside 2 s - on the IMX477 that was measured at 2.04 s, which
-    # tripped the old threshold on every launch ("stalled ... frames resumed" one line later) and
-    # made verify_cv_cams give up on a working camera. Not re-measured on the IMX219; set to 5.0
-    # to match the fleet. A real stall is still caught inside 5 s.
     alive_threshold: 5.0

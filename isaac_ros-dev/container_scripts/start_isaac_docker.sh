@@ -3,19 +3,18 @@ set -e
 
 CONTAINER=isaac_ros_dev-aarch64-container
 
-# A missing container record makes `docker start` fail and systemd restart-loop indefinitely;
-# probe first and exit cleanly.
+# With no container record `docker start` exits non-zero and systemd loops
+# Restart=on-failure forever; exiting 0 instead lands the unit in "active (exited)".
 if ! docker container inspect "${CONTAINER}" >/dev/null 2>&1; then
     echo "/// Container ${CONTAINER} does not exist - run build_isaac to create it. Exiting cleanly. ///" >&2
     exit 0
 fi
 
 echo "/// Starting container ${CONTAINER}... ///"
-# jtop.sock bind repair. /run is tmpfs, so the socket dies every boot and only jtop.service
-# recreates it. Start the container first and Docker auto-creates the missing bind source as a
-# DIRECTORY, after which every `docker start` fails with exit 127 and systemd loops forever.
-# run_dev.sh guards this, but only at container CREATE - `docker start` replays the stored bind
-# list and never re-checks. Repair the source here, before every start.
+# /run is tmpfs, so /run/jtop.sock is gone every boot until jtop.service recreates it.
+# Starting the container first makes Docker create the missing bind source as a DIRECTORY,
+# after which every `docker start` fails with exit 127 and systemd loops forever. run_dev.sh
+# guards this only at container CREATE: `docker start` replays the stored bind list unchecked.
 if docker container inspect "${CONTAINER}" \
         --format '{{range .HostConfig.Binds}}{{println .}}{{end}}' 2>/dev/null \
         | grep -q '^/run/jtop.sock:'; then
@@ -35,8 +34,8 @@ if docker container inspect "${CONTAINER}" \
         done
     fi
 
-    # Still no socket: starting now recreates the directory and re-enters the loop. Drop the
-    # mount instead by recreating the container - run_dev.sh then omits it.
+    # Starting with the socket still absent recreates the directory and re-enters the loop,
+    # so drop the mount by recreating the container: run_dev.sh then omits it.
     if [ ! -S /run/jtop.sock ]; then
         echo "/// jtop socket unavailable - recreating ${CONTAINER} WITHOUT the jtop mount ///" >&2
         docker rm -f "${CONTAINER}" >/dev/null 2>&1 || true
