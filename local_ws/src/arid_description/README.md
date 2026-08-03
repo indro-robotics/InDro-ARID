@@ -1,76 +1,74 @@
 # arid_description
 
-This package holds the xacro description, mesh, display launch and RViz configuration for the ARID quadrotor by InDro Robotics.
+This package holds the ARID quadrotor URDF, its visual mesh and an RViz configuration. The link names it defines are the frame ids the camera and visual-odometry packages stamp and look up.
 
 ![ARID drone](doc/arid_description.png)
 
-- `xacro/arid.xacro`: the full robot description.
-- `meshes/arid_model.stl`: the visual mesh.
-- `launch/display.launch.py`: `robot_state_publisher`, with optional GUI and RViz.
-- `rviz/arid.rviz`: the default RViz config, fixed frame `base_link`.
+## Startup
 
-`arid_description.service` runs the launch at boot. It publishes the expanded URDF on `/robot_description` and the fixed-joint transform tree on `/tf_static`, both latched for late subscribers.
+`arid_description.service` runs `display.launch.py` at boot. The launch expands `xacro/arid.xacro` and starts `robot_state_publisher` with the result as its `robot_description` parameter.
 
-## Launch arguments
+## Viewing the model
 
-The display launch takes two arguments.
-
-| Argument | Default | Function |
-|---|---|---|
-| `rviz` | `false` | Starts RViz with `arid.rviz` preloaded. |
-| `gui` | `false` | Starts `joint_state_publisher_gui`. All joints are fixed, so it has no effect. |
-
-The launch always starts `robot_state_publisher`, so running it while the boot service is active leaves two publishers of the same description on the graph.
+`display.launch.py` always starts `robot_state_publisher`, so a manual run adds a second publisher of the same description to the graph.
 
 ```bash
 ros2 launch arid_description display.launch.py rviz:=true
 ```
 
-## Xacro structure
+| Argument | Default | Effect |
+| --- | --- | --- |
+| `rviz` | `false` | Starts `rviz2` on `rviz/arid.rviz`: RobotModel from `/robot_description`, TF axes, fixed frame `base_link` |
+| `gui` | `false` | Starts `joint_state_publisher_gui`; every joint is fixed, so no slider moves a frame |
 
-Three properties drive the geometry.
+## Published topics
 
-| Property | Value | Meaning |
-|---|---|---|
-| `mesh_scale` | `0.0001` | STL units (0.1 mm) to metres. |
-| `propeller_span` | `0.0975` | Rotor hubs sit at `(±span, ±span, 0)`. |
-| `realsense_z` | `0.092042` | Height of the RealSense links above `base_link`. |
+| Topic | Type | QoS | Published | Carries |
+| --- | --- | --- | --- | --- |
+| `/robot_description` | `std_msgs/String` | Reliable, transient local, depth 1 | Once at start | Expanded URDF, held for late subscribers |
+| `/tf_static` | `tf2_msgs/TFMessage` | Reliable, transient local, depth 1 | Once at start | The 13 fixed-joint transforms |
+| `/tf` | `tf2_msgs/TFMessage` | Reliable, depth 100 | Never | Advertised by `robot_state_publisher`; no joint in the description moves |
 
-Two macros generate the repeated links. `propeller(name, x, y)` builds a link and fixed joint for each of the four rotors, and `realsense(name, x, y, yaw)` places a camera link at `realsense_z` for `front`, `left` and `right`. The autopilot, the two CSI camera links, the flow module and the rangefinder are declared inline.
+## Subscribed topics
 
-`base_link` carries the only geometry: the mesh as its visual, a 0.393 x 0.393 x 0.2047 m box as its collision. Every other link is an empty frame.
+| Topic | Type | Used for |
+| --- | --- | --- |
+| `/joint_states` | `sensor_msgs/JointState` | Movable-joint positions; nothing on the drone publishes it |
+
+## Parameters
+
+| Parameter | Value | Controls |
+| --- | --- | --- |
+| `robot_description` | Expanded `xacro/arid.xacro` | The URDF `robot_state_publisher` walks into `/tf_static` |
 
 ## Frames
 
-`base_footprint` is the root, `base_link` is coincident with it, and every remaining link is a fixed-joint child of `base_link`.
+`base_footprint` is the root and `base_link` is coincident with it. `base_link` is the airframe origin, the frame cuVSLAM tracks as its `base_frame`, and every link below is fixed to it.
 
-| Frame | Mounting |
-|---|---|
-| `autopilot` | ARK FMU v6X. |
-| `front_left_propeller_link` | Front left rotor hub. |
-| `front_right_propeller_link` | Front right rotor hub. |
-| `rear_left_propeller_link` | Rear left rotor hub. |
-| `rear_right_propeller_link` | Rear right rotor hub. |
-| `front_realsense_link` | Front RealSense, facing forward. |
-| `left_realsense_link` | Left RealSense, yawed +90 degrees. |
-| `right_realsense_link` | Right RealSense, yawed -90 degrees. |
-| `top_visual_link` | Front CSI camera, z axis along body +x. |
-| `bottom_visual_link` | Down CSI camera, z axis along body -z. |
-| `flow_link` | Optical flow module, below `base_link`. |
-| `rangefinder_link` | Rangefinder, below `base_link`. |
+| Frame | Offset from `base_link` (m) | RPY (deg) | Marks | Referenced by |
+| --- | --- | --- | --- | --- |
+| `autopilot` | 0.042524, 0, 0.100499 | 0, 0, 0 | ARK FMU v6X | - |
+| `front_left_propeller_link` | 0.0975, 0.0975, 0 | 0, 0, 0 | Front left rotor hub | - |
+| `front_right_propeller_link` | 0.0975, -0.0975, 0 | 0, 0, 0 | Front right rotor hub | - |
+| `rear_left_propeller_link` | -0.0975, 0.0975, 0 | 0, 0, 0 | Rear left rotor hub | - |
+| `rear_right_propeller_link` | -0.0975, -0.0975, 0 | 0, 0, 0 | Rear right rotor hub | - |
+| `front_realsense_link` | 0.09875, 0.0175, 0.092042 | 0, 0, 0 | Front RealSense | `px4_vslam`: `realsense2_camera` base frame |
+| `left_realsense_link` | -0.0175, 0.08875, 0.092042 | 0, 0, 90 | Left RealSense | `px4_vslam`: `realsense2_camera` base frame |
+| `right_realsense_link` | 0.0175, -0.08875, 0.092042 | 0, 0, -90 | Right RealSense | `px4_vslam`: `realsense2_camera` base frame |
+| `top_visual_link` | 0.077, 0, 0.129792 | -90, 0, -90 | Forward CSI camera | `/cam_front/image_raw` header |
+| `bottom_visual_link` | 0.025, 0, 0.000842 | 0, 180, 90 | Downward CSI camera | `/cam_down/image_raw` header |
+| `flow_link` | 0, -0.0115, -0.008518 | 180, 0, 0 | Optical flow module | - |
+| `rangefinder_link` | -0.001322, 0.00992, -0.011096 | 0, 180, 0 | Rangefinder | - |
 
-Each RealSense link name matches the `<camera_name>_link` frame that `realsense2_camera` publishes, so the driver's stream frames attach beneath it.
+Each RealSense link name is the `<camera_name>_link` base frame `realsense2_camera` builds from the `camera_name` in `vslam_config.yaml`, so the driver hangs its stream frames beneath it.
 
-> Frame names are referenced outside this package, by `px4_vslam` and `gst_camera_manager` configuration. Renaming a link breaks the consumer that stamps or looks it up.
+> Renaming a link breaks the consumer that stamps or looks it up.
 
-## Foxglove
+## Geometry
 
-Foxglove Studio renders the model through `foxglove_bridge`. Start the bridge, connect Studio to `ws://<device-ip>:8765`, and load the URDF from `/robot_description` with panel frame `base_link`.
+`base_link` carries the only geometry; every other link is an empty frame.
 
-```bash
-foxglove_bridge
-```
-
-## License
-
-The package is released under Apache-2.0; see [LICENSE](LICENSE).
+| Element | Definition |
+| --- | --- |
+| Visual | `meshes/arid_model.stl` scaled 0.0001 from 0.1 mm units, at 0, 0, 0.023842 m, RPY -90, 0, 90 |
+| Collision | Box 0.393 x 0.393 x 0.2047 m, at 0, 0, 0.070192 m |

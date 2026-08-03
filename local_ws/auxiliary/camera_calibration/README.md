@@ -1,41 +1,83 @@
 # camera_calibration
 
-This directory holds the CSI camera calibrator and the checkerboard it defaults to. The calibrator runs the ROS 2 `cameracalibrator` GUI against a live `cam_front` or `cam_down` pipeline, and that GUI renders on a NoMachine display.
+The CSI camera calibrator produces intrinsics for the `cam_front` and `cam_down` pipelines. It runs the ROS 2 `cameracalibrator` GUI against a live pipeline on a NoMachine display.
 
-## Calibrating
+## Running a calibration
 
-`cam_calibrate` takes `front` or `down` and must be run from an interactive terminal; `setup.sh` menu option **6** prompts for the camera.
+`cam_calibrate` takes `front` or `down` and requires an interactive terminal and a connected NoMachine session. Menu option 6 of `setup.sh` prompts for the camera and runs the same script.
 
 ```bash
 cam_calibrate front
 cam_calibrate down
 ```
 
-The run starts `gst_camera_manager.service` if that service is not already active, stops and restarts the selected pipeline, and waits for frames on `/<cam>/image_raw` before opening the calibrator window. In the GUI, move the board through the frame, then click Calibrate followed by Commit or Save; without one of those the run ends with no calibration written. The pipeline is stopped again when the script exits.
+The run prompts for the board, starts the pipeline, and waits for frames before opening the calibrator window. In the GUI, move the board through the frame, then click Calibrate and Save.
 
-If no NoMachine display is ready, the run waits up to `NM_WAIT_S` seconds, 180 by default, and then exits without calibrating. Enter cancels the wait.
+> Commit calls `/camera/set_camera_info`, which no node hosts. Save writes the calibration into `/tmp/calibrationdata.tar.gz`, which the script unpacks.
 
 ## Board
 
-The script asks whether to use a custom board. Answering `y` prompts for columns and rows in squares plus the square size in millimetres; Enter or `n` uses the included `calibration_pattern/calib_pattern.pdf`, 10x7 squares at 50 mm.
-
-Setting both `SIZE` and `SQUARE` skips that prompt. `SIZE` is interior corners, one less per side than the square count, and `SQUARE` is in metres. `NM_WAIT_S` overrides the display wait. Prefix the assignments to the script rather than to `cam_calibrate`, which bash does not expand after an assignment.
-
-```bash
-SIZE=7x5 SQUARE=0.030 NM_WAIT_S=60 "$WORKSPACES"/local_ws/auxiliary/camera_calibration/camera_calibration_auto/camera_calibrate.sh down
-```
+The script asks whether to use a custom board. Answering `y` prompts for columns, rows and square size in millimetres; `n` uses `calibration_pattern/calib_pattern.pdf`, 10x7 squares at 50 mm.
 
 ## Loading a result
 
-Each successful run writes `camera_calibrations/<cam>/<cam>.yaml` plus a timestamped copy, and puts the same file at `local_ws/src/ros_gst_cameras/gst_camera_manager/config/calibrations/<cam>.yaml`.
+Each run writes the result into the calibration store and into the manager's source tree. The manager loads calibrations from the installed share, so a new file reaches a pipeline only after a build.
 
-The manager reads calibrations from the built workspace, so a file created since the last build is not yet installed. Set `calibration: "<cam>"` in the manager's `pipelines.yaml`, which ships empty for both pipelines, then run `colcon_local` and start the pipeline with `cam_front_start` or `cam_down_start`. Editing `pipelines.yaml` after that build needs `cam_refresh`, since the manager holds the config it read at startup.
+| Path | Content |
+| --- | --- |
+| `camera_calibrations/<cam>/<cam>.yaml` | Latest result. |
+| `camera_calibrations/<cam>/<cam>_<timestamp>.yaml` | Per-run copy, gitignored. |
+| `local_ws/src/ros_gst_cameras/gst_camera_manager/config/calibrations/<cam>.yaml` | Copy the build installs. |
 
-## Files
+Set `calibration: "<cam>"` in the manager's `pipelines.yaml`, which ships empty for both pipelines, then run `colcon_local` and start the pipeline with `cam_front_start` or `cam_down_start`. A `pipelines.yaml` edit made after that build takes effect on `cam_refresh`.
 
-The directory holds the calibrator, the pattern and two trees created on first use.
+## Services called
 
-- `camera_calibration_auto/camera_calibrate.sh`: the `front|down` calibrator.
-- `calibration_pattern/calib_pattern.pdf`: the included 10x7-square, 50 mm checkerboard.
-- `camera_calibrations/<cam>/`: the per-camera store; timestamped copies are gitignored.
-- `camera_calibration_auto/calib_env/`: the calibrator's virtualenv, gitignored.
+The script starts `gst_camera_manager.service` when no `/gst_camera_manager/` service is registered.
+
+| Service | Type | When |
+| --- | --- | --- |
+| `/gst_camera_manager/<cam>` | `std_srvs/srv/SetBool` | `true` starts the pipeline; `false` stops it before the run and at exit. |
+| `/camera/set_camera_info` | `sensor_msgs/srv/SetCameraInfo` | GUI Commit. No server exists. |
+
+## Topics
+
+`<cam>` is `cam_front` or `cam_down`; their headers carry frame `top_visual_link` and `bottom_visual_link`.
+
+| Subscribed | Type | Use |
+| --- | --- | --- |
+| `/<cam>/image_raw` | `sensor_msgs/msg/Image` | Frames the calibrator detects the board in. |
+
+| Published by the pipeline | Type | Content |
+| --- | --- | --- |
+| `/<cam>/image_raw` | `sensor_msgs/msg/Image` | Pipeline frames, BEST_EFFORT depth 5. |
+| `/<cam>/image_raw/compressed` | `sensor_msgs/msg/CompressedImage` | Same frames through `image_transport`. |
+| `/<cam>/camera_info` | `sensor_msgs/msg/CameraInfo` | Intrinsics, stamped with the image time. |
+
+## Environment
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `SIZE` | `9x6` | Interior corners, one less than squares per side. |
+| `SQUARE` | `0.050` | Square side in metres. |
+| `NM_WAIT_S` | `180` | Seconds to wait for a NoMachine display before exiting. |
+| `ROS_DOMAIN_ID` | `23` | Domain carrying the pipeline services and topics. |
+| `WORKSPACES` | repo root | Root the store and the manager calibration are written under. |
+
+Setting `SIZE` and `SQUARE` skips the board prompt. Bash does not expand the `cam_calibrate` alias after a variable assignment, so prefix the assignments to the script path.
+
+```bash
+SIZE=<corners> SQUARE=<metres> bash "$WORKSPACES"/local_ws/auxiliary/camera_calibration/camera_calibration_auto/camera_calibrate.sh <camera>
+```
+
+## Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Calibration written, or the display wait cancelled or timed out. |
+| 1 | ROS 2 Humble, OpenCV, or `gst_camera_manager` unavailable. |
+| 2 | Argument was not `front` or `down`. |
+| 3 | No frames on `/<cam>/image_raw`. |
+| 4 | GUI closed without a calibration. |
+| 5 | No display and no terminal to prompt on. |
+| 6 | Not an interactive terminal. |
