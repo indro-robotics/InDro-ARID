@@ -1,43 +1,59 @@
 # reset_ark_usb
 
-This package hosts `/reset_usb`, the ROS 2 service that hardware-resets the USB ports on the ARK PAB Orin carrier. The service starts `reset_usb.service`, which runs `scripts/usb_reset.sh`: `uhubctl` power-cycles the carrier hub and `gpioset` power-cycles the standalone USB3 port on `gpiochip0` line 85. The hub topology and that GPIO line are specific to the ARK PAB Orin carrier. `usb_ros_reset.service` starts the node on the host at boot with `ROS_DOMAIN_ID=23` and `ROS_LOCALHOST_ONLY=1`, so callers on the host and inside the Isaac container reach the same service.
+reset_ark_usb hosts `/reset_usb`, the ROS 2 trigger for the ARK PAB carrier USB power cycle.
 
-> `/reset_usb` also resets the flight controller. Never call it in flight.
+> The power cycle reboots the FMU and re-enumerates the RealSense cameras. Call it only with the
+> aircraft disarmed on the ground.
 
-## Service interface
+## Node
 
-The node exposes one service and declares no parameters.
+`usb_ros_reset.service` runs `reset_usb_service` on the host at boot, from the `local_ws` overlay on
+`ROS_DOMAIN_ID=23` with `ROS_LOCALHOST_ONLY=1`. The node creates no publishers, subscriptions,
+clients or parameters.
 
-| Service | Type | Response |
+## Service
+
+| Service | Type | Effect |
 |---|---|---|
-| `/reset_usb` | `std_srvs/srv/Trigger` | `success: bool`, `message: string` carrying the `systemctl` output |
+| `/reset_usb` | `std_srvs/srv/Trigger` | Starts the host unit `reset_usb.service`, returns when it exits |
+
+| Response | Value |
+|---|---|
+| `success` | `true` when `sudo /bin/systemctl start reset_usb.service` exits zero |
+| `message`, success | `USB reset triggered:` and the systemctl stdout |
+| `message`, failure | `Failed:` and the stderr, or `Failed to run the reset script:` |
 
 ```bash
 ros2 service call /reset_usb std_srvs/srv/Trigger "{}"
 ```
 
-The console entry point is `reset_usb_service`.
-
-```bash
-ros2 run reset_ark_usb reset_usb_service
-```
+The unit is `Type=oneshot`, so a `uhubctl` or `gpioset` failure returns `success: false`. USB
+re-enumeration and FMU boot continue after the call returns.
 
 ## Effect
 
-A successful call power-cycles the USB hub and reboots the flight controller. The RealSense drops off the bus and re-enumerates. Allow about 20 s for enumeration to finish before treating the camera as missing.
+| Stage | Action |
+|---|---|
+| `reset_usb.service` | Runs `scripts/usb_reset.sh` as root |
+| `uhubctl -l 1-2` | Powers the ARK PAB hub off, then on |
+| `gpioset gpiochip0 85=0` | 1 s open-drain pulse on the standalone USB3 port |
+
+Allow 20 s for re-enumeration before treating a camera as missing.
+
+## Callers
+
+| Caller | Invocation |
+|---|---|
+| `reset_usb` alias, container shell | Checks `/reset_usb` is listed, then calls it |
+| `reset_usb` alias, host shell | Runs `scripts/usb_reset.sh` directly, without this node |
+| `arid_supervisor` | One call at the vslam bringup pre-check, one in its single recovery, each when fewer RealSense enumerate than configured |
 
 ## Troubleshooting
 
-Five symptoms account for most failures.
-
-| Symptom | Likely cause |
+| Symptom | Cause |
 |---|---|
-| `/reset_usb` is absent from `ros2 service list` | `usb_ros_reset.service` is down, or the caller is not on `ROS_DOMAIN_ID=23`. |
-| The call blocks indefinitely | The sudoers rule is missing, so a hidden password prompt is waiting. |
-| `success: false`, `a password is required` | The same missing sudoers rule. |
-| `success: false`, `Unit reset_usb.service not found` | The unit is not installed. Re-run `setup.sh`. |
-| The ports do not reset | `uhubctl` cannot detect the hub. Check `uhubctl -l`, permissions and kernel modules. |
-
-## License
-
-The package is released under Apache-2.0.
+| `/reset_usb` absent from `ros2 service list` | `usb_ros_reset.service` is not running, or the caller is not on `ROS_DOMAIN_ID=23` |
+| `/reset_usb` absent for the length of a `colcon_local` build | The build stops `usb_ros_reset.service` and starts it again on completion |
+| `success: false`, `message` reports a `sudo` password failure | The sudoers rule is missing. Re-run `setup.sh` |
+| `success: false`, `message` reports `reset_usb.service` not found | The unit is not installed. Re-run `setup.sh` |
+| `success: false`, `message` reports a `uhubctl` failure | `uhubctl` is not installed, or it finds no hub at location 1-2 |
