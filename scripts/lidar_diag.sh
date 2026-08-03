@@ -13,7 +13,6 @@ EXPECTED_MSOP=6699
 EXPECTED_DIFOP=7788
 EXPECTED_IMU=6688
 
-# Auto-detected values override the factory defaults above.
 WORKSPACES="${WORKSPACES:-/home/jetson/workspaces}"
 DETECTED_CONF="${WORKSPACES}/.lidar/rslidar_detected.conf"
 DETECTED=""
@@ -28,7 +27,6 @@ if [[ -r "${DETECTED_CONF}" ]]; then
     DETECTED="yes"
 fi
 
-# Output helpers
 if [[ -t 1 ]]; then
     BLUE='\033[1;34m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 else
@@ -127,7 +125,6 @@ else
     fix  "nmcli connection up rslidar"
 fi
 
-# Also report what other NM connections EXIST (helps diagnose missing profiles)
 ALL_PROFILES=$(nmcli -t -f NAME,DEVICE connection show 2>/dev/null | awk -F: -v ifc="${NIC}" '$2==ifc {print $1}')
 note "profiles bound to ${NIC}: $(echo "${ALL_PROFILES}" | tr '\n' ' ' | sed 's/ $//')"
 
@@ -272,13 +269,10 @@ if [[ -n "${SDK_PID}" ]]; then
     PORTS=$(ss -ulnp 2>/dev/null | awk -v p="${SDK_PID}" '$0 ~ "pid="p"," {print $5}' | awk -F: '{print $NF}' | sort -u | tr '\n' ' ')
     info "rslidar_sdk_node: pid=${SDK_PID}, bound UDP ports: ${PORTS}"
 
-    # ROS env may not be loaded in this shell; only check topics if ros2 is on PATH
     if command -v ros2 >/dev/null 2>&1; then
-        # Sample /rslidar_points for 3 s
         COUNT=$(timeout 3 ros2 topic echo --no-arr --qos-reliability best_effort /rslidar_points 2>/dev/null | grep -c '^---$')
         HZ=$(awk "BEGIN{printf \"%.1f\", $COUNT/3}")
         note "/rslidar_points: ${COUNT} msgs / 3 s ≈ ${HZ} Hz"
-        # alive Bool
         ALIVE=$(timeout 4 ros2 topic echo --once \
             --qos-reliability reliable --qos-durability transient_local --qos-depth 1 \
             /rslidar_coordinator/alive 2>/dev/null | grep -oE 'data: (true|false)' | head -1)

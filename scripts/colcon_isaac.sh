@@ -1,7 +1,6 @@
 #!/bin/bash
 # colcon_isaac - deinitialize VSLAM, rebuild the in-container workspace, restart the supervisor.
-# deinitialize is safety-gated (refused unless landed), so it also blocks a build while airborne.
-# VSLAM is deliberately NOT auto-restarted: `initialize` is the operator's explicit action.
+# deinitialize is refused unless the drone is landed, so this also blocks a build while airborne.
 set -uo pipefail
 
 WORKSPACES="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

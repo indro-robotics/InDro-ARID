@@ -44,7 +44,6 @@ CAMERA_INFO_QOS_RELIABLE = QoSProfile(
 
 
 def _parse_reliable(raw):
-    """Normalize the YAML `reliable` field: bool, str, or missing; only true maps to True."""
     if isinstance(raw, bool):
         return raw
     if isinstance(raw, str):
@@ -53,8 +52,7 @@ def _parse_reliable(raw):
 
 
 class GstCameraManager(Node):
-    """Supervises one gst_cam_node subprocess per pipeline in pipelines.yaml:
-    start/stop services, latched /alive topics, 2 Hz liveness watchdog."""
+    """Supervises one gst_cam_node subprocess per pipeline in pipelines.yaml."""
 
     def __init__(self):
         super().__init__('gst_camera_manager')
@@ -125,7 +123,7 @@ class GstCameraManager(Node):
             pass
 
     def _create_info_subscriptions(self):
-        # Persistent camera_info subscriptions: the watchdog's proof that frames are flowing.
+        # camera_info arrival is the only evidence of frame flow the watchdog has.
         cbg = MutuallyExclusiveCallbackGroup()
         for name in self.pipelines:
             topic = self.pipelines[name].get('topic', name)
@@ -227,7 +225,7 @@ class GstCameraManager(Node):
         reliable  = 'true' if self.reliable_flags.get(name, False) else 'false'
         calib_url = 'file://' + str(self.calib_root / (calib + '.yaml'))
 
-        # Escape inner double-quotes (format="GRAY8") so the shell keeps the pipeline one arg.
+        # Inner double-quotes must survive /bin/bash or the pipeline splits into several argv entries.
         pipeline_escaped = pipeline.replace('"', '\\"')
 
         cmd = (
@@ -302,8 +300,7 @@ class GstCameraManager(Node):
         return response
 
     def _destroy_per_pipeline_entities(self, name):
-        # Caller stops the subprocess first. Pop-with-default: a half-registered pipeline
-        # cleans up without raising.
+        # Caller stops the subprocess first.
         pub = self.alive_pubs.pop(name, None)
         if pub is not None:
             try: self.destroy_publisher(pub)
@@ -385,7 +382,7 @@ class GstCameraManager(Node):
                     preexec_fn=os.setsid
                 )
                 self.processes[name] = proc
-                # Seed the timestamp: first alive_threshold seconds act as startup grace.
+                # Startup grace: the pipeline gets alive_threshold seconds to deliver a first frame.
                 self.last_frame_time[name] = self.get_clock().now()
                 self._publish_alive(name, True)
                 msg = '%s started (pid=%d)' % (name, proc.pid)
@@ -440,6 +437,8 @@ def main(args=None):
     executor = MultiThreadedExecutor()
     executor.add_node(node)
 
+    # systemd stops the unit with SIGTERM, which must unwind spin() so shutdown_all runs:
+    # an un-killed gst_cam_node outlives the manager and holds the CSI sensor open.
     def _sigterm_handler(signum, frame):
         raise KeyboardInterrupt()
     signal.signal(signal.SIGTERM, _sigterm_handler)

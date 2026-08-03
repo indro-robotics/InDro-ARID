@@ -1,21 +1,19 @@
 #!/bin/bash
-# Auto-detect RSAIRY LiDAR on enP8p1s0 by sniffing ARP/UDP, then rewrite
-# NetworkManager 'rslidar' + dispatcher to match the LiDAR's firmware-side
-# IP config. RoboSense IPs are non-volatile and any prior RSView session
-# may have moved them off factory defaults. Root required.
+# Auto-detect the RSAIRY LiDAR on enP8p1s0 by sniffing ARP/UDP, then rewrite the NetworkManager
+# 'rslidar' profile and the dispatcher to match it. RoboSense stores its IP config in firmware,
+# so a prior RSView session leaves the unit off the factory defaults permanently.
 
 set -u
 
 NIC="enP8p1s0"
 SNIFF_SECS=10
-ROBOSENSE_OUI="40:2c:76"          # hint only, not a hard filter
+ROBOSENSE_OUI="40:2c:76"          # search preference only: a non-matching OUI is still accepted
 DISPATCHER="/etc/NetworkManager/dispatcher.d/90-rslidar"
 WORKSPACES="${WORKSPACES:-/home/jetson/workspaces}"
 LIDAR_STATE_DIR="${WORKSPACES}/.lidar"
 DETECTED_CONF="${LIDAR_STATE_DIR}/rslidar_detected.conf"
 STATE_OWNER="${SUDO_USER:-jetson}"
 
-# Output helpers
 if [[ -t 1 ]]; then
     BLUE='\033[1;34m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 else
@@ -32,7 +30,6 @@ fail() { echo -e "${RED}RESULT:  [FAIL]  $*${NC}"; }
 fix()  { echo -e "${CYAN}FIX:${NC}     $*"; }
 note() { echo -e "         $*"; }
 
-# Must run as root
 if [[ $EUID -ne 0 ]]; then
     fail "config_lidar.sh must run as root (uses tcpdump promisc + writes /etc files)."
     fix  "sudo $0     # or:  config_lidar    (the alias prepends sudo)"
@@ -68,7 +65,6 @@ why      "Any RoboSense LiDAR either ARPs for its configured host (giving both I
 CAP=$(mktemp /tmp/lidar_sniff.XXXXXX)
 trap 'rm -f "$CAP"' EXIT
 
-# BPF: ARP reveals both IPs in one line; UDP gives src+dst in src/dst tuple.
 BPF='arp or (udp and (port 6699 or port 7788 or port 6688))'
 timeout "${SNIFF_SECS}" tcpdump -i "${NIC}" -nn -e -l "${BPF}" 2>/dev/null > "${CAP}" || true
 
@@ -92,17 +88,13 @@ LIDAR_IP=""
 HOST_IP=""
 MATCH_HOW=""
 
-# This host's own L2/L3 identity. The capture is promiscuous and unfiltered by direction, so it
-# contains our OWN arping probes and traffic as well as the LiDAR's - see candidate_is_self.
 SELF_MAC=$(cat "/sys/class/net/${NIC}/address" 2>/dev/null | tr 'A-Z' 'a-z')
 SELF_IPS=$(ip -4 -o addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1)
 
-# Reject a candidate that is really this machine. Without this, a single self-originated ARP line
-# ("who-has 192.168.1.102 tell 192.168.1.102", sent by our own arping) is accepted as the LiDAR:
-# LIDAR_IP and LIDAR_MAC come out as the host's own, and every consumer downstream inherits it -
-# rslidar_detected.conf, and worse, the 90-rslidar dispatcher, which then arpings the host's own
-# address looking for the LiDAR, always times out, and tears the static profile down to DHCP on
-# every link-up. The LiDAR link then cannot stay up at all.
+# The capture is promiscuous and undirected, so it also holds this host's own arping probes.
+# Accepting one as the LiDAR writes the host's own address into rslidar_detected.conf and into
+# the 90-rslidar dispatcher; the dispatcher then arpings that address, never gets a reply, and
+# drops the static profile to DHCP on every link-up, leaving the LiDAR unreachable.
 candidate_is_self() {
     local mac="$1" lidar_ip="$2" host_ip="$3" ip
     [[ -z "$lidar_ip" || -z "$host_ip" ]]          && return 0   # unusable -> treat as self
@@ -114,12 +106,9 @@ candidate_is_self() {
     return 1
 }
 
-# Search order prefers RoboSense OUI but falls back to any source on LiDAR
-# ports, catching re-MACed units and non-default OUIs. Each walks every matching line rather than
-# taking the first: the first is frequently our own probe, and skipping to the next valid one is
-# what stops a self-match being promoted to "the LiDAR".
+# Both extractors walk every matching line rather than taking the first: the first is frequently
+# this host's own probe, and the next valid line is the LiDAR.
 extract_from_arp() {
-    # Sets LIDAR_MAC / LIDAR_IP / HOST_IP. arg: grep pattern or "." for all.
     local pat="$1" line mac lip hip
     while IFS= read -r line; do
         [[ -z "$line" ]] && continue
@@ -133,7 +122,6 @@ extract_from_arp() {
     return 1
 }
 extract_from_udp() {
-    # Sets LIDAR_MAC / LIDAR_IP / HOST_IP. arg: grep pattern or "." for all.
     local pat="$1" line tuple mac lip hip
     while IFS= read -r line; do
         [[ -z "$line" ]] && continue
@@ -164,10 +152,6 @@ if [[ -z "${LIDAR_IP}" || -z "${HOST_IP}" ]]; then
     exit 1
 fi
 
-# Belt and braces. Writing a self-referential pair here is worse than writing nothing: the
-# dispatcher generated below would arping the host's own address hunting for the LiDAR, never get
-# a reply, and drop the static profile to DHCP on every single link-up - leaving the LiDAR
-# permanently unreachable and the NIC flapping. Refuse rather than persist that.
 if candidate_is_self "${LIDAR_MAC}" "${LIDAR_IP}" "${HOST_IP}"; then
     fail "detection matched this host, not the LiDAR (LiDAR ${LIDAR_IP} / host ${HOST_IP}, MAC ${LIDAR_MAC:-none})"
     note "this machine is ${SELF_MAC} holding: $(echo ${SELF_IPS} | tr '\n' ' ')"

@@ -4,7 +4,7 @@
 ARK_REPO="https://github.com/indro-robotics/ARK-OS.git"
 ARK_BRANCH="ARID_L4T_36.4.4"
 
-# JetPack version string if the nvidia-jetpack package is installed, else empty (= not installed).
+# Echoes nothing when nvidia-jetpack is not installed.
 detect_jetpack_version() {
     local jp l4t
     jp=$(dpkg-query --showformat='${Version}' --show nvidia-jetpack 2>/dev/null)
@@ -13,7 +13,8 @@ detect_jetpack_version() {
     printf 'JetPack %s%s' "$jp" "${l4t:+ (L4T $l4t)}"
 }
 
-# Write ARK-OS user.env (install.sh then skips prompts). $1 = ark dir, $2 = INSTALL_JETPACK (y/n).
+# $1 = ARK-OS dir, $2 = INSTALL_JETPACK (y/n). ARK's install.sh reads user.env and skips the
+# prompt for every answer it finds there.
 ark_write_user_env() {
     cat > "$1/user.env" <<ENV
 export INSTALL_DDS_AGENT="y"
@@ -31,7 +32,8 @@ export INSTALL_JETPACK="${2:-n}"
 ENV
 }
 
-# Re-assert JetPack/L4T holds, then run ARK ./install.sh. $1 = ark dir, $2 = INSTALL_JETPACK (y/n).
+# $1 = ARK-OS dir, $2 = INSTALL_JETPACK (y/n). The L4T holds are re-asserted immediately before
+# install.sh so no apt work it drives can upgrade a held kernel or firmware package.
 ark_run_install() {
     sudo apt-mark hold \
         nvidia-l4t-core linux-firmware nvidia-l4t-kernel nvidia-l4t-kernel-dtbs \
@@ -42,7 +44,6 @@ ark_run_install() {
     else prompt_failure_action "ARK install.sh returned non-zero" "Review the output above, then re-run setup."; fi
 }
 
-# Clone or force-refresh the ARK-OS repo at ${ARK_BRANCH}.
 ark_ensure_repo() {
     local ark_dir="${HOME_DIR}/ARK-OS"
     if [[ -d "${ark_dir}/.git" ]]; then
@@ -59,7 +60,6 @@ ark_ensure_repo() {
     fi
 }
 
-# Menu: install/reinstall ARK-OS base (repo + ./install.sh; ROS2 is a separate option).
 menu_install_ark() {
     step "Install ARK-OS"
     ark_ensure_repo
@@ -72,7 +72,6 @@ menu_install_ark() {
     ok "ARK-OS install complete"
 }
 
-# Menu: install/reinstall ROS2 (ARK install_ros2.sh); requires ARK-OS present.
 menu_install_ros2() {
     step "Install ROS2"
     local ark_dir="${HOME_DIR}/ARK-OS"
@@ -86,7 +85,6 @@ menu_install_ros2() {
     set -o pipefail
 }
 
-# ARK-OS installed: the sentinel, or the repo + ROS Humble both present.
 ark_installed() {
     [[ -f "${HOME_DIR}/.arid_ark_os_installed" ]] && return 0
     [[ -d "${HOME_DIR}/ARK-OS" && -x /opt/ros/humble/bin/ros2 ]]
@@ -97,7 +95,6 @@ ark_os() {
 
     local ark_dir="${HOME_DIR}/ARK-OS"
 
-    # Independent gates: ARK base (PRE_ARK) and ROS2 (PRE_ARK_ROS2). Skip entirely if neither runs.
     local do_ark=1 do_ros2=1
     [[ "${PRE_ARK:-}" == "skip" ]] && do_ark=0
     [[ "${PRE_ARK_ROS2:-}" == "skip" ]] && do_ros2=0
@@ -147,12 +144,11 @@ ark_os() {
         ok "removed duplicate ROS source line(s) from ~/.bashrc"
     fi
 
-    touch "${HOME_DIR}/.arid_ark_os_installed"   # mark installed so a re-run can offer skip
+    touch "${HOME_DIR}/.arid_ark_os_installed"   # ark_installed() reads this to offer a skip on re-runs
     STEPS_RUN+=("ark_os")
     ok "ARK-OS step complete"
 
-    # Do NOT reboot here. The install-group reboot is deferred to the end of Phase A so the apt
-    # and host-config work lands first; we reach this line only when ARK-OS and/or ROS2 actually
-    # installed (the neither-case returned above), so that reboot is required either way.
+    # Never reboot inside this function. The install-group reboot belongs at the end of Phase A,
+    # after the apt and host-config work has landed.
     INSTALL_GROUP_REBOOT=1
 }

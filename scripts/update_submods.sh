@@ -1,10 +1,6 @@
 #!/bin/bash
-# Submodule sync, verification, and pin-advancement tool.
-#
-# Usage:
-#   update_submods.sh           - sync to pinned SHAs + verify (used by setup.sh)
-#   update_submods.sh --update  - advance live submodules to branch tips / retag pinned ones
-#                                 then report what changed so you can commit + push
+# Submodule sync and verification, run by setup.sh. With --update, advances the live submodules
+# to their branch tips and re-checks out the pinned ones instead of verifying.
 set -euo pipefail
 
 REPO_ROOT="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
@@ -16,14 +12,7 @@ err()  { echo -e "  ${RED}[ERROR]${NC} $*" >&2; }
 warn() { echo -e "  ${YELLOW}[WARN]${NC}  $*"; }
 info() { echo -e "  ${YELLOW}>>>${NC} $*"; }
 
-###############################################################################
-# Submodule definitions
-#
-# LIVE    - InDro-controlled, branch-tracked; verify SHA is on expected branch
-# PINNED  - external, exact tag required; verify tag matches
-###############################################################################
-
-# Format: "path:branch"
+# "path:branch". InDro-controlled: HEAD must be on that branch, at or behind the tip.
 LIVE_SUBMODULES=(
     "isaac_ros-dev/src/px4_msgs:release/1.15"
     "local_ws/auxiliary/PX4-Autopilot:PX4-InDro"
@@ -31,7 +20,7 @@ LIVE_SUBMODULES=(
     "isaac_ros-dev/src/isaac_ros_visual_slam:v3.2-14"
 )
 
-# Format: "path:tag"
+# "path:tag". External: HEAD must sit exactly on that tag.
 PINNED_SUBMODULES=(
     "isaac_ros-dev/src/isaac_ros_common:v3.2-14"
     "isaac_ros-dev/src/isaac_ros_nitros:v3.2-14"
@@ -41,16 +30,13 @@ PINNED_SUBMODULES=(
     "local_ws/src/rslidar_msg:v1.5.10"
 )
 
-###############################################################################
-# MODE: --update  (developer tool - advance pins)
-###############################################################################
 if [[ "${1:-}" == "--update" ]]; then
     echo "=== Updating live (branch-tracked) submodules ==="
     for entry in "${LIVE_SUBMODULES[@]}"; do
         path="${entry%%:*}"; branch="${entry##*:}"
         if [[ -d "$path" ]]; then
             info "${path} -> branch ${branch}"
-            # -B from the remote ref: a bare checkout prefers a same-named TAG
+            # -B off the remote ref: a bare `git checkout <name>` prefers a same-named TAG.
             (cd "$path" && git fetch origin && git checkout -B "$branch" "origin/$branch")
             ok "${path} updated"
         else
@@ -82,16 +68,13 @@ if [[ "${1:-}" == "--update" ]]; then
     exit 0
 fi
 
-###############################################################################
-# MODE: default  (sync + verify - called by setup.sh)
-###############################################################################
 echo "Syncing all submodules to pinned commits..."
 git submodule sync --recursive
 git submodule update --init --recursive
 echo ""
 
-# 'git submodule update' is a no-op when HEAD already matches the pin, even if the working
-# tree was emptied: restore any submodule whose tree has no real files.
+# `git submodule update` is a no-op when HEAD already matches the pin, even if every file in the
+# working tree was deleted.
 echo "Ensuring submodule working trees are populated..."
 while IFS= read -r path; do
     [[ -d "$path" ]] || continue

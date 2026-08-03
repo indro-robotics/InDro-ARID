@@ -1,4 +1,4 @@
-# ros2 launch gst_camera_manager gst_camera_manager.launch.py
+# Loaded by gst_camera_manager.service.
 
 from launch import LaunchDescription
 from launch_ros.actions import Node

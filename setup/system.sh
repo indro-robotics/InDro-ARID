@@ -1,11 +1,11 @@
 # system.sh: host bring-up - power, first-boot, wifi, nomachine, desktop, updates, clock,
 # repos, apt, px4 deps, git, bashrc, permissions, uhubctl, systemd, python, local workspace.
 
-# Power mode and package holds
 setup_power() {
     step "Power mode & package holds"
 
-    # nvpmodel -m 0 can prompt "reboot now?" and hang an unattended run: feed it 'no', non-fatal.
+    # nvpmodel -m 0 prompts "reboot now?" when it changes the mode, which hangs an unattended
+    # run. The piped 'no' answers it.
     local cur
     cur=$(sudo /usr/sbin/nvpmodel -q 2>/dev/null | grep -oE '^[0-9]+$' | head -1)
     if [[ "${cur}" == "0" ]]; then
@@ -29,7 +29,6 @@ setup_power() {
     ok "Max power mode set, critical packages held"
 }
 
-# Hostname / password
 first_boot() {
     step "First-boot hostname / password"
 
@@ -65,7 +64,6 @@ first_boot() {
     STEPS_RUN+=("first_boot")
 }
 
-# Wi-Fi connect via scripts/wifi.sh; honours pre-collected SSID / password.
 ensure_wifi() {
     step "Wi-Fi"
     if nmcli -t -f TYPE,STATE device status 2>/dev/null | grep -q '^wifi:connected'; then
@@ -95,11 +93,11 @@ ensure_wifi() {
     fi
 }
 
-# NoMachine: detect install, then install the vendored arm64 .deb.
 nomachine() {
     step "NoMachine remote desktop"
 
-    # A reinstall drops the session running setup, and this runs with no resume armed yet.
+    # A reinstall drops the session setup is running in, and no resume flag is armed at this
+    # point in the run.
     if is_inside_nomachine; then
         skip "running inside a NoMachine session - left untouched (upgrade over SSH if needed)"
         STEPS_SKIPPED+=("nomachine")
@@ -122,13 +120,11 @@ nomachine() {
         warn "NoMachine is not installed - installing"
     fi
 
-    # The .deb ships with the repo rather than being downloaded. NoMachine's ARM page now serves
-    # only nomachine-personal-edition, which installs happily and then refuses every connection
-    # with "the subscription license on this server has expired" - the free 9.x line is no longer
-    # published there. Vendoring also means a drone with no internet still provisions.
-    # Resolved here, not at file scope: system.sh is sourced before setup.sh defines LOCAL_WS,
-    # and a top-level expansion would trip `set -u` and abort the run before it prints anything.
-    # Newest .deb in the directory wins, so dropping in a newer build is all an upgrade takes.
+    # The .deb ships in the repo: NoMachine's ARM download page serves only the subscription
+    # edition, and a drone with no internet still has to provision.
+    # LOCAL_WS is expanded inside the function, never at file scope: setup.sh sources system.sh
+    # before it defines LOCAL_WS, and a top-level expansion trips `set -u` and aborts the run
+    # before any output reaches the operator.
     local nm_dir="${LOCAL_WS}/auxiliary/nomachine" deb
     deb=$(ls -1t "${nm_dir}"/*.deb 2>/dev/null | head -1)
     if [[ -z "${deb}" ]]; then
@@ -142,8 +138,8 @@ nomachine() {
         STEPS_SKIPPED+=("nomachine (bad package)")
         return 0
     fi
-    # Guard against the paid edition being dropped in by mistake: it installs, then refuses to
-    # serve. Cheaper to catch here than to debug a licence dialog on a headless drone.
+    # The subscription edition installs cleanly and then refuses every connection with an
+    # expired-licence message.
     local pkg; pkg=$(dpkg-deb -f "${deb}" Package 2>/dev/null)
     if [[ "${pkg}" == *personal-edition* ]]; then
         warn "${deb} is ${pkg} - the subscription edition, which will refuse connections."
@@ -158,8 +154,8 @@ nomachine() {
             || sudo apt-get remove -y nomachine nomachine-personal-edition >/dev/null 2>&1 || true
     fi
     echo "  Installing: ${deb} ($(dpkg-deb -f "${deb}" Version 2>/dev/null)) - log: /tmp/nomachine-install.log"
-    # nxserver daemons inherit our stdio and would hang dpkg; redirect so it returns.
-    # NOTE: no rm afterwards - the .deb is a tracked repo file, not a temp download.
+    # The nxserver daemons inherit stdio from dpkg and hold it open, so dpkg never returns
+    # unless its streams are redirected. The .deb is a tracked repo file and is not removed.
     sudo DEBIAN_FRONTEND=noninteractive dpkg -i --force-confnew "${deb}" \
         </dev/null >/tmp/nomachine-install.log 2>&1 \
         || { warn "dpkg -i nomachine failed (see /tmp/nomachine-install.log); skipping"; STEPS_SKIPPED+=("nomachine"); return 0; }
@@ -175,13 +171,15 @@ nomachine() {
     (( installed )) && ok "NoMachine upgraded; nxserver restarting" || ok "NoMachine installed; nxserver restarting"
 }
 
-# Headless: /run/user/<uid> otherwise gets created root-owned by a boot process, and
-# NoMachine sessions fail with a black screen. Linger makes systemd own it user-owned at boot.
+# On a headless boot /run/user/<uid> is created root-owned by a boot process, and NoMachine
+# sessions then come up as a black screen. Linger has systemd create it, owned by the user,
+# at every boot.
 enable_user_linger() {
     step "User linger (headless runtime dir)"
     local uid; uid="$(id -u "${USERNAME}")"
     sudo loginctl enable-linger "${USERNAME}" || warn "enable-linger failed"
-    # Correct a runtime dir already created root-owned earlier this boot.
+    # Linger takes effect from the next boot; a dir already created root-owned this boot is
+    # corrected in place.
     if [[ -d "/run/user/${uid}" && "$(stat -c '%U' "/run/user/${uid}" 2>/dev/null)" != "${USERNAME}" ]]; then
         sudo chown -R "${USERNAME}:${USERNAME}" "/run/user/${uid}"
         sudo chmod 700 "/run/user/${uid}"
@@ -191,7 +189,6 @@ enable_user_linger() {
     ok "Lingering enabled for ${USERNAME} - runtime dir persists across boots"
 }
 
-# Remove NVIDIA first-boot icons + the L4T-README auto-mount.
 clean_nvidia_desktop() {
     step "Desktop cleanup (NVIDIA first-boot icons)"
 
@@ -201,7 +198,8 @@ clean_nvidia_desktop() {
     done
     (( removed )) && ok "removed ${removed} NVIDIA desktop shortcut(s)" || skip "no NVIDIA desktop shortcuts present"
 
-    # The "L4T-README folder" is really the L4T-README partition auto-mounted at login.
+    # The "L4T-README folder" on the desktop is a mount of the L4T-README partition, placed
+    # there at login by the autostart entry removed below.
     local mp="/media/${USERNAME}/L4T-README"
     if mount 2>/dev/null | grep -qF "${mp}"; then
         udisksctl unmount -b /dev/disk/by-label/L4T-README >/dev/null 2>&1 \
@@ -218,7 +216,6 @@ clean_nvidia_desktop() {
     STEPS_RUN+=("desktop_cleanup")
 }
 
-# Predictable boot: no surprise updates on a deployed drone.
 disable_updates() {
     step "Disable unattended apt upgrades"
     if [[ -f /etc/apt/apt.conf.d/20auto-upgrades ]]; then
@@ -234,11 +231,10 @@ disable_updates() {
 }
 
 # systemd-time-wait-sync blocks until /run/systemd/timesync/synchronized appears, and only
-# systemd-timesyncd ever creates it - which enable_clock_sync disables in favour of chrony. The
-# unit then sits in 'activating' forever and jams the systemd job queue: every later
-# deb-systemd-invoke (snapd's postinst is the usual victim) enqueues into that stuck transaction
-# and apt hangs with no output. Mask it before any apt work runs. Masking survives reboots, so
-# this is a no-op on every pass after the first; chrony owns the clock, so nothing is lost.
+# systemd-timesyncd creates that file - which enable_clock_sync disables in favour of chrony.
+# The unit then stays in 'activating' indefinitely and jams the systemd job queue: every later
+# deb-systemd-invoke enqueues into the stuck transaction and apt hangs with no output. This
+# must run before any apt work.
 guard_time_wait_sync() {
     step "systemd-time-wait-sync (apt deadlock guard)"
 
@@ -247,7 +243,7 @@ guard_time_wait_sync() {
         return 0
     fi
 
-    # --no-block is required, not cosmetic: a plain stop waits on the very queue that is jammed.
+    # --no-block: a plain stop waits on the same jammed queue.
     sudo systemctl stop --no-block systemd-time-wait-sync.service 2>/dev/null || true
     if sudo systemctl mask systemd-time-wait-sync.service >/dev/null 2>&1; then
         ok "systemd-time-wait-sync masked (chrony disciplines the clock)"
@@ -256,9 +252,10 @@ guard_time_wait_sync() {
     fi
 }
 
-# PX4 timestamp alignment needs correct wall time after a power cycle. chrony (installed in
-# setup_apt_packages) steps only at boot and slews afterward; systemd-timesyncd is disabled so
-# the two cannot both discipline the clock and step it mid-mission.
+# PX4 timestamp alignment needs correct wall time from the first seconds after a power cycle.
+# chrony steps the clock at boot and slews from then on. timesyncd is disabled rather than left
+# alongside it: two daemons disciplining one clock can land a step mid-mission, which shifts
+# every timestamp the VO stream is aligned on.
 enable_clock_sync() {
     step "Network time sync (chrony)"
 
@@ -269,7 +266,7 @@ enable_clock_sync() {
             || warn "chrony service could not be started"
         ok "chrony active (timesyncd disabled)"
     else
-        # apt step has not run yet on this pass; fall back so the clock is still disciplined.
+        # setup_apt_packages installs chrony and has not run yet on this pass.
         sudo systemctl enable --now systemd-timesyncd.service 2>/dev/null || true
         warn "chrony not installed yet - systemd-timesyncd left active for now"
     fi
@@ -278,11 +275,9 @@ enable_clock_sync() {
     STEPS_RUN+=("clock_sync")
 }
 
-# APT repositories
 setup_repos() {
     step "APT repositories"
 
-    # ROS keyring
     if [[ ! -f /usr/share/keyrings/ros-archive-keyring.gpg ]]; then
         sudo curl -sSL \
             https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
@@ -292,10 +287,9 @@ setup_repos() {
         skip "ROS keyring already present"
     fi
 
-    # ROS 2 apt source. The keyring alone resolves nothing: without this list every
-    # ros-humble-* package below fails with "Unable to locate package". Match on the repo
-    # URL, not a fixed filename, so an image that already ships the ROS repo (e.g. ARK-OS)
-    # is left alone instead of adding a duplicate source.
+    # The match is on the repo URL across every sources file, not on a fixed filename: an image
+    # that already ships the ROS repo under another name keeps it, rather than gaining a second
+    # source for the same URL.
     if ! grep -rqs "packages.ros.org/ros2" /etc/apt/sources.list /etc/apt/sources.list.d/; then
         echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
 http://packages.ros.org/ros2/ubuntu \
@@ -306,15 +300,14 @@ $(. /etc/os-release && echo "$UBUNTU_CODENAME") main" \
         skip "ROS 2 apt source already present"
     fi
 
-    # Nvidia CDI (regenerate each run). Jetson needs --mode=csv; auto-detect picks nvml
-    # and errors out on the iGPU. Non-fatal: a CDI failure must not abort provisioning.
+    # --mode=csv is required on Jetson: mode auto-detection selects nvml, which errors out on
+    # the iGPU.
     if sudo nvidia-ctk cdi generate --mode=csv --output=/etc/cdi/nvidia.yaml; then
         ok "CDI config regenerated"
     else
         warn "nvidia-ctk cdi generate failed - continuing (container GPU access may be degraded)"
     fi
 
-    # Nvidia Jetson APT repo
     if ! grep -q "repo.download.nvidia.com/jetson/common" \
             /etc/apt/sources.list.d/nvidia-l4t-apt-source.list 2>/dev/null; then
         sudo apt-key adv --fetch-key \
@@ -328,7 +321,6 @@ $(. /etc/os-release && echo "$UBUNTU_CODENAME") main" \
         skip "Nvidia Jetson repo already present"
     fi
 
-    # Docker APT repo
     if [[ ! -f /etc/apt/keyrings/docker.gpg ]]; then
         sudo install -m 0755 -d /etc/apt/keyrings
         curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
@@ -346,14 +338,12 @@ $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
     STEPS_RUN+=("repos")
 }
 
-# APT packages
 setup_apt_packages() {
     step "APT packages"
 
     sudo apt-get update
-    # Never add ros-humble-librealsense2: the stack must only link the RSUSB build at /usr/local.
-    # chrony replaces systemd-timesyncd: it steps only at boot and slews after, so no NTP step
-    # can land mid-mission and tear a hole in the VO timestamp stream.
+    # Never add ros-humble-librealsense2 to this list: the camera stack links only the RSUSB
+    # librealsense build at /usr/local, and the apt package shadows it.
     sudo apt-get install -y \
         software-properties-common \
         ca-certificates curl gnupg git-lfs \
@@ -373,7 +363,6 @@ setup_apt_packages() {
     ok "APT packages installed"
 }
 
-# PX4 build dependencies
 setup_px4_deps() {
     step "PX4 build dependencies"
 
@@ -388,8 +377,9 @@ setup_px4_deps() {
         if python3 -c 'import kconfiglib' >/dev/null 2>&1; then
             skip "PX4 Python deps already satisfied (kconfiglib importable)"
         else
-            # Uncapped, PX4's floor-only deps pull numpy 2.x and break the host's
-            # numpy-1.x-ABI cv2 / cv_bridge (camera verify + calibration).
+            # The 'numpy<2' cap is not optional: PX4's requirements set floors only, so an
+            # uncapped install pulls numpy 2.x, and the host cv2 and cv_bridge are built
+            # against the numpy 1.x ABI. Camera verification and calibration stop importing.
             ok "Installing PX4 Python deps from ${req}..."
             pip_install -r "${req}" 'numpy<2'
             ok "PX4 Python deps installed"
@@ -398,7 +388,6 @@ setup_px4_deps() {
         warn "${req} not found; cannot reconcile Python deps"
     fi
 
-    # ARM toolchain (heavy; only on demand)
     if command -v arm-none-eabi-gcc >/dev/null 2>&1; then
         skip "ARM toolchain already present (arm-none-eabi-gcc)"
         STEPS_RUN+=("px4_deps")
@@ -423,7 +412,6 @@ setup_px4_deps() {
     fi
 }
 
-# Git config and submodules
 setup_git() {
     step "Git config & submodules"
 
@@ -439,41 +427,43 @@ setup_git() {
     "${WORKSPACES}/scripts/update_submods.sh"
     ok "Submodules synced and verified against pinned commits"
 
-    # Symlink (relative target), not a dir: the container mounts only isaac_ros-dev,
-    # so a physical root dir would be invisible in-container.
+    # A symlink with a relative target, not a directory: the container mounts isaac_ros-dev
+    # alone, so a real directory at the workspaces root has no path inside the container.
     ln -sfn isaac_ros-dev/run_logs "${WORKSPACES}/run_logs"
     ok "run_logs symlink at the workspaces root"
 
     STEPS_RUN+=("git")
 }
 
-# Wire the resume hook into .bashrc before arming any reboot flag. Matching the full shim
-# path (not just the filename) re-heals a bashrc left pointing at an old location.
+# Call this before arming any reboot flag: a reboot with no resume hook in .bashrc strands the
+# run. The match is on the full shim path, so a bashrc pointing at an old location is rewritten
+# rather than accepted.
 ensure_resume_hook() {
     grep -qF "${SETUP_DIR}/arid_resume_prompt.sh" "${BASHRC_FILE}" 2>/dev/null || setup_bashrc
 }
 
-# .bashrc: rewrites the ARID block on every run so alias/export changes propagate
-# without leaving stale duplicates.
+# The whole ARID block is rewritten on every run so alias and export changes reach an already
+# provisioned drone without leaving a stale duplicate behind.
 setup_bashrc() {
     step ".bashrc environment"
 
-    # Refuse to rewrite if the resume shim is missing: bashrc would point at a missing file
-    # and the post-reboot resume prompt would silently never fire.
+    # With the shim missing, the rewritten bashrc points at a file that is not there and the
+    # post-reboot resume prompt never fires, with nothing to show the operator why.
     local shim="${SETUP_DIR}/arid_resume_prompt.sh"
     if [[ ! -r "${shim}" ]]; then
         err "Resume-prompt shim missing at ${shim} - re-pull the repo before re-running setup."
         return 1
     fi
 
-    # Temp file + atomic mv under flock (30 s timeout): a shell sourcing ~/.bashrc must
-    # never see a half-written state.
+    # Written to a temp file and moved into place under flock: a shell sourcing ~/.bashrc at
+    # the wrong moment must never read a half-written file.
     local lockfile="${HOME_DIR}/.arid_bashrc.lock"
     local tmpfile="${BASHRC_FILE}.arid.new.$$"
     (
         flock -w 30 -x 9 || { err "another setup_bashrc is in progress (timed out after 30 s)"; exit 1; }
 
-        # Strip the ARID block AND any stray managed lines outside it (hand-edits).
+        # Managed lines are stripped outside the block as well: a hand-edit that moved one
+        # past the markers otherwise outlives the rewrite and shadows the new value.
         cp -- "$BASHRC_FILE" "$tmpfile" 2>/dev/null || touch "$tmpfile"
         sed -i \
             -e '/# BEGIN ARID SETUP/,/# END ARID SETUP/d' \
@@ -492,9 +482,10 @@ setup_bashrc() {
             -e '/^[[:space:]]*alias[[:space:]]\+\(setup\|colcon_isaac\|clean_isaac\|rosdep_isaac\|cam_calibrate\|zt_join\|status\|sentry\)=/d' \
             "$tmpfile"
 
-        # Delimiter is QUOTED ('ARIDRC'): the body is byte-literal, setup-time values go in
-        # via @@TOKEN@@ markers + a matching sed line below. NEVER unquote the delimiter:
-        # an unquoted heredoc once command-substituted backticks straight into bashrc.
+        # The delimiter is quoted ('ARIDRC'), so the body is written byte for byte and every
+        # setup-time value enters through an @@TOKEN@@ marker and its sed line below. Never
+        # unquote it: an unquoted heredoc command-substitutes the backticks and $() in this
+        # body at write time, and the result lands in the operator's .bashrc.
         cat >> "$tmpfile" << 'ARIDRC'
 # BEGIN ARID SETUP
 if [ -d /tmp/.X11-unix ]; then
@@ -525,9 +516,9 @@ alias foxglove_bridge='@@FOXGLOVE_LAUNCH@@'
 alias cam_down_start='ros2 service call /gst_camera_manager/cam_down std_srvs/srv/SetBool "{data: true}"'
 alias cam_down_stop='ros2 service call /gst_camera_manager/cam_down std_srvs/srv/SetBool "{data: false}"'
 alias cam_down_status='ros2 service call /gst_camera_manager/cam_down/status std_srvs/srv/Trigger "{}"'
-# --qos-reliability is NOT redundant: passing any --qos-* flag stops ros2 topic echo using the
-# default profile, and reliability falls back to BEST_EFFORT. Against these RELIABLE publishers
-# the subscription then never matches and the command hangs forever with no error.
+# --qos-reliability is not redundant here: passing any --qos-* flag stops ros2 topic echo from
+# using the default profile, and reliability drops to BEST_EFFORT. The publisher is RELIABLE,
+# so the subscription never matches and the command hangs with no error.
 alias cam_down_alive='ros2 topic echo --once --qos-durability transient_local --qos-reliability reliable /gst_camera_manager/cam_down/alive'
 alias cam_refresh='ros2 service call /gst_camera_manager/refresh std_srvs/srv/Trigger'
 alias rslidar_start='ros2 service call /rslidar_coordinator/enable std_srvs/srv/SetBool "{data: true}"'
@@ -592,12 +583,11 @@ ARID host commands:
     status             Supervisor status - vslam running (true/false) + land state
 ARIDHELP
 }
-# Resume-after-reboot hook; the shim keeps this block free of command substitution.
 [ -r @@SETUP_DIR@@/arid_resume_prompt.sh ] && . @@SETUP_DIR@@/arid_resume_prompt.sh
 # END ARID SETUP
 ARIDRC
 
-        # _sed_rhs_escape neutralises &, \, | so a path containing them cannot corrupt the rewrite.
+        # Escapes &, \ and | so a path containing one cannot corrupt the sed replacement.
         _sed_rhs_escape() { printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'; }
         sed -i "s|@@WORKSPACES@@|$(_sed_rhs_escape "${WORKSPACES}")|g"           "$tmpfile"
         sed -i "s|@@LOCAL_WS@@|$(_sed_rhs_escape "${LOCAL_WS}")|g"               "$tmpfile"
@@ -605,7 +595,6 @@ ARIDRC
         sed -i "s|@@SETUP_DIR@@|$(_sed_rhs_escape "${SETUP_DIR}")|g"             "$tmpfile"
         sed -i "s|@@FOXGLOVE_LAUNCH@@|$(_sed_rhs_escape "${FOXGLOVE_LAUNCH}")|g" "$tmpfile"
 
-        # Abort if any @@TOKEN@@ remains unsubstituted.
         if grep -Eq '@@(WORKSPACES|LOCAL_WS|ISAAC_ROS_WS|SETUP_DIR|FOXGLOVE_LAUNCH)@@' "$tmpfile"; then
             err "token substitution incomplete - stray @@TOKEN@@ in rewritten bashrc; aborting"
             rm -f "$tmpfile"
@@ -615,7 +604,7 @@ ARIDRC
         mv -- "$tmpfile" "$BASHRC_FILE"
     ) 9>"${lockfile}" || { rm -f "$tmpfile"; return 1; }
 
-    # A login shell that does not source ~/.bashrc never sees the aliases or the resume hook.
+    # A login shell that does not source ~/.bashrc gets neither the aliases nor the resume hook.
     local login_rc="${HOME_DIR}/.profile"
     [[ -f "${HOME_DIR}/.bash_profile" ]] && login_rc="${HOME_DIR}/.bash_profile"
     if ! grep -q 'ARID-login-bashrc' "$login_rc" 2>/dev/null \
@@ -632,16 +621,16 @@ PROFEOF
     ok ".bashrc updated"
 }
 
-# Sudoers, udev, polkit, groups
 setup_permissions() {
     step "Sudoers, udev, polkit, groups"
 
     local _sudtmp; _sudtmp=$(mktemp)
-    # BOTH /bin/ and /usr/bin/ forms are listed. /bin is a symlink to /usr/bin, but sudo matches
-    # the RESOLVED path as a literal string - so a bare `sudo systemctl` (which resolves to
-    # /usr/bin/systemctl) does NOT match a /bin/systemctl rule. Every call site in this repo
-    # writes it bare, so a /bin-only list grants nothing: the 15 `sudo -n systemctl` calls fail
-    # outright and the rest prompt. nmcli is required by config_lidar and the LiDAR dispatcher.
+    # Both the /bin and /usr/bin forms have to be listed. /bin is a symlink to /usr/bin, but
+    # sudo matches the resolved path as a literal string, so a bare `sudo systemctl` resolves
+    # to /usr/bin/systemctl and does not match a /bin/systemctl rule. Every call site in this
+    # repo writes it bare: with a /bin-only list the `sudo -n systemctl` calls fail outright
+    # and the interactive ones prompt on a headless drone. nmcli is here for config_lidar and
+    # the LiDAR dispatcher.
     tee "${_sudtmp}" > /dev/null << EOF
 ${USERNAME} ALL=(ALL) NOPASSWD: /usr/sbin/uhubctl, /usr/bin/gpioset, /bin/systemctl start *, /bin/systemctl stop *, /bin/systemctl restart *, /bin/systemctl kill *, /bin/systemctl reset-failed *, /bin/systemctl enable *, /bin/systemctl disable *, /usr/bin/systemctl start *, /usr/bin/systemctl stop *, /usr/bin/systemctl restart *, /usr/bin/systemctl kill *, /usr/bin/systemctl reset-failed *, /usr/bin/systemctl enable *, /usr/bin/systemctl disable *, /usr/bin/nmcli, ${WORKSPACES}/scripts/usb_reset.sh, /usr/sbin/zerotier-cli, /usr/sbin/reboot, /sbin/reboot
 EOF
@@ -654,7 +643,6 @@ EOF
     rm -f "${_sudtmp}"
     ok "Sudoers rule written and validated"
 
-    # udev rules
     sudo tee /etc/udev/rules.d/52-usb.rules > /dev/null << 'EOL'
 SUBSYSTEM=="usb", DRIVER=="usb", MODE="0664", GROUP="dialout", ATTR{idVendor}=="2109"
 SUBSYSTEM=="usb", DRIVER=="usb", MODE="0664", GROUP="dialout", ATTR{idVendor}=="1d6b"
@@ -667,13 +655,12 @@ EOL
 SUBSYSTEM=="gpio", GROUP=="gpio", MODE=="0660"
 EOL
 
-    # RealSense host-side libusb access. setup installs pyrealsense2 from a pip wheel, which
-    # ships bindings and no udev rules; librealsense's own source install is what normally drops
-    # them, and that is not part of provisioning. Without this the node stays 0664 root:root,
-    # pyrealsense2 enumerates 0 devices as ${USERNAME}, and config_realsense writes a blank
-    # serial_no. The Isaac container covers itself separately (image rules + plugdev in the
-    # entrypoint + arid_supervisor._repair_camera_nodes); none of that applies on the host.
-    # PIDs match the set arid_supervisor gates on.
+    # Host-side libusb access for the RealSense cameras. pyrealsense2 arrives as a pip wheel,
+    # which carries bindings and no udev rules; the librealsense source install that normally
+    # drops them is not part of provisioning. Without these rules the device node stays
+    # 0664 root:root, pyrealsense2 enumerates zero devices as ${USERNAME}, and
+    # config_realsense writes a blank serial_no into vslam_config.yaml.
+    # The product IDs are the same set arid_supervisor gates on and have to stay in step.
     sudo tee /etc/udev/rules.d/99-realsense-libusb.rules > /dev/null << 'EOL'
 SUBSYSTEM=="usb", ATTRS{idVendor}=="8086", ATTRS{idProduct}=="0b07", MODE:="0666", GROUP:="plugdev"
 SUBSYSTEM=="usb", ATTRS{idVendor}=="8086", ATTRS{idProduct}=="0b3a", MODE:="0666", GROUP:="plugdev"
@@ -688,12 +675,9 @@ EOL
     sudo udevadm trigger
     ok "udev rules written, reloaded, and triggered against current devices"
 
-    # Groups
-    # plugdev: the group the RealSense udev rules above assign.
     sudo usermod -aG dialout,gpio,plugdev "${USERNAME}"
     ok "Groups: dialout, gpio, plugdev"
 
-    # Polkit rule for reset_usb.service
     sudo tee "$POLKIT_RULE_FILE" > /dev/null << EOF
 polkit.addRule(function(action, subject) {
     if (action.id == "org.freedesktop.systemd1.manage-units" &&
@@ -709,7 +693,6 @@ EOF
     STEPS_RUN+=("permissions")
 }
 
-# uhubctl
 setup_uhubctl() {
     step "uhubctl"
 
@@ -721,7 +704,7 @@ setup_uhubctl() {
 
     local UHUBCTL_DIR="${HOME_DIR}/uhubctl"
     if [[ ! -d "${UHUBCTL_DIR}/.git" ]]; then
-        rm -rf "${UHUBCTL_DIR}" 2>/dev/null || true   # drop a half-cloned dir so the clone can retry
+        rm -rf "${UHUBCTL_DIR}" 2>/dev/null || true   # git clone refuses a non-empty target dir
         git clone https://github.com/mvp/uhubctl "${UHUBCTL_DIR}"
     fi
 
@@ -735,8 +718,6 @@ setup_uhubctl() {
     ok "uhubctl installed"
 }
 
-# Every unit shipped by the repo, in install order. arid_units_shipped echoes the unit
-# file names so the install and uninstall lists cannot drift apart.
 arid_units_shipped() {
     local f
     for f in "${ISAAC_ROS_WS}/services/"*.service "${LOCAL_WS}/services/"*.service; do
@@ -744,11 +725,11 @@ arid_units_shipped() {
     done
 }
 
-# systemd services
 setup_systemd() {
     step "systemd services"
 
-    # Remove the stale pre-rename vslam_supervisor.service so it cannot race arid_supervisor.service.
+    # vslam_supervisor.service is the old name for arid_supervisor.service. Left installed and
+    # enabled on an upgraded drone, both units start and race for the same resources.
     if [[ -f /etc/systemd/system/vslam_supervisor.service ]]; then
         sudo -n systemctl stop    vslam_supervisor.service 2>/dev/null || true
         sudo -n systemctl disable vslam_supervisor.service 2>/dev/null || true
@@ -756,8 +737,8 @@ setup_systemd() {
         ok "stale vslam_supervisor.service removed (renamed to arid_supervisor.service)"
     fi
 
-    # Copy through arid_units_shipped, not a raw glob: install and removal then share one
-    # list, and an empty services dir cannot feed cp an unexpanded glob under set -e.
+    # arid_units_shipped rather than a raw glob: install and removal read one list and cannot
+    # drift apart, and an empty services dir cannot feed cp an unexpanded glob under set -e.
     local unit src
     while IFS= read -r unit; do
         src="${ISAAC_ROS_WS}/services/${unit}"
@@ -766,9 +747,9 @@ setup_systemd() {
     done < <(arid_units_shipped)
     ok "installed: $(arid_units_shipped | tr '\n' ' ')"
 
-    # Global ROS env for ALL systemd services; daemon-reexec (not daemon-reload) is required
-    # for DefaultEnvironment to apply. PAIRING: PX4 UXRCE_DDS_PTCFG=1 must also be set or
-    # no /fmu topics are published.
+    # DefaultEnvironment applies to every systemd service and takes a daemon-reexec, not a
+    # daemon-reload. ROS_LOCALHOST_ONLY=1 pairs with UXRCE_DDS_PTCFG=1 on the FMU: unless that
+    # parameter is set too, no /fmu topics are published.
     sudo install -d /etc/systemd/system.conf.d
     sudo tee /etc/systemd/system.conf.d/10-arid-ros-env.conf >/dev/null << 'EOF'
 [Manager]
@@ -776,8 +757,8 @@ DefaultEnvironment=ROS_DOMAIN_ID=23 ROS_LOCALHOST_ONLY=1
 EOF
     sudo systemctl daemon-reexec
 
-    # reset_usb.service is deliberately not enabled: it is a oneshot started on demand
-    # (polkit rule above), never at boot.
+    # reset_usb.service stays disabled: it is a oneshot the polkit rule above lets the user
+    # start on demand, and its WantedBy=multi-user.target runs usb_reset.sh at every boot.
     local u
     for u in $(arid_units_shipped); do
         [[ "$u" == "reset_usb.service" ]] && continue
@@ -789,8 +770,8 @@ EOF
     ok "Services enabled and daemon reloaded"
 }
 
-# pip >= 23 enforces PEP 668 and needs --break-system-packages; older pip rejects the flag.
-# Detect support once, then install with or without it.
+# pip 23 and later enforce PEP 668 and need --break-system-packages; older pip rejects the
+# flag as unknown.
 pip_install() {
     if [[ -z "${_PIP_BSP+set}" ]]; then
         if python3 -m pip install --help 2>/dev/null | grep -q -- '--break-system-packages'; then
@@ -821,7 +802,6 @@ ensure_pip_pkg() {
     fi
 }
 
-# ROS2 local workspace
 setup_ros_workspace() {
     step "ROS2 local workspace"
 
@@ -836,8 +816,9 @@ setup_ros_workspace() {
         return 0
     fi
 
-    # ark_os installs ROS in this same run, so this shell has never sourced it and colcon
-    # would build with no underlay (ament setup files need set -u disabled).
+    # ark_os installs ROS during this same run, so the shell running setup has never sourced
+    # it and colcon builds with no underlay. The ament setup files reference unset variables,
+    # so `set -u` comes off across the source.
     if [[ -z "${ROS_DISTRO:-}" ]]; then
         set +u
         source /opt/ros/humble/setup.bash
@@ -866,7 +847,7 @@ setup_ros_workspace() {
             --cmake-args -DCMAKE_VERBOSE_MAKEFILE=ON
     ); then
         STEPS_RUN+=("ros_workspace")
-        DID_BUILD=1; touch "${HOME_DIR}/.arid_did_build"   # a build ran - gates the pre-smoke reboot
+        DID_BUILD=1; touch "${HOME_DIR}/.arid_did_build"   # gates the pre-smoke-test reboot
         ok "ROS2 local workspace built"
     else
         prompt_failure_action "local_ws colcon build failed" "Fix the errors above, then re-run 'colcon_local' or setup."

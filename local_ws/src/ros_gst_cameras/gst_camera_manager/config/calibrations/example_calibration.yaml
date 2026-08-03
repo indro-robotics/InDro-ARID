@@ -1,7 +1,7 @@
-# Placeholder calibration for the downward IMX477 (cam_down) at 1920x1080.
-# Replace with real values from `camera_calibrate.sh` (see local_ws/auxiliary/camera_calibration/).
-# fx / fy and the principal point below are first-order placeholders (sensor width in pixels);
-# distortion is zeroed. The real calibration overwrites all of this.
+# Shape reference for a camera_info_manager calibration file at 1920x1080; the values are
+# placeholders, not a measurement of any lens. Real values come from `camera_calibrate.sh`
+# under local_ws/auxiliary/camera_calibration/.
+# A pipeline that names this file publishes intrinsics that no pose or range estimate can use.
 image_width: 1920
 image_height: 1080
 camera_name: cam_down

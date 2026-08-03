@@ -1,6 +1,15 @@
 <?xml version="1.0"?>
+<!-- ARID airframe frame tree. arid_description.service runs display.launch.py, which feeds this
+     to robot_state_publisher on the host as latched /robot_description and /tf_static.
+
+     Link names are an unchecked contract with consumers outside this package. cuVSLAM in the
+     container resolves base_frame 'base_link', and realsense2_camera roots its optical-frame
+     subtree at camera_name + "_link", which the front_realsense_link name here matches.
+     A rename breaks the TF chain at cuVSLAM init. -->
 <robot name="arid_drone_v1-0" xmlns:xacro="http://ros.org/wiki/xacro">
 
+  <!-- The STL is exported in 0.1 mm units: scaled it spans 0.393 x 0.393 x 0.2047 m, which is the
+       collision box below. A mesh re-exported in other units leaves that box wrong. -->
   <xacro:property name="mesh_scale"     value="0.0001"/>
   <xacro:property name="propeller_span" value="0.0975"/>
   <xacro:property name="realsense_z"    value="0.092042"/>
@@ -60,6 +69,8 @@
   <xacro:propeller name="rear_left"   x="${-propeller_span}" y="${propeller_span}"/>
   <xacro:propeller name="rear_right"  x="${-propeller_span}" y="${-propeller_span}"/>
 
+  <!-- base_link -> front_realsense_link -> optical frame is the rig extrinsic chain cuVSLAM
+       resolves; an error in these origins is a systematic extrinsic error cuVSLAM cannot detect. -->
   <xacro:realsense name="front" x="0.09875"  y="0.0175"   yaw="0"/>
 
   <link name="rslidar_link"/>
@@ -69,6 +80,7 @@
     <origin xyz="0.062732 0 0.16457" rpy="0 0.485201 0"/>
   </joint>
 
+  <!-- cam_down image headers carry this frame id, set in gst_camera_manager's pipelines.yaml. -->
   <link name="bottom_visual_link"/>
   <joint name="base_link_to_bottom_visual_joint" type="fixed">
     <parent link="base_link"/>

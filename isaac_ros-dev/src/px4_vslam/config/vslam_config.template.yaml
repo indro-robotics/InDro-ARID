@@ -1,43 +1,85 @@
+# Parameters for the RealSense driver and visual_slam_node, loaded by vslam.launch.py through its
+# camera_config_file argument. config_realsense rewrites vslam_config.yaml from
+# vslam_config.template.yaml on every run and splices the serial back in: tuning edits go in the
+# template, and edits to vslam_config.yaml are lost at the next reseed. arid_supervisor counts the
+# *_realsense/ sections that carry a non-empty serial_no to decide how many drivers a bringup has
+# to prove up. Each section key is <namespace>/<node name> exactly as vslam.launch.py declares it;
+# a key that does not match is dropped without a warning and the node runs on its own defaults.
+
 front_realsense/front_realsense_link:
   ros__parameters:
     enable_infra1: true
     enable_infra2: true
-    enable_color: false         # nothing subscribes RealSense colour on ARID
+    enable_color: false   # no subscriber in the stack, and a colour stream shares the infra pair's USB bandwidth
+    # true routes every frame through the librealsense syncer, which holds each stream until a
+    # matched set exists. Any slower stream then paces the infra pair, and cuVSLAM reads the
+    # result as image jitter.
     enable_sync: false
     enable_depth: false
     depth_module:
+      # RS2_OPTION_EMITTER_ENABLED: 0 all emitters off, 1 laser, 2 auto laser, 3 LED. The infra
+      # pair feeds cuVSLAM, and the projected pattern is fixed to the camera, not to the scene.
       emitter_enabled: 0
       enable_auto_exposure: true
+      # WIDTHxHEIGHTxFPS for the infra pair. Never 90 fps: the 11.1 ms USB service interval latches
+      # the librealsense clear-halt loop and the streams stop until the stack is restarted.
       profile: '640x360x60'
     rgb_camera:
-      power_line_frequency: 1  # 60 Hz
+      # RS2_OPTION_POWER_LINE_FREQUENCY on the colour sensor: 0 off, 1 50 Hz, 2 60 Hz, 3 auto.
+      power_line_frequency: 1
     enable_gyro: false
     enable_accel: false
-    initial_reset: false
-    serial_no: ""               # front RS serial number (no leading underscore)
+    initial_reset: false   # true hardware-resets the device first; it leaves the bus and the driver waits out the re-enumeration
+    # Digits only, quoted, no leading underscore. Written by config_realsense. Empty binds the
+    # driver to the first RealSense on the bus and leaves the supervisor's camera count at its
+    # fallback of 1.
+    serial_no: ""
+    # Prefix of every frame id the driver publishes. It has to match the camera frames in the
+    # host's URDF and the camera_optical_frames list below, or the rig lookup finds nothing.
     camera_name: "front_realsense"
+    # Native RCL image publishers, zero-copy to nodes composed in the same container. The
+    # image_transport compressed and theora topics are not created.
     use_intra_process_comms: true
 
 visual_slam_node:
   ros__parameters:
+    # Milliseconds of stamp spread allowed inside one frame set. The vendor bound is half a frame
+    # interval, 8.3 ms at 60 fps; above that, images captured at different instants are matched
+    # into one set.
     sync_matching_threshold_ms: 15.0
     enable_image_denoising: false
+    # cuVSLAM's horizontal-stereo fast path, valid only for rectified pairs whose principal points
+    # sit on one horizontal line. Setting it on unrectified input corrupts tracking.
     rectified_images: true
-    enable_imu_fusion: false
+    enable_imu_fusion: false   # false leaves the visual_slam/imu subscription uncreated
+    # Milliseconds between consecutive frame sets above which cuVSLAM logs a jitter warning; also
+    # passed to the tracker as max_frame_delta_ms. 34.0 is two frame intervals at 60 fps.
     image_jitter_threshold_ms: 34.0
     map_frame: 'map'
     odom_frame: 'odom'
+    # cuVSLAM looks up the camera rig in TF as base_frame to each camera_optical_frames entry, so
+    # this frame has to be in the URDF the host publishes. A missing chain throws after a 10 s TF
+    # timeout and the tracker never starts.
     base_frame: 'base_link'
-    imu_frame: 'autopilot'
-    enable_slam_visualization: false   # nothing subscribes the vis topics; the LiDAR SDK shares this box
+    imu_frame: 'autopilot'   # inert while enable_imu_fusion is false
+    enable_slam_visualization: false   # true adds the landmark, observation and pose-graph publishers and the extraction work behind them
     enable_landmarks_view: false
     enable_observations_view: false
-    enable_localization_n_mapping: true
+    enable_localization_n_mapping: true   # false is pure visual odometry: no map, and save_map, load_map and localize_in_map refuse
+    # Image streams, not physical cameras: one stereo camera is 2. This is the source of truth, so
+    # camera_optical_frames entries past this count are ignored.
     num_cameras: 2
-    min_num_images: 2   # one camera = 2 infra streams, both required; no loss is survivable.
-                        # Post-init only: cuVSLAM init still needs a camera_info from all num_cameras streams.
-    stale_stream_timeout_ms: 100.0   # inert at one camera: dropping a stale stream leaves 1 < min 2, so no set emits either way
-    image_qos: "SENSOR_DATA"
+    # Streams required per emitted set once tracking is running. At 2 of 2 no stream loss is
+    # survivable. Initialization is separate: cuVSLAM needs one camera_info from all num_cameras
+    # streams before it starts.
+    min_num_images: 2
+    # Milliseconds of stamp-domain silence after which a stream stops blocking set emission; 0 is
+    # stock behaviour, where any silent stream stalls every set. Inert at two streams: dropping one
+    # leaves 1, below min_num_images, so no set is emitted either way.
+    stale_stream_timeout_ms: 100.0
+    image_qos: "SENSOR_DATA"   # applies to the camera_info subscriptions as well as the images
+    # Rig order: entry 0 is the camera behind visual_slam/image_0. Swapping the entries hands
+    # cuVSLAM the wrong extrinsics for each image.
     camera_optical_frames:
       - 'front_realsense_infra1_optical_frame'
       - 'front_realsense_infra2_optical_frame'

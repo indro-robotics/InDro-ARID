@@ -1,6 +1,5 @@
 # container.sh: Docker engine, Isaac Dockerfile patches, skip-worktree, image + workspace builds.
 
-# Docker
 setup_docker() {
     step "Docker"
 
@@ -44,7 +43,6 @@ setup_docker() {
     STEPS_RUN+=("docker")
 }
 
-# Isaac ROS Docker patches
 setup_docker_patches() {
     step "Isaac ROS Docker patches"
 
@@ -60,7 +58,8 @@ setup_docker_patches() {
     cp -f "${ISAAC_ROS_WS}/container_scripts/arid_env.sh" \
         "${ISAAC_ROS_WS}/src/isaac_ros_common/docker/scripts/"
 
-    # skip-worktree hides patches from isaac_ros_common submodule git tracking.
+    # These four are copies into the isaac_ros_common submodule. skip-worktree keeps them out of
+    # its status and out of the way of a submodule update.
     git -C "${ISAAC_ROS_WS}/src/isaac_ros_common" update-index --skip-worktree \
         scripts/.isaac_ros_common-config \
         docker/Dockerfile.arid \
@@ -71,10 +70,9 @@ setup_docker_patches() {
     ok "Docker patches applied and protected"
 }
 
-# Per-drone files kept local via skip-worktree: camera calibration outputs only.
-# Tuning config (pipelines.yaml, px4_vslam_reactor.yaml, rslidar.yaml) stays tracked and
-# committable. vslam_config.yaml is deliberately NOT here: it is gitignored and reseeded
-# from vslam_config.template.yaml, and skip-worktree on an untracked file is meaningless.
+# Per-drone files: tracked in git, but local edits stay out of every commit. vslam_config.yaml
+# does not belong in this list - it is gitignored and reseeded from vslam_config.template.yaml,
+# and skip-worktree has no effect on a file git does not track.
 ARID_SKIP_WORKTREE_SPECS=(
     "local_ws/src/ros_gst_cameras/gst_camera_manager/config/calibrations"
     "local_ws/auxiliary/camera_calibration/camera_calibrations"
@@ -92,8 +90,8 @@ setup_skip_worktree() {
     local files
     files=$(git -C "$REPO_ROOT" ls-files -- "${ARID_SKIP_WORKTREE_SPECS[@]}" 2>/dev/null || true)
 
-    # Clear marks left by an earlier spec list; a stale mark makes git silently swallow
-    # incoming updates to a file that is now meant to be tracked normally.
+    # A mark left by an earlier spec list makes git discard incoming updates to a file that is
+    # now meant to track normally, with no message. Clear anything no longer in the specs.
     local marked f
     marked=$(git -C "$REPO_ROOT" ls-files -v 2>/dev/null | awk '/^S /{sub(/^S /, ""); print}' || true)
     while IFS= read -r f; do
@@ -109,7 +107,6 @@ setup_skip_worktree() {
         return 0
     fi
 
-    # Warn (don't auto-restore) on a tracked baseline missing from disk; the operator decides.
     while IFS= read -r f; do
         [[ -e "${REPO_ROOT}/${f}" ]] || warn "tracked baseline missing from disk: ${f}"
     done <<< "$files"
@@ -119,14 +116,13 @@ setup_skip_worktree() {
     ok "Protected (skip-worktree): $(echo "$files" | wc -l) file(s)"
 }
 
-# Build the Isaac container (confirmation prompt, default skip).
 build_isaac_step() {
     step "Build Isaac container"
     local sentinel="${HOME_DIR}/.arid_pending_build_isaac"
     local exists=0 ans
     if docker image inspect isaac_ros_dev-aarch64 >/dev/null 2>&1; then exists=1; fi
     if (( PRE )); then
-        ans="${PRE_BUILD_ISAAC:-skip}"   # chosen in the questionnaire, no re-prompt
+        ans="${PRE_BUILD_ISAAC:-skip}"   # answered in the questionnaire; an unattended run never prompts
     elif (( exists )); then
         ask_yn "Isaac container image already exists. Rebuild it now? (y/n, Enter = no): " n && ans=yes || ans=skip
     else
@@ -138,7 +134,9 @@ build_isaac_step() {
         rm -f "${sentinel}"
         return 0
     fi
-    # A rebuild needs the old container gone; the boot service is restarted after the build.
+    # run_dev.sh attaches to an already-running container and exits without building, so the
+    # old container has to be gone or the rebuild reports success and changes nothing. The
+    # boot service is started again only once the build has succeeded.
     sudo -n systemctl stop arid_supervisor.service start_isaac_docker.service 2>/dev/null || true
     docker rm -f isaac_ros_dev-aarch64-container 2>/dev/null || true
     # sg docker: on the first provisioning run the docker group is not yet active in-session.
@@ -158,7 +156,7 @@ build_isaac_step() {
         return 0
     fi
     STEPS_RUN+=("build_isaac (failed)")
-    # Keep the sentinel on FAILURE so a post-reboot resume retries the queued build.
+    # The sentinel stays on failure: a post-reboot resume re-runs the queued build.
     prompt_failure_action "build_isaac_docker.sh returned ${build_rc} - container image not built" \
         "Fix the errors above, then re-run 'build_isaac'."
     return "${build_rc}"
@@ -170,8 +168,8 @@ _run_build_isaac_if_queued() {
     build_isaac_step
 }
 
-# Colcon-build the in-container workspace and bring the supervisor up. Without an
-# in-container install carrying arid_supervisor, the unit fails StartLimitBurst at boot.
+# Until this build has produced an in-container install carrying arid_supervisor, the
+# arid_supervisor unit fails at every boot and trips StartLimitBurst.
 colcon_isaac_step() {
     step "Colcon-build in-container workspace"
     local container="isaac_ros_dev-aarch64-container"
@@ -192,7 +190,6 @@ colcon_isaac_step() {
         return 0
     fi
 
-    # Refuse to build into a stopped container: surface the dependency, not a confusing build failure.
     if ! docker inspect -f '{{.State.Running}}' "${container}" 2>/dev/null | grep -q true; then
         err "Isaac container is not running."
         err "Start it first: 'start_isaac' (alias) or 'sudo systemctl start start_isaac_docker.service'"
@@ -200,8 +197,9 @@ colcon_isaac_step() {
         return 1
     fi
 
-    # Self-heal: apt ros-humble-librealsense2 must never shadow the RSUSB librealsense at
-    # /usr/local (a wrapper linked against it crashes on bringup). Remove it before building.
+    # apt ros-humble-librealsense2 is the V4L2 build. It has to be gone before the build:
+    # anything that links against it instead of the RSUSB librealsense at /usr/local crashes
+    # the camera nodes at bringup.
     if docker exec -u root "${container}" dpkg -l ros-humble-librealsense2 2>/dev/null | grep -q '^ii'; then
         warn "apt ros-humble-librealsense2 found in the container (V4L2, conflicts with the RSUSB /usr/local build) - removing"
         if docker exec -u root "${container}" apt-get remove -y ros-humble-librealsense2 >/dev/null; then
@@ -212,8 +210,8 @@ colcon_isaac_step() {
     fi
 
     echo "  Building workspace (several minutes on a cold cache)..."
-    # Bounded so a stuck build returns control instead of hanging.
-    # -u admin: bare exec is root, which leaves build/install/log root-owned and breaks the aliases.
+    # -u admin: a bare docker exec runs as root and leaves build/install/log root-owned, which
+    # breaks every later in-container build the aliases run as admin.
     if timeout 3600 docker exec -u admin "${container}" bash -lc \
         'cd /workspaces/isaac_ros-dev && colcon build --symlink-install --base-paths src --cmake-args -DBUILD_TESTING=OFF -Drealsense2_DIR=/usr/local/lib/cmake/realsense2'; then
         if ! docker exec -u admin "${container}" test -f /workspaces/isaac_ros-dev/install/setup.bash; then
@@ -225,7 +223,8 @@ colcon_isaac_step() {
         ok "colcon build complete"
         STEPS_RUN+=("colcon_isaac")
         DID_BUILD=1; touch "${HOME_DIR}/.arid_did_build"
-        # reset-failed clears StartLimitBurst from the first-boot failures.
+        # Without reset-failed the StartLimitBurst accumulated over the pre-build boots blocks
+        # this start.
         sudo -n systemctl reset-failed arid_supervisor.service 2>/dev/null || true
         sudo -n systemctl restart arid_supervisor.service 2>/dev/null \
             || warn "arid_supervisor.service restart failed - check 'sudo systemctl status arid_supervisor.service'"

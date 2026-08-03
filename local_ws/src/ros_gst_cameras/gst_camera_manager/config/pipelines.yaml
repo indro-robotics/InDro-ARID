@@ -1,9 +1,14 @@
 # GstCameraManager pipeline definitions.
 # Each entry spawns a gst_cam_node subprocess on demand and exposes a service at
 # /gst_camera_manager/<name> (std_srvs/SetBool; true=start, false=stop).
+# An edit here reaches the manager only through /gst_camera_manager/refresh, which stops
+# every running pipeline before re-reading this file.
 #
 # Fields (per pipeline):
-#   gst_pipeline : Full GStreamer pipeline string, ending in `appsink`.
+#   gst_pipeline : Full GStreamer pipeline string, ending in `appsink`: it is opened by
+#                  cv::VideoCapture with CAP_GSTREAMER, which pulls frames from that sink.
+#                  Newlines are collapsed to spaces before launch, which is what permits the
+#                  multi-line block form below.
 #   calibration  : Basename (no extension) of a YAML in config/calibrations/. If the
 #                  file is missing or the field is omitted, camera_info is still
 #                  published using defaults built from the first frame (zero
@@ -14,7 +19,8 @@
 #   encoding     : Override for sensor_msgs/Image.encoding. Leave empty "" to let the
 #                  node auto-detect from cv::Mat::type() (maps CV_8UC1→mono8, CV_8UC3→bgr8,
 #                  CV_8UC4→bgra8, CV_16UC1→mono16, CV_16UC3→bgr16, CV_16UC4→bgra16).
-#                  Set explicitly (e.g. "rgb8", "bayer_rggb8") to override auto-detect.
+#                  A type outside that set publishes with an empty encoding string, so any
+#                  format not in the map must be named here.
 #   compress     : true → publishes both raw + compressed via image_transport (lazy, no
 #                  cost if nothing subscribes to compressed). false → raw only.
 #   alive_threshold : Seconds (float) without a camera_info message before the pipeline
@@ -23,17 +29,17 @@
 #                     starts when the subprocess is launched (acts as a startup grace
 #                     period). Omitted → defaults to 5.0s.
 #   reliable     : QoS for image_raw + camera_info. Default (omitted / "" / false) is
-#                  sensor_data QoS (BEST_EFFORT, VOLATILE, depth 5): standard for image
-#                  streams, drops frames over lossy links rather than stalling the
-#                  publisher. Set `reliable: true` for streams that cannot tolerate frame
-#                  drops (low-rate scanners, metadata-critical pipelines).
+#                  sensor_data QoS (BEST_EFFORT, VOLATILE, depth 5), which drops frames
+#                  over a lossy link rather than stalling the publisher. `reliable: true`
+#                  switches both topics to RELIABLE/VOLATILE depth 5 for streams that
+#                  cannot tolerate frame drops.
 
 pipelines:
 
   cam_down:
-    # IMX477 down camera, centre-cropped to a 1080x1080 square by the VIC with no scaling.
-    # The crop is left=420 right=1500 top=0 bottom=1080 out of the 1920x1080 sensor mode,
-    # which is what IMX477_1080sq.yaml is derived for. ee-mode=0 leaves the frame unsharpened.
+    # IMX477 down camera. The nvvidconv window (left=420 right=1500 top=0 bottom=1080 of the
+    # 1920x1080 sensor mode) is the exact geometry IMX477_1080sq.yaml holds intrinsics for:
+    # changing the crop, the sensor mode, or adding a scale invalidates that calibration.
     gst_pipeline:
       nvarguscamerasrc sensor-id=0 wbmode=1 aelock=false ee-mode=0 tnr-mode=2
       ! video/x-raw(memory:NVMM),width=1920,height=1080,framerate=15/1,format=NV12
@@ -45,9 +51,7 @@ pipelines:
     frame_id: "bottom_visual_link"
     encoding: ""
     compress: true
-    # 5.0, not 2.0: this value doubles as the startup grace period, and a cold Argus open on the
-    # IMX477 takes just over 2 s to deliver its first frame - measured at 2.04 s, which tripped
-    # the old threshold on literally every launch ("stalled ... frames resumed" one line later).
-    # The false alarm also made verify_cv_cams give up on a camera that was working. At 15 fps a
-    # real stall is still caught inside 5 s (~75 missed frames), so nothing is lost by waiting.
+    # Floor is set by the startup grace: a cold Argus open on the IMX477 takes just over 2 s to
+    # deliver its first frame, and a threshold under that reports a stall on every launch.
+    # Raising it delays real stall detection by the same amount.
     alive_threshold: 5.0

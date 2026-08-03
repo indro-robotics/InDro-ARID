@@ -1,3 +1,6 @@
+# VSLAM bringup: the RealSense driver and cuVSLAM in one multithreaded component container, plus
+# the reactor and the PX4 bridge. Started by arid_supervisor's vslam_enable service, not by hand:
+# a second stack claims the same camera and node names.
 import os
 
 import launch
@@ -13,7 +16,6 @@ from launch_ros.parameter_descriptions import ParameterFile
 
 def generate_launch_description():
 
-    # Config file (vslam tuning + realsense params)
     launch_dir = os.path.dirname(os.path.realpath(__file__))
     config = DeclareLaunchArgument(
         'camera_config_file',
@@ -30,20 +32,20 @@ def generate_launch_description():
     ld = env.get('LD_LIBRARY_PATH', '')
     env['LD_LIBRARY_PATH'] = f"/opt/ros/humble/lib:{ld}" if ld else "/opt/ros/humble/lib"
 
-    # Block until the host-side arid_description (robot_state_publisher) latches
-    # /robot_description. `ros2 topic echo --once` with matching TRANSIENT_LOCAL QoS
-    # exits immediately once the publisher is up.
+    # The host unit arid_description.service latches /robot_description and /tf_static, and
+    # cuVSLAM resolves base_link to each camera optical frame out of TF at init: nothing below may
+    # start before those frames exist. The echo's QoS flags have to match the latched publisher or
+    # it never returns and the bringup stalls here.
     wait_for_description = ExecuteProcess(
         cmd=['ros2', 'topic', 'echo',
              '/robot_description', 'std_msgs/msg/String',
              '--once',
              '--qos-durability', 'transient_local',
              '--qos-reliability', 'reliable'],
-        output='log',   # URDF content is large; keep it out of the console
+        output='log',
         name='wait_for_robot_description',
     )
 
-    # Converts VIO solution to PX4 topic
     vio_transform_node = Node(
         name='vio_transform',
         namespace='vio_transform',
@@ -70,8 +72,8 @@ def generate_launch_description():
         executable='component_container_mt',
         output='screen',
         env=env,
-        # The D4xx sensor close takes seconds; the launch default grace SIGKILLs mid-close
-        # and leaves the device dirty for the next init. Match the supervisor's SIGINT grace.
+        # The D4xx sensors close serially and a SIGKILL mid-close leaves the device in a state the
+        # next bringup cannot claim. Tracks SIGINT_GRACE_S['vslam'] in arid_supervisor.
         sigterm_timeout='25.0',
         sigkill_timeout='10.0',
         composable_node_descriptions=[

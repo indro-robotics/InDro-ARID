@@ -1,9 +1,7 @@
 #!/bin/bash
-# airborne_check.sh - exit 0 only on PROVEN flight (a fresh 'landed: false' sample);
-# landed, no publisher, or error -> exit 1. Reap consumers fail toward cleanup on the
-# bench, hands-off only on live proof. Fast no-publisher path spares the bench the full
-# sample wait; one echo retry covers a CLI glitch during a real crash.
-# ARID_LAND_TOPIC override is for isolated testing only.
+# Airborne interlock for arid_supervisor.service ExecStopPost: exit 0 preserves the vslam
+# tree, exit 1 lets reap_stack.sh kill it. Only a fresh 'landed: false' sample earns exit 0;
+# every unprovable case exits 1, so an orphaned tree never survives holding the cameras.
 TOPIC="${ARID_LAND_TOPIC:-/fmu/out/vehicle_land_detected}"
 info=$(timeout -k 5 8 ros2 topic info --no-daemon "${TOPIC}" 2>/dev/null)
 if ! grep -q 'Publisher count: [1-9]' <<<"${info}"; then

@@ -1,6 +1,5 @@
 #!/bin/bash
 # config_realsense.sh - detect the front RealSense serial and write it into vslam_config.yaml.
-# Serial query: pyrealsense2 wheel preferred, rs-enumerate-devices fallback.
 # Never apt-install librealsense on the host: the container stack links the RSUSB build at /usr/local.
 # Assumes exactly one RealSense is connected.
 
@@ -8,20 +7,14 @@ set -u
 
 WORKSPACES="${WORKSPACES:-/home/jetson/workspaces}"
 VSLAM_CONFIG="${WORKSPACES}/isaac_ros-dev/src/px4_vslam/config/vslam_config.yaml"
-# vslam_config.yaml is untracked and REGENERABLE: template (fleet structure/tunables)
-# + serial (this drone). Reseed from the template on every run so template updates
-# propagate; an existing serial is captured first and re-spliced.
+# vslam_config.yaml is untracked and is rewritten from the template on every run; the serial is
+# the only value carried across. Hand edits to it are lost, so tunables go in the template.
 VSLAM_TEMPLATE="${VSLAM_CONFIG%.yaml}.template.yaml"
-# --reseed-only: template refresh + serial re-splice, no probing, then exit. Setup runs
-# it unconditionally so new template keys reach provisioned drones; a missing/partial
-# config is left to the detect flow.
 RESEED_ONLY=0
 [[ "${1:-}" == "--reseed-only" ]] && RESEED_ONLY=1
 _SERIALS=()
 [ -f "${VSLAM_CONFIG}" ] && mapfile -t _SERIALS < <(grep -oE 'serial_no: "[0-9]+"' "${VSLAM_CONFIG}" | grep -oE '[0-9]+')
 if (( RESEED_ONLY )) && [ "${#_SERIALS[@]}" -ne 1 ]; then
-    # Seed anyway so a fresh clone / wiped config still gets a usable file with the
-    # current template keys; warn loudly because the serials are NOT restorable here.
     cp "${VSLAM_TEMPLATE}" "${VSLAM_CONFIG}"
     echo "WARNING: vslam_config.yaml had ${#_SERIALS[@]}/1 serials - reseeded from template" >&2
     echo "         with BLANK serials; run 'config_realsense' to reassign." >&2
@@ -43,18 +36,13 @@ if (( RESEED_ONLY )); then
     exit 0
 fi
 
-# Source ROS if PATH lacks rs-enumerate-devices (setup.sh invokes this before the
-# user's shell sources ROS).
-# set +u around the source: ament's setup files read unbound variables, so under `set -u`
-# this line aborts the whole script with "AMENT_TRACE_SETUP_FILES: unbound variable" - which is
-# why setup.sh only ever reported "config_realsense failed" and left serial_no blank.
+# ament's setup files read unbound variables: sourcing them under `set -u` aborts the script.
 if ! command -v rs-enumerate-devices >/dev/null 2>&1 && [[ -f /opt/ros/humble/setup.bash ]]; then
     set +u
     source /opt/ros/humble/setup.bash
     set -u
 fi
 
-# Output helpers
 if [[ -t 1 ]]; then
     BLUE='\033[1;34m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 else
@@ -179,7 +167,6 @@ what     "Replace the value on the serial_no: line; preserve indentation and any
 CURRENT=$(grep -E '^[[:space:]]*serial_no:' "${VSLAM_CONFIG}" | head -1)
 note "before: ${CURRENT}"
 
-# Replace only the value, preserving indentation and any inline comment.
 sed -i -E "s|^([[:space:]]*serial_no:[[:space:]]*)\"[^\"]*\"(.*)$|\1\"${SERIAL}\"\2|" "${VSLAM_CONFIG}"
 
 NEW=$(grep -E '^[[:space:]]*serial_no:' "${VSLAM_CONFIG}" | head -1)

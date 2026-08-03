@@ -1,12 +1,10 @@
 #!/bin/bash
-# Smoke test for host-side local_ws stack: systemd services, aliases,
-# foxglove_bridge socket, cam_down lifecycle, rslidar lifecycle, supervisor graph.
-# Re-runnable. Leaves both pipelines STOPPED. Destructive aliases
-# (reset_usb, clean_local) are existence-checked only, never invoked.
+# Smoke test for the host-side local_ws stack. Re-runnable. Leaves both camera and LiDAR
+# pipelines STOPPED. The destructive aliases (reset_usb, clean_local) are existence-checked
+# only, never invoked.
 
 set -u
 
-# Output helpers
 if [[ -t 1 ]]; then
     BLUE='\033[1;34m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 else
@@ -18,14 +16,11 @@ FAIL=0
 SKIP=0
 RESULTS=()
 
-# Resources started by this test; anything still set when the EXIT trap fires is a leak
-# from an aborted run.
 BRIDGE_LAUNCHED_BY_US=""
 CAM_DOWN_STARTED_BY_US=""
 RSLIDAR_STARTED_BY_US=""
 
-# No PID tracking: setsid forks and exits, so $! goes stale within milliseconds.
-# Locate the listener by port at teardown instead.
+# setsid forks and exits, so $! goes stale within milliseconds: find the listener by port.
 _kill_bridge_on_8765() {
     local holder parent
     for _ in 1 2 3 4 5; do
@@ -46,7 +41,6 @@ _kill_bridge_on_8765() {
     ! ss -tlnp 2>/dev/null | grep -q ':8765 '
 }
 
-# Last-resort cleanup on any exit (Ctrl-C, set -e abort, normal end). Silent by design.
 _cleanup_on_exit() {
     if [[ -n "${BRIDGE_LAUNCHED_BY_US}" ]]; then
         _kill_bridge_on_8765 >/dev/null 2>&1 || true
@@ -73,7 +67,6 @@ skip() { echo -e "${YELLOW}RESULT:  [SKIP]  $*${NC}"; SKIP=$((SKIP+1)); RESULTS+
 fix()  { echo -e "${CYAN}FIX:${NC}     $*"; }
 note() { echo -e "         $*"; }
 
-# Source ROS for non-interactive invocations.
 if [[ -z "${ROS_DISTRO:-}" ]]; then
     [[ -f /opt/ros/humble/setup.bash ]] && source /opt/ros/humble/setup.bash
     [[ -f /home/jetson/workspaces/local_ws/install/setup.bash ]] && \
@@ -81,13 +74,11 @@ if [[ -z "${ROS_DISTRO:-}" ]]; then
 fi
 export ROS_DOMAIN_ID=23
 
-# Helpers
-# bash -ic is reserved for the alias check (needs .bashrc): interactive bash claims the
-# terminal foreground via tcsetpgrp and never restores it, so the parent's next TTY write
-# raises SIGTTOU and stops the script. Everything else calls ros2 directly.
+# bash -ic is reserved for the alias check, which needs .bashrc: interactive bash claims the
+# terminal foreground via tcsetpgrp and never restores it, so the parent's next TTY write raises
+# SIGTTOU and stops the script.
 ialias() { bash -ic "$*" </dev/null 2>&1 | grep -v 'job control'; }
 
-# Direct ros2 wrappers (no interactive bash).
 _setbool()      { ros2 service call "$1" std_srvs/srv/SetBool "{data: $2}" 2>&1; }
 _trigger()      { ros2 service call "$1" std_srvs/srv/Trigger '{}' 2>&1; }
 _latched_bool() {
@@ -96,7 +87,6 @@ _latched_bool() {
         "$1" 2>&1
 }
 
-# Count BEST_EFFORT messages over a wall-time window.
 count_msgs() {
     local topic="$1" win="$2"
     timeout "$win" ros2 topic echo --no-arr --qos-reliability best_effort "$topic" 2>/dev/null \
@@ -186,8 +176,6 @@ if [[ -n "${PORT_OUT}" ]]; then
     pass "port 8765 already listening (bridge was running)"
 else
     note "no bridge running; launching via the foxglove_bridge alias (will be cleaned up in Section 7)"
-    # setsid: own process group for teardown; $! would point at the wrapper, so
-    # cleanup finds the bridge by port instead.
     setsid bash -ic 'foxglove_bridge' >/tmp/foxglove_bridge.log 2>&1 < /dev/null &
     BRIDGE_LAUNCHED_BY_US=1
     LAUNCHED=""
@@ -208,7 +196,6 @@ fi
 
 hdr "Section 4: cam_down lifecycle (CSI IMX477, sensor-id=0)"
 
-# 4a. clean stopped state
 step "4a. Force initial STOPPED state"
 what     "Call cam_down_stop unconditionally so the test starts from a known state."
 why      "Lifecycle test is meaningless without a known starting state."
@@ -223,13 +210,12 @@ else
     fail "could not establish baseline STOPPED state"
 fi
 
-# 4b. start
 step "4b. cam_down_start should spawn the gst_cam_node subprocess"
 what     "SetBool(true) on /gst_camera_manager/cam_down. The manager forks gst_cam_node as a subprocess."
 why      "The whole pipeline depends on this subprocess. If it does not spawn, no subsequent check can pass."
 START_OUT=$(_setbool /gst_camera_manager/cam_down true)
 raw "${START_OUT}"
-CAM_DOWN_STARTED_BY_US=1   # cleared at 4i once explicit stop confirms STOPPED
+CAM_DOWN_STARTED_BY_US=1
 PID=$(echo "${START_OUT}" | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)
 if echo "${START_OUT}" | grep -q "success=True" && [[ -n "${PID}" ]]; then
     pass "subprocess spawned (pid=${PID})"
@@ -237,14 +223,12 @@ else
     fail "cam_down_start did not produce a running subprocess"
 fi
 
-# 4c. argus + pipeline negotiation
 step "4c. Wait for Argus + GStreamer pipeline to negotiate"
 what     "nvarguscamerasrc takes ~3 s to negotiate sensor mode and start streaming."
 why      "Tests on the topics will fail prematurely without this grace period."
 note     "sleeping 4 s..."
 sleep 4
 
-# 4d. status running
 step "4d. cam_down_status should report RUNNING"
 STATUS=$(_trigger /gst_camera_manager/cam_down/status)
 raw "${STATUS}"
@@ -254,7 +238,6 @@ else
     fail "status not RUNNING after start"
 fi
 
-# 4e. topics exist
 step "4e. Three topics should exist: image_raw, image_raw/compressed, camera_info"
 what     "Listing topics on the ROS graph; checking the three gst_cam_node publishers."
 why      "If publishers aren't created, the gst_cam_node binary crashed (most common: empty encoding string, bad calibration path)."
@@ -269,7 +252,6 @@ for t in /cam_down/image_raw /cam_down/image_raw/compressed /cam_down/camera_inf
     fi
 done
 
-# 4f. frame_id
 step "4f. /cam_down/image_raw header.frame_id must equal 'bottom_visual_link'"
 what     "Subscribe with matching BEST_EFFORT QoS and echo a single header."
 why      "This is the TF frame that downstream consumers transform from. Wrong frame_id silently breaks every camera→base_link TF lookup."
@@ -281,7 +263,6 @@ else
     fail "frame_id is wrong or echo did not return"
 fi
 
-# 4g. rate
 step "4g. /cam_down/image_raw rate over 5 s"
 what     "Count message separators ('---') from 'topic echo --no-arr' over a 5-second window."
 why      "Pipeline is configured for ~15 fps (delivered ~16 Hz). Accept >= 6 Hz (~40% of delivered) as pass. Below that indicates an upstream fault (Argus dropping or ISP backpressure)."
@@ -297,7 +278,6 @@ else
     fail "no image_raw messages received in 5 s"
 fi
 
-# 4h. /alive
 step "4h. /gst_camera_manager/cam_down/alive should be latched 'true'"
 what     "Read the latched Bool with QoS RELIABLE / TRANSIENT_LOCAL / depth 1. Up to 10 s for first-time discovery."
 why      "This is the manager's published verdict on whether frames are actually flowing. If status reports RUNNING but alive reports false, the watchdog is detecting a stall."
@@ -310,7 +290,6 @@ case "${ALIVE_VAL}" in
     *)             fail "alive topic unreadable in 10 s (DDS discovery problem?)" ;;
 esac
 
-# 4i. stop
 step "4i. cam_down_stop should terminate cleanly"
 STOP_OUT=$(_setbool /gst_camera_manager/cam_down false)
 raw "${STOP_OUT}"
@@ -319,7 +298,7 @@ STATUS=$(_trigger /gst_camera_manager/cam_down/status)
 raw "${STATUS}"
 if echo "${STATUS}" | grep -q 'STOPPED'; then
     pass "cam_down stopped cleanly"
-    CAM_DOWN_STARTED_BY_US=""   # explicit stop succeeded; EXIT trap no longer needed
+    CAM_DOWN_STARTED_BY_US=""
 else
     fail "cam_down did not stop"
 fi
@@ -328,7 +307,6 @@ hdr "Section 5: rslidar lifecycle (RSAIRY)"
 note "Note: cloud-data flow depends on whether the physical LiDAR is reachable."
 note "      Software-side lifecycle is exercised regardless of hardware."
 
-# 5a. baseline stopped
 step "5a. Force initial STOPPED state"
 _setbool /rslidar_coordinator/enable false >/dev/null
 sleep 1
@@ -340,13 +318,12 @@ else
     fail "could not establish baseline STOPPED state"
 fi
 
-# 5b. start
 step "5b. rslidar_start should spawn rslidar_sdk_node via the coordinator"
 what     "SetBool(true) on /rslidar_coordinator/enable. Coordinator forks 'ros2 run rslidar_sdk rslidar_sdk_node ...' with the config_path param."
 why      "If this fails, the SDK config is missing/wrong, or the rslidar_sdk package wasn't built."
 START_OUT=$(_setbool /rslidar_coordinator/enable true)
 raw "${START_OUT}"
-RSLIDAR_STARTED_BY_US=1   # cleared at 5h once explicit stop confirms STOPPED
+RSLIDAR_STARTED_BY_US=1
 PID=$(echo "${START_OUT}" | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)
 if echo "${START_OUT}" | grep -q "success=True" && [[ -n "${PID}" ]]; then
     pass "subprocess spawned (pid=${PID})"
@@ -356,19 +333,15 @@ fi
 note     "(letting SDK initialize for 4 s...)"
 sleep 4
 
-# 5c. status
 step "5c. rslidar_status should report RUNNING"
 STATUS=$(_trigger /rslidar_coordinator/status)
 raw "${STATUS}"
 if echo "${STATUS}" | grep -q 'RUNNING'; then
-    # RUNNING means the forked rslidar_sdk_node process is alive. The SDK starts happily with no
-    # LiDAR attached, so this says nothing about the hardware - 5f is the only check that does.
     pass "coordinator reports RUNNING (SDK subprocess alive; not proof of cloud flow - see 5f)"
 else
     fail "status not RUNNING"
 fi
 
-# 5d. topics
 step "5d. Required rslidar topics should exist on the graph"
 what     "/rslidar_points (PointCloud2 from SDK), /rslidar_coordinator/alive (the coordinator's liveness Bool)."
 why      "Topic presence proves the SDK + coordinator publishers are up. Data flow is the next check."
@@ -377,15 +350,12 @@ note     "rslidar-related topics in the graph:"
 echo "${TOPICS}" | grep -E 'rslidar' | sed 's/^/         /'
 for t in /rslidar_points /rslidar_coordinator/alive; do
     if echo "${TOPICS}" | grep -q "^$t$"; then
-        # Advertised, not necessarily carrying data - a publisher appears on the graph whether or
-        # not the LiDAR is attached. Say "advertised" so the summary cannot be read as data flow.
         pass "topic $t advertised"
     else
         fail "topic $t missing"
     fi
 done
 
-# 5e_alive. /rslidar_coordinator/alive read
 step "5e. /rslidar_coordinator/alive (read latched Bool via rslidar_alive alias)"
 what     "Read latched /rslidar_coordinator/alive with the same QoS as cam_down_alive (RELIABLE/TRANSIENT_LOCAL/depth 1)."
 why      "Mirrors the cam_down_alive check. With LiDAR off, watchdog will report 'data: false' after the 5s startup-grace window."
@@ -393,16 +363,11 @@ ALIVE_OUT=$(_latched_bool /rslidar_coordinator/alive)
 raw "${ALIVE_OUT}"
 ALIVE_VAL=$(echo "${ALIVE_OUT}" | grep -oE 'data: (true|false)' | head -1)
 case "${ALIVE_VAL}" in
-    # 'false' is NOT a pass: the watchdog is telling us no cloud is flowing. The topic being
-    # readable only proves DDS works, which 5d already covered. Scored FAIL to match 5f and the
-    # cam_down_alive check above - a fitted sensor that delivers nothing is a defect, not an
-    # inapplicable check.
     "data: true")  pass "alive == true (watchdog confirms cloud flow; LiDAR is reachable)" ;;
     "data: false") fail "alive == false (watchdog reports no cloud flow; LiDAR powered off / unreachable)" ;;
     *)             fail "alive topic unreadable in 10 s (DDS discovery problem?)" ;;
 esac
 
-# 5f. cloud data flow (informational)
 step "5f. Cloud-data flow on /rslidar_points (hardware-dependent)"
 what     "Count messages over 6 s (RSAIRY nominal ~10 Hz)."
 why      "The RSAIRY ships on the airframe, so a silent LiDAR is a FAIL, not a SKIP. SKIP means 'check does not apply'; a sensor that is fitted but delivering nothing is a defect of the system under test, whether the cause is cabling, power or software. Skipping it buries a grounded drone in a count nobody reads."
@@ -415,7 +380,6 @@ else
     fail "no cloud messages on /rslidar_points; LiDAR powered off / unreachable. Run 'lidar_diag' to debug network/hardware."
 fi
 
-# 5g. restart
 step "5g. rslidar_restart should produce a new PID"
 what     "Trigger /rslidar_coordinator/restart, then verify status reports a new pid different from before."
 why      "Restart is the recovery path when the SDK stalls. A stale PID means the respawn did not occur."
@@ -432,7 +396,6 @@ else
     fail "restart did not produce a new pid (was ${OLD_PID}, now ${NEW_PID:-unknown})"
 fi
 
-# 5h. stop
 step "5h. rslidar_stop should terminate cleanly (coordinator waits for the whole process group)"
 note     "rslidar_stop returns only once the SDK binary is gone, even if it was busy in MSOPTIMEOUT retries."
 _setbool /rslidar_coordinator/enable false >/dev/null
@@ -440,7 +403,7 @@ STATUS=$(_trigger /rslidar_coordinator/status)
 raw "${STATUS}"
 if echo "${STATUS}" | grep -q 'STOPPED'; then
     pass "rslidar stopped cleanly"
-    RSLIDAR_STARTED_BY_US=""   # explicit stop succeeded; EXIT trap no longer needed
+    RSLIDAR_STARTED_BY_US=""
 else
     fail "rslidar did not stop"
 fi
@@ -449,7 +412,6 @@ hdr "Section 6: Supervisor (optional, requires Isaac container)"
 step "Supervisor SetBool service on the ROS graph"
 what     "If the Isaac container is running, /arid_supervisor/vslam_enable must be on the graph."
 why      "This is the host-callable service that drives the VSLAM stack lifecycle. Container running but the service missing = arid_supervisor.service failed inside the container."
-# Distinguish container-not-running from missing docker group membership.
 if ! docker ps >/dev/null 2>&1; then
     skip "docker ps failed (permission denied?) - supervisor check skipped"
     note "if jetson was just added to the docker group, log out and back in (or 'newgrp docker') and re-run"
@@ -482,7 +444,7 @@ if [[ -n "${BRIDGE_LAUNCHED_BY_US}" ]]; then
     why      "Section 3 launched the bridge in the background. A test that leaves a bridge bound to 8765 prevents the next 'foxglove_bridge' invocation from binding the port. PID tracking through setsid is unreliable, so cleanup queries the kernel directly."
     if _kill_bridge_on_8765; then
         pass "bridge stopped, port 8765 free"
-        BRIDGE_LAUNCHED_BY_US=""   # tell the EXIT trap there's nothing left to do
+        BRIDGE_LAUNCHED_BY_US=""
     else
         fail "could not free port 8765 (foxglove_bridge still holding it)"
     fi

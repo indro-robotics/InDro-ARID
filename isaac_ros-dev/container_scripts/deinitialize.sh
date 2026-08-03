@@ -1,14 +1,11 @@
 #!/bin/bash
-# deinitialize.sh - stop the VSLAM stack via the supervisor:
-#   0) landed-safety interlock                - refused outright unless the drone is
-#                                               provably landed (the supervisor enforces
-#                                               the same gate; checking first names the
-#                                               reason instead of burning the call bound)
-#   1) /arid_supervisor/vslam_enable -> false  (RealSense teardown + shm sweep)
+# Stops the VSLAM stack by disabling it on the supervisor, behind the `deinitialize` alias.
+# Refused unless the drone is provably landed: vslam feeds /fmu/in/vehicle_visual_odometry,
+# so tearing it down in flight removes the EKF2 vision source.
 set -u
 
-# Per-call response cap: a stop is bounded in the supervisor but can queue behind an
-# in-flight camera-gated bringup (~3 min worst).
+# 300 s: the disable itself is bounded in the supervisor, but queues behind an in-flight
+# camera-gated bringup, worst case ~3 min.
 CALL_TIMEOUT_S=300
 STATUS_TIMEOUT_S=300
 
@@ -25,8 +22,8 @@ call() {
         return 1
     fi
     msg=$(echo "${out}" | sed -n "s/.*message=['\"]\(.*\)['\"].*/\1/p" | head -1)
-    # Anchored on the CLI response-object line so free text inside message='...' cannot
-    # spoof success.
+    # Anchored on the CLI response-object line: free text inside message='...' would
+    # otherwise spoof success.
     if echo "${out}" | grep -q 'Response(success=True'; then
         echo "  ${svc}: ok${msg:+ - ${msg}}"
         return 0
@@ -35,8 +32,8 @@ call() {
     return 1
 }
 
-# Bounded service-exists check: `ros2 service list` is a one-shot discovery snapshot from
-# a cold CLI, so poll.
+# `ros2 service list` is a one-shot discovery snapshot: a cold CLI misses services that are
+# genuinely on the graph, so poll instead of asking once.
 svc_up() {
     local svc="$1" tries="${2:-10}"
     for _ in $(seq 1 "${tries}"); do
@@ -52,7 +49,6 @@ if ! svc_up /arid_supervisor/vslam_enable; then
     exit 1
 fi
 
-# ---- 0) landed-safety interlock -------------------------------------------------------
 if svc_up /arid_supervisor/status; then
     st=$(timeout -k 10 "${STATUS_TIMEOUT_S}" ros2 service call /arid_supervisor/status std_srvs/srv/Trigger "{}" 2>&1)
     strc=$?

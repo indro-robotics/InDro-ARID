@@ -1,9 +1,9 @@
-# IMX477 down camera - 1080x1080 centre-crop geometry (VIC crop, no scaling).
-# Derivation is EXACT (linear transforms of the full-frame calibration; no recalibration):
-#   centre crop 1920x1080 -> 1080x1080:  cx -= 420; fx, fy, cy, distortion unchanged
-#   scale 1080 -> 1080:                 fx, fy, cx, cy x 1080/1080; distortion unchanged
-# RECALIBRATION RULE: calibrate on the cropped square stream at THIS size, or calibrate
-# full-frame and re-apply the transforms above.
+# IMX477 down camera, valid only for the 1080x1080 centre crop of the 1920x1080 sensor mode
+# that cam_down in pipelines.yaml produces. Any other crop, scale or sensor mode makes these
+# intrinsics wrong.
+# Recalibrate on that cropped square stream. A full-frame calibration transfers only by
+# subtracting the 420 px left crop from cx; fx, fy, cy and the distortion coefficients carry
+# over unchanged because the crop does not scale.
 image_width: 1080
 image_height: 1080
 camera_name: cam_down

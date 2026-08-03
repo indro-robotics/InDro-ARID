@@ -1,3 +1,7 @@
+# arid_description.service runs this at boot with no arguments.
+# The container's px4_vslam launch blocks on the latched /robot_description published here, so
+# VSLAM bringup stalls while this unit is down.
+
 import os
 
 import xacro

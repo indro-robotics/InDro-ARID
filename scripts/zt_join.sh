@@ -1,12 +1,7 @@
 #!/bin/bash
 # ZeroTier network join/switch (alias: zt_join).
-#
-# Single-network model: joining leaves every other network first; re-joining an
-# already-joined network is leave + join.
-#
-#   zt_join                  interactive: pick a joined network to switch to, or join a new one
-#   zt_join <network-id>     non-interactive join (16 hex chars)
-#   zt_join --setup <id>     setup.sh mode: same as above, no prompts, plain output
+# Single-network model: a join leaves every other network first, so joining over an existing
+# ZeroTier session drops that session.
 set -u
 
 SUDO="sudo"
@@ -47,7 +42,6 @@ for n in nets:
 
 joined_ids() { zt_json | awk '{print $1}'; }
 
-# Leave everything except $1, then join $1. Idempotent.
 switch_to() {
     local target="$1" id
     for id in $(joined_ids); do
@@ -56,7 +50,6 @@ switch_to() {
             ztc leave "$id" >/dev/null
         fi
     done
-    # Overwrite semantics: a re-join of a current member is leave + join.
     if joined_ids | grep -q "^${target}$"; then
         ztc leave "$target" >/dev/null
         sleep 1
@@ -66,7 +59,6 @@ switch_to() {
     report "$target"
 }
 
-# Poll the target network until OK (with an IP) or the tries run out. Prints one status line.
 poll_status() {
     local target="$1" tries="${2:-15}" line
     STATUS=""; IP="-"
@@ -97,7 +89,7 @@ report() {
     echo "  Authorize it on network ${target} in ZeroTier"
     echo "  Central (tick Auth; assign/auto-assign an IP)."
     echo "======================================================"
-    # Any key re-tests, 's' skips; headless stays non-blocking so a scripted run never hangs.
+    # Without a terminal this must not block: setup.sh runs it unattended.
     if [[ ! -r /dev/tty ]]; then
         echo "No terminal - authorize in Central, then re-run 'zt_join' to verify."
         return 1
@@ -119,7 +111,6 @@ report() {
     done
 }
 
-# Direct / setup mode: network id on the command line.
 if [[ -n "${1-}" ]]; then
     valid_id "$1" || { err "invalid network id '$1' (16 hex chars)"; exit 1; }
     switch_to "${1,,}"
@@ -131,7 +122,6 @@ if (( SETUP_MODE )); then
     exit 1
 fi
 
-# Interactive: enumerate joined networks, offer switch or new join.
 mapfile -t IDS < <(joined_ids)
 echo ""
 echo "Joined ZeroTier networks:"

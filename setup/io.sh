@@ -1,6 +1,5 @@
 # io.sh: colours, output helpers, traps, user-exit cleanup, prompt_* family.
 
-# Output helpers
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[1;34m'; BOLD='\033[1m'; NC='\033[0m'
 
@@ -11,12 +10,12 @@ warn() { echo -e "  ${YELLOW}[WARN]${NC} $*"; }
 skip() { echo -e "  [SKIP]  $*"; }
 err()  { echo -e "  ${RED}[ERROR]${NC} $*" >&2; }
 
-# Case-insensitive y/yes n/no; strip non-letters first (a stray CR breaks the match).
+# Non-letters are stripped before matching: a CR from a pasted or piped answer breaks it.
 is_yes() { local a="${1//[^A-Za-z]/}"; case "${a,,}" in y|yes) return 0 ;; *) return 1 ;; esac; }
 is_no()  { local a="${1//[^A-Za-z]/}"; case "${a,,}" in n|no)  return 0 ;; *) return 1 ;; esac; }
 
-# Validated yes/no prompt. $1 = prompt, $2 = default on Enter (y or n). Anything else
-# re-prompts instead of silently counting as no. Ctrl+C still aborts (quit_handler).
+# $1 = prompt text, $2 = the answer Enter means (y or n). Unrecognised input re-prompts
+# rather than resolving to no.
 ask_yn() {
     local a
     while true; do
@@ -31,19 +30,21 @@ ask_yn() {
     done
 }
 
-# True inside a NoMachine session (NX_* session vars are inherited; SSH/console has none).
-# Process ancestry is unreliable - the terminal is re-parented under the desktop.
+# NX_* session vars are inherited by every shell in the session and absent over SSH or on
+# the console. Process ancestry does not answer this: the terminal is re-parented under the
+# desktop session.
 is_inside_nomachine() {
     [[ -n "${NX_SESSION_ID:-}${NXSESSIONID:-}${NX_RUNNER:-}${NX_CONNECTION:-}${NX_CLIENT:-}" ]]
 }
 
-# True when wired NIC $1 carries the default route, i.e. setup is running over it.
-# Carrier alone would false-trip: a plugged-in LiDAR raises carrier too.
+# $1 = wired NIC. The default route is the test, not carrier: a plugged-in LiDAR raises
+# carrier on the LiDAR NIC without setup running over it.
 is_provisioning_link() {
     ip route show default 2>/dev/null | grep -qE "^default .* dev ${1}( |$)"
 }
 
-# Clear resume hooks on a user-initiated exit. Never called from the ERR trap.
+# User-initiated exits only. The ERR trap must not call this: a failed run keeps its hooks
+# so --resume can pick the run back up.
 cleanup_user_exit() {
     local home="${HOME_DIR:-$HOME}"
     rm -f "${home}/.arid_resume_setup" \
@@ -51,8 +52,8 @@ cleanup_user_exit() {
           "${home}/.arid_run_smoke" \
           "${home}/.arid_setup_log" \
           "${home}/.arid_pending_build_isaac" 2>/dev/null || true
-    # camera_focus leftovers: quitting at the focus prompt exits without unwinding the
-    # function, so its backgrounded Foxglove bridge + the camera pipeline are reaped here.
+    # Quitting at the camera_focus prompt exits without unwinding that function, leaving its
+    # backgrounded Foxglove bridge and the camera pipeline running. Reaped here instead.
     if [ -f /tmp/arid_focus_fox.pgid ]; then
         kill -KILL -- -"$(cat /tmp/arid_focus_fox.pgid)" 2>/dev/null || true
         rm -f /tmp/arid_focus_fox.pgid
@@ -60,7 +61,7 @@ cleanup_user_exit() {
     fi
 }
 
-# user_exit [CODE] - clean up hooks then exit with CODE (default 1).
+# $1 = exit code, default 1.
 user_exit() { cleanup_user_exit; exit "${1:-1}"; }
 
 failure() {
@@ -72,7 +73,6 @@ failure() {
     exit 1
 }
 
-# Ctrl+C at any time. Default = quit setup. n = continue where we left off.
 quit_handler() {
     echo
     (( ${PRE:-0} )) && user_exit 130
@@ -83,8 +83,8 @@ quit_handler() {
     esac
 }
 
-# prompt_failure_action ERR_MSG [REASON]
-# Returns 0 = continue setup (skip this section). On the exit choice: clears hooks, exits 1.
+# $1 = error message, $2 = optional reason. Returns 0 to continue with this section skipped;
+# the exit choice does not return.
 prompt_failure_action() {
     err "$1"; [[ -n "${2:-}" ]] && echo "  ${2}"
     (( ${PRE:-0} )) && { warn "non-interactive - exiting on section failure (resumable via --resume)"; exit 1; }
@@ -93,8 +93,7 @@ prompt_failure_action() {
     case "${ans,,}" in c|continue) return 0 ;; *) user_exit 1 ;; esac
 }
 
-# prompt_section_or_skip PROMPT
-# Returns 0 = run this section, 1 = skip (q or Enter). Not an exit path.
+# $1 = prompt text. Returns 0 to run the section, 1 to skip it.
 prompt_section_or_skip() {
     (( ${PRE:-0} )) && return 0
     local ans
@@ -102,8 +101,8 @@ prompt_section_or_skip() {
     case "${ans,,}" in q|skip) return 1 ;; *) return 0 ;; esac
 }
 
-# prompt_core_failure LABEL [DETAIL] -> echoes retry|skip|exit. Prompts on /dev/tty so it
-# works under --full; no tty -> exit. Callers handle the "exit" branch via user_exit.
+# $1 = label, $2 = optional detail. Echoes retry, skip or exit. Reads /dev/tty rather than
+# stdin so the prompt still reaches the operator under --full; with no tty the answer is exit.
 prompt_core_failure() {
     err "$1 failed" >&2; [[ -n "${2:-}" ]] && echo "  $2" >&2
     local ans

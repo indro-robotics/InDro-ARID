@@ -1,3 +1,6 @@
+// PX4 external-vision bridge. Converts px4_vslam_reactor's gated odometry into
+// px4_msgs/VehicleOdometry on /fmu/in/vehicle_visual_odometry, which uXRCE-DDS carries to EKF2.
+// Launched by vslam.launch.py.
 #include <rclcpp/rclcpp.hpp>
 #include "tf2/LinearMath/Matrix3x3.h"
 #include "tf2/LinearMath/Transform.h"
@@ -13,14 +16,13 @@ class VioTransform : public rclcpp::Node
 public:
 explicit VioTransform() : Node("vio_transform")
 {
-	// PX4 topics need sensor-data QoS
+	// BEST_EFFORT, matching px4_vslam_reactor's filt_slam_odometry publisher: a RELIABLE
+	// subscription does not connect and EKF2 receives no vision at all. Depth 30 because VO
+	// arrives in bursts that a shallower queue drops without error.
 	rmw_qos_profile_t qos_profile = rmw_qos_profile_sensor_data;
 	auto qos = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, 30), qos_profile);
 
 	_vio_pub = this->create_publisher<px4_msgs::msg::VehicleOdometry>("/fmu/in/vehicle_visual_odometry", 10);
-
-	// IMU republisher disabled pending re-test (see sensorCombinedCallback below)
-	// _imu_pub = this->create_publisher<sensor_msgs::msg::Imu>("/vio_transform/imu", 10);
 
 	_vslam_odom_sub = this->create_subscription<nav_msgs::msg::Odometry>("/visual_slam/filt_slam_odometry", qos,
 						std::bind(&VioTransform::odometryCallback, this, std::placeholders::_1));
@@ -28,65 +30,28 @@ explicit VioTransform() : Node("vio_transform")
 	_vslam_status_sub = this->create_subscription<isaac_ros_visual_slam_interfaces::msg::VisualSlamStatus>("/visual_slam/status", qos,
 						std::bind(&VioTransform::statusCallback, this, std::placeholders::_1));
 
-	// Reactor reset epoch -> VehicleOdometry.reset_counter so EKF2 re-anchors on a re-seat
-	// instead of gating the jump; transient-local latches a late-published value.
+	// The reactor's epoch becomes VehicleOdometry.reset_counter, so EKF2 re-anchors on a re-seat
+	// instead of gating the jump as an outlier. Transient-local because the reactor publishes the
+	// epoch once at startup: a volatile subscription misses it and stamps 0 until the next seat.
 	_reset_epoch_sub = this->create_subscription<std_msgs::msg::UInt8>("/reactor/vio_reset_epoch",
 						rclcpp::QoS(1).reliable().transient_local(),
 						std::bind(&VioTransform::resetEpochCallback, this, std::placeholders::_1));
-
-	// _fc_imu_sub = this->create_subscription<px4_msgs::msg::SensorCombined>("/fmu/out/sensor_combined", qos,
-	// 					std::bind(&VioTransform::sensorCombinedCallback, this, std::placeholders::_1));
 }
 
 private:
-	// Subscription callbacks
 	void odometryCallback(const nav_msgs::msg::Odometry::UniquePtr msg);
 	void statusCallback(const isaac_ros_visual_slam_interfaces::msg::VisualSlamStatus::UniquePtr msg);
 	void resetEpochCallback(const std_msgs::msg::UInt8::UniquePtr msg);
 	void sensorCombinedCallback(const px4_msgs::msg::SensorCombined::UniquePtr msg);
 
-	// Publishers
 	rclcpp::Publisher<px4_msgs::msg::VehicleOdometry>::SharedPtr _vio_pub;
-	// rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr _imu_pub;
 
-	// Subscribers
 	rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr _vslam_odom_sub;
 	rclcpp::Subscription<isaac_ros_visual_slam_interfaces::msg::VisualSlamStatus>::SharedPtr _vslam_status_sub;
 	rclcpp::Subscription<std_msgs::msg::UInt8>::SharedPtr _reset_epoch_sub;
-	// rclcpp::Subscription<px4_msgs::msg::SensorCombined>::SharedPtr _fc_imu_sub;
 	uint8_t _vslam_state = 0;
 	uint8_t _reset_epoch = 0;
 };
-
-// FC-IMU republisher disabled pending re-test with the current Isaac VSLAM; re-enable its pubs/subs together.
-// void VioTransform::sensorCombinedCallback(const px4_msgs::msg::SensorCombined::UniquePtr msg)
-// {
-// 	auto fc_imu_acc = tf2::Vector3();
-// 	fc_imu_acc.setX(msg->accelerometer_m_s2[0]);
-// 	fc_imu_acc.setY(msg->accelerometer_m_s2[1]);
-// 	fc_imu_acc.setZ(msg->accelerometer_m_s2[2]);
-
-// 	auto fc_imu_gyro = tf2::Vector3();
-// 	fc_imu_gyro.setX(msg->gyro_rad[0]);
-// 	fc_imu_gyro.setY(msg->gyro_rad[1]);
-// 	fc_imu_gyro.setZ(msg->gyro_rad[2]);
-
-// 	auto accel = fc_imu_acc;
-// 	auto gyro = fc_imu_gyro;
-
-// 	auto imu_msg = sensor_msgs::msg::Imu();
-// 	imu_msg.header.stamp = get_clock()->now();
-// 	imu_msg.linear_acceleration.x = accel[0];
-// 	imu_msg.linear_acceleration.y = accel[1];
-// 	imu_msg.linear_acceleration.z = accel[2];
-// 	imu_msg.angular_velocity.x = gyro[0];
-// 	imu_msg.angular_velocity.y = gyro[1];
-// 	imu_msg.angular_velocity.z = gyro[2];
-// 	imu_msg.orientation_covariance = {-1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
-// 	imu_msg.linear_acceleration_covariance = {0.01, 0.0, 0.0, 0.0, 0.01, 0.0, 0.0, 0.0, 0.01};
-// 	imu_msg.angular_velocity_covariance = {0.01, 0.0, 0.0, 0.0, 0.01, 0.0, 0.0, 0.0, 0.01};
-// 	_imu_pub->publish(imu_msg);
-// }
 
 void VioTransform::statusCallback(const isaac_ros_visual_slam_interfaces::msg::VisualSlamStatus::UniquePtr msg)
 {
@@ -116,7 +81,7 @@ void VioTransform::odometryCallback(const nav_msgs::msg::Odometry::UniquePtr msg
 	tf2::Vector3 orientation_variance(msg->pose.covariance[21], msg->pose.covariance[28], msg->pose.covariance[35]);
 	tf2::Vector3 velocity_variance(msg->twist.covariance[0], msg->twist.covariance[7], msg->twist.covariance[14]);
 
-	// Isaac VSLAM publishes Odometry in an FLU (NWU) world frame; rotate into PX4's FRD/NED.
+	// isaac_ros_visual_slam publishes Odometry in FLU; VehicleOdometry is FRD.
 	tf2::Quaternion rotation;
 	rotation.setRPY(M_PI, 0.0, 0.0);
 
@@ -124,17 +89,16 @@ void VioTransform::odometryCallback(const nav_msgs::msg::Odometry::UniquePtr msg
 	quaternion = rotation * quaternion * rotation.inverse();
 	velocity = tf2::quatRotate(rotation, velocity);
 	angular_velocity = tf2::quatRotate(rotation, angular_velocity);
-	// Variances are covariance diagonals, not vectors: rotating by roll-pi negates the
-	// y/z components (diag(1,-1,-1)), which fed NEGATIVE variances downstream. The axis
-	// mapping of the rotation is correct; only the sign must be repaired. Pose/velocity
-	// data above is untouched.
+	// Covariance diagonals, not vectors: the roll-pi rotation negates their y and z terms, so
+	// without the magnitude EKF2 receives negative variances.
 	position_variance = tf2::quatRotate(rotation, position_variance).absolute();
 	orientation_variance = tf2::quatRotate(rotation, orientation_variance).absolute();
 	velocity_variance = tf2::quatRotate(rotation, velocity_variance).absolute();
 
 	px4_msgs::msg::VehicleOdometry vio;
 
-	// int32 * 1000000 overflows for wall-clock epoch seconds; widen before multiplying.
+	// PX4 timestamps are microseconds; the int32 seconds field overflows at wall-clock epoch
+	// values unless it is widened before the multiply.
 	vio.timestamp = static_cast<uint64_t>(msg->header.stamp.sec) * 1000000ULL + msg->header.stamp.nanosec / 1000;
 	vio.timestamp_sample = vio.timestamp;
 
@@ -149,7 +113,6 @@ void VioTransform::odometryCallback(const nav_msgs::msg::Odometry::UniquePtr msg
 	vio.position[1] = position.getY();
 	vio.position[2] = position.getZ();
 
-	// Velocities are body-frame, not world-frame
 	vio.velocity_frame = vio.VELOCITY_FRAME_BODY_FRD;
 	vio.velocity[0] = velocity.getX();
 	vio.velocity[1] = velocity.getY();

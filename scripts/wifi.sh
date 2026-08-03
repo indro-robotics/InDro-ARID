@@ -1,14 +1,10 @@
 #!/bin/bash
 # wifi.sh - interactive Wi-Fi connection via NetworkManager (alias: wifi).
-# Profiles go through `nmcli con add` / `con modify`; safe from the drone's own hotspot
-# (autoconnect priority handles the AP-to-STA transition).
 # Non-interactive: set ARID_WIFI_SSID (+ ARID_WIFI_PASS) to skip the picker.
 
 set -uo pipefail
 
-# create_profile <ssid> <pass> <security> <hidden>
-# Creates a new NM profile, or modifies an existing one of the same name (so an active
-# session on the same profile is not destroyed by a delete + re-add).
+# An existing profile is modified in place: delete + re-add drops any session active on it.
 create_profile() {
     local ssid="$1" pass="$2" sec="$3" hidden="${4:-no}"
     local key_mgmt="wpa-psk"
@@ -16,10 +12,9 @@ create_profile() {
 
     local out
 
-    # `-e no` disables nmcli's literal-`:` escaping so SSIDs with embedded `:` match the
-    # profile-name list correctly (otherwise `MyNet:5G` stored as `MyNet\:5G` never matches).
+    # `-e no` disables nmcli's literal-`:` escaping, without which an SSID containing `:` is
+    # listed back escaped and never matches the profile name.
     if nmcli -e no -t -f NAME con show | grep -Fqx "${ssid}"; then
-        # Existing profile: modify in place to avoid disrupting an active connection on it.
         if [[ -n "${pass}" ]]; then
             if ! out=$(sudo nmcli con modify "${ssid}" \
                 wifi-sec.key-mgmt "${key_mgmt}" \
@@ -32,7 +27,6 @@ create_profile() {
                 return 1
             fi
         else
-            # Open network: clear any prior security.
             if ! out=$(sudo nmcli con modify "${ssid}" \
                 wifi-sec.key-mgmt "" \
                 wifi-sec.psk "" \
@@ -45,7 +39,6 @@ create_profile() {
             fi
         fi
     else
-        # New profile.
         if ! out=$(sudo nmcli con add type wifi ifname '*' \
             con-name "${ssid}" autoconnect yes ssid "${ssid}" 2>&1); then
             echo "Failed to create profile '${ssid}':" >&2
@@ -75,7 +68,6 @@ create_profile() {
     echo "Profile '${ssid}' saved. Hotspot disconnecting; attempting to join '${ssid}'; falls back to hotspot on failure."
 }
 
-# Non-interactive path.
 if [[ -n "${ARID_WIFI_SSID:-}" ]]; then
     sec=""
     [[ -n "${ARID_WIFI_PASS:-}" ]] && sec="WPA2"
@@ -83,11 +75,10 @@ if [[ -n "${ARID_WIFI_SSID:-}" ]]; then
     exit 0
 fi
 
-# Interactive path.
 sudo nmcli radio wifi on
 
-# `--rescan yes` forces a fresh scan and waits for completion; no separate rescan + sleep.
-# `-e no` disables nmcli's literal-':' escaping so SSIDs with embedded ':' parse unambiguously.
+# `-e no` disables nmcli's literal-':' escaping, so an SSID containing ':' arrives split across
+# fields 3..NF rather than escaped; the awk below rejoins it.
 mapfile -t NETS < <(
     nmcli -e no -t -f SIGNAL,SECURITY,SSID device wifi list --rescan yes 2>/dev/null \
         | awk -F: '{
@@ -124,8 +115,8 @@ if [[ -z "${choice}" ]]; then
     PASS=""
     read -r -s -p "Password for '${SSID}' (Enter = open): " PASS || PASS=""
     echo
-    SECURITY="WPA2"   # Assume WPA2 when secured; key-mgmt branch ignored for open (empty PASS).
-    HIDDEN=yes        # Manual SSID is the hidden-network path; NM must probe for it.
+    SECURITY="WPA2"   # A typed SSID has no scan entry, so security is assumed; unused when PASS is empty.
+    HIDDEN=yes        # A typed SSID is the hidden-network path: NM must actively probe for it.
 elif [[ "${choice}" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#NETS[@]} )); then
     idx=$((choice - 1))
     IFS=$'\t' read -r SSID _ SECURITY <<< "${NETS[$idx]}"

@@ -1,49 +1,72 @@
-# px4_vslam_reactor tunable parameters.
-# Loaded by px4_vslam/launch/vslam.launch.py; applied to the vslam_reactor node. Defaults are
-# also declared in the node, so it runs if this file is absent. Angular gates are entered in
-# degrees here and converted to radians in the node.
+# px4_vslam_reactor tunable parameters, applied to the vslam_reactor node.
+# Loaded by px4_vslam/launch/vslam.launch.py. Every key is also declared with a default inside the
+# node, so the node runs if this file is absent. Angular gates are entered in degrees here and
+# converted to radians in the node.
 /**:
   ros__parameters:
 
-    vslam_stabilization_time: 1.0    # s, post-re-seat jump-gate bypass window FLOOR: a re-seat is purposeful,
-                                     #    so its pose step must never re-trigger the jump gate. Timed from the
-                                     #    SUCCESS response. The window closes only when this has elapsed AND
-                                     #    >=2 post-commit frames rebased the baseline (RESEAT_BYPASS_MIN_FRAMES);
-                                     #    hard cap RESEAT_BYPASS_CEILING_S 3 s so a dead stream cannot pin it
-                                     #    open (wall-clock-only close could expire with zero admitted frames in
-    lin_vel_gate: 5.0                # m/s, reject odometry above this linear velocity (was 15.0 - too loose;
-                                     #      analyzed flight peaked ~0.82 m/s, so 5.0 leaves headroom)
-    ang_vel_gate_dps: 200.0          # deg/s, reject odometry above this angular velocity (was 900.0)
-    VO_rate_lim: 0.5                 # s, jump-gate pos-delta AND-term time threshold: displacement counts as
-                                     #    slow-teleport evidence only when the stamp delta exceeds this. Term is
-    VO_pos_delta_lim: 0.4            # m, position step treated as a slow teleport by the AND-term above
-    sync_cache_sz: 300               # message_filters sync cache depth
+    # s, floor of the post-re-seat jump-gate bypass window, timed from the SetSlamPose SUCCESS
+    # response. A re-seat is a commanded pose change, so that step must not re-trigger the
+    # jump gate. The window closes only once this has elapsed AND two post-commit frames have
+    # rebased the baseline (RESEAT_BYPASS_MIN_FRAMES in the node), and it is capped at
+    # RESEAT_BYPASS_CEILING_S (3.0 s) so a dead stream cannot pin it open. Inside the window a
+    # genuine cuVSLAM jump is rebased into the baseline instead of gated, so raising this widens
+    # that blind interval.
+    vslam_stabilization_time: 1.0
 
-    # Set-origin settle / alignment (dedicated; separate from the jump gate above).
-    # After injecting the origin, keep injecting the stream (no re-seat) until EKF2 converges onto
-    # it, then stream normally. "Aligned" = yaw error AND 3D position error both under tolerance.
-    align_yaw_deg: 2.0               # deg, yaw-only tolerance to declare EKF2 settled onto the origin
-    align_pos_m: 0.10                # m, 3D position tolerance to declare EKF2 settled onto the origin
-    set_origin_settle_time: 10.0     # s, keep injecting this long for EKF2 to converge before re-injecting
+    # Jump gate: a VO frame tripping any term below is withheld from EKF2 and triggers a jump
+    # re-seat, up to the burst budget at the bottom of this file.
+    lin_vel_gate: 5.0                # m/s across consecutive VO frames. Sized to catch teleports;
+                                     # set near actual flight speed, ordinary motion trips it and
+                                     # feeds EKF2 a re-seat storm.
+    ang_vel_gate_dps: 200.0          # deg/s across consecutive VO frames.
+    VO_rate_lim: 0.5                 # s, stamp gap above which VO_pos_delta_lim applies.
+    VO_pos_delta_lim: 0.4            # m, position step counted as a slow teleport once the stamp
+                                     # gap exceeds VO_rate_lim. The pair is one AND-term, for
+                                     # teleports too slow to trip lin_vel_gate at normal cadence.
+    sync_cache_sz: 300               # messages of /reactor/drone_odom retained for settle-time
+                                     # matching, about 3 s at the ~100 Hz FMU odometry rate. The
+                                     # node rejects any match more than 100 ms from the VO stamp,
+                                     # so depth beyond that costs memory and nothing else.
 
-    # Freshness gate for SetSlamPose: skip stale (pre-reboot) PX4 samples so a re-seat is never
-    # anchored on FMU-down odometry. Caller retries each frame until a fresh sample arrives.
-    set_pose_max_odom_age: 0.030     # s, max age of the cached PX4 odom sample used to seed a re-seat; 3x the ~100 Hz odom period
+    # Set-origin settle: after injecting the origin the reactor keeps streaming VO to EKF2 without
+    # re-seating until EKF2 converges onto it. Aligned = yaw error AND 3D position error both under
+    # tolerance.
+    align_yaw_deg: 2.0               # deg, yaw-only tolerance for the settle exit. A tolerance
+                                     # EKF2 cannot reach leaves every settle window running to its
+                                     # timeout.
+    align_pos_m: 0.10                # m, 3D position tolerance for the settle exit.
+    set_origin_settle_time: 10.0     # s, time allowed for EKF2 to converge. On timeout an origin
+                                     # settle re-injects the origin; a jump-re-seat settle abandons
+                                     # alignment instead, because an origin injection zeroes yaw
+                                     # and destroys the heading datum in flight.
 
-    # FMU stamp skew clamp: if |now - FMU stamp| exceeds this, the map->px4 TF and
-    # /reactor/drone_odom|drone_pose for that message are re-stamped with node time so uXRCE
-    # timesync excursions cannot poison tf2 buffers. Skew-vs-now, not monotonicity: a future
-    # rogue stamp is still monotonic. Normal-path stamps stay untouched.
-    fmu_stamp_max_skew_s: 0.5        # s, max |now - FMU stamp| before re-stamping with node clock
+    # s, maximum age of the last received FMU odometry when a re-seat is dispatched. Above it
+    # set_slam_pose returns False and the caller retries on the next frame, so a re-seat is never
+    # anchored on pre-reboot or FMU-down odometry. 0.030 is three samples at the ~100 Hz odometry
+    # rate; raising it admits stale FMU poses as the re-seat seed.
+    set_pose_max_odom_age: 0.030
 
-    set_pose_busy_timeout_s: 3.0     # s, clear vslam_busy if a SetSlamPose response never arrives (cuVSLAM died
-                                     #    mid-call); without this the EV stream is dead for the rest of the
-                                     #    flight.
+    # s, maximum |now - FMU stamp| before the map->px4 TF and the /reactor/drone_odom and
+    # /reactor/drone_pose messages built from that sample are re-stamped with node time. uXRCE
+    # timesync excursions pass boot-relative or future stamps straight through and corrupt tf2
+    # buffers. Skew-vs-now, not monotonicity: a rogue future stamp is still monotonic. Normal-path
+    # stamps stay untouched, so a value wide enough to admit an excursion loses the protection.
+    fmu_stamp_max_skew_s: 0.5
 
-    # Jump-re-seat burst limiter: re-seating at multi-Hz cannot recover cuVSLAM, it only feeds EKF2
-    # a reset storm. Past the limit the jump path stops re-seating and /reactor/vo_healthy latches
-    # False until the rate decays back under it. Telemetry only - nothing consumes it on this
-    # platform and the reactor never commands a flight action. Origin re-injects are not counted.
-    reseat_burst_max: 5              # committed jump re-seats allowed inside the window; the next attempt is blocked
-    reseat_burst_window_s: 10.0      # s, rolling window for the burst count
-    ev_silence_max_s: 2.0            # s, EV output silence with cuVSLAM frames still arriving before /reactor/vo_healthy latches False
+    # s, time after which vslam_busy is force-cleared when a SetSlamPose response never arrives
+    # (cuVSLAM died mid-call). Nothing else clears it and EV publishing is suppressed while it is
+    # set, so without this the EV stream is dead for the rest of the flight. Set shorter than one
+    # cuVSLAM service round trip and healthy calls are force-cleared.
+    set_pose_busy_timeout_s: 3.0
+
+    # Jump-re-seat burst limiter. Re-seating at multi-Hz cannot recover cuVSLAM; it only feeds EKF2
+    # a reset storm. Past the budget the jump path stops re-seating and /reactor/vo_healthy latches
+    # False until entries age out of the window. Telemetry only: nothing on this platform consumes
+    # the topic and the reactor commands no flight action. Origin re-injections are not counted.
+    reseat_burst_max: 5              # committed jump re-seats allowed inside the window; the next
+                                     # attempt is blocked.
+    reseat_burst_window_s: 10.0      # s, rolling window the count is taken over.
+    ev_silence_max_s: 2.0            # s, EV output silence, with VO frames still arriving and EV
+                                     # fusion started, before /reactor/vo_healthy latches False.
+                                     # Below the VO frame period it latches on ordinary spacing.

@@ -1,7 +1,6 @@
 #!/bin/bash
-# colcon_local - rebuild local_ws with its dependent host services stopped, then restart them
-# (a running service holds the old install until restarted). jetson-clocks, usbfs-memory, and
-# reset_usb do not depend on local_ws and are left running.
+# colcon_local - rebuild local_ws with its dependent host services stopped, then restart them:
+# a running service holds the old install open until it is restarted.
 # The `colcon_local` alias sources the fresh install into the caller's shell on success.
 set -uo pipefail
 
