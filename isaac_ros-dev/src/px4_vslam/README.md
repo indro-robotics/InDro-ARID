@@ -3,11 +3,11 @@
 This package launches the RealSense visual SLAM stack and bridges its solution into PX4. One `ros2 launch` brings up the RealSense driver, [Isaac ROS Visual SLAM](https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_visual_slam), the reactor and the PX4 bridge.
 
 - `vslam.launch.py`: the stack launch graph.
-- `vio_transform`: C++ node publishing the VSLAM solution to PX4 over uXRCE-DDS.
+- `vio_transform`: C++ node publishing the filtered SLAM solution to PX4 over uXRCE-DDS.
 - `config/vslam_config.template.yaml`: tracked fleet defaults for the driver and the SLAM node.
 - `config/vslam_config.yaml`: the live per-drone file, untracked and regenerated.
 
-Pose correction and SLAM re-seat logic live in [`px4_vslam_reactor`](../px4_vslam_reactor/).
+Filtering and re-seat logic live in [`px4_vslam_reactor`](../px4_vslam_reactor/).
 
 ---
 
