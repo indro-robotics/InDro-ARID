@@ -1,9 +1,9 @@
-# ARID
+# InDro ARID
 
-ARID is an indoor quadrotor: an NVIDIA Jetson Orin on an ARK PAB carrier, an ARK FMU running
-PX4, and ROS 2 Humble in two workspaces, `local_ws` on the host and `isaac_ros-dev` inside the
-Isaac ROS container. This repository holds both, and the provisioning that turns a stock Jetson
-into a flight unit.
+ARID, the InDro Robotics Autonomous Research Indoor Drone, is a quadrotor: an NVIDIA Jetson Orin
+on an ARK PAB carrier, an ARK FMU running PX4, and ROS 2 Humble in two workspaces, `local_ws` on
+the host and `isaac_ros-dev` inside the Isaac ROS container. This repository holds both, and the
+provisioning that turns a stock Jetson into a flight unit.
 
 ## Sensors
 
