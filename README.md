@@ -227,5 +227,4 @@ reboot
 | `scripts/` | Host scripts behind the aliases |
 | `local_ws/` | Host workspace, its units, firmware and calibration |
 | `isaac_ros-dev/` | Container workspace, its units and container scripts |
-| `archive/`, `.docs/archive.zip` | Archived records |
 | `log/`, `run_logs/` | Setup logs, node logs |
